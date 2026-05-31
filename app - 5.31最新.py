@@ -15,15 +15,9 @@ def calc_front_score(horse_no, race_flows, finish_positions=None):
         last = flow[-1]
         finish = finish_positions[idx] if idx < len(finish_positions) else None
 
-        # 本当に前に行く馬を評価
-        if first == 1:
-            score += 40
-
-        elif first == 2:
-            score += 25
-
-        elif first <= 4:
-            score += 5
+        # 前に行ける
+        if first <= 4:
+            score += 10
 
         # 4角でも前にいる
         if last <= 4:
@@ -111,7 +105,7 @@ course_name = ""
 
 print(f"{distance}m戦")
 # 距離カテゴリ
-distance_num = int(distance) if str(distance).isdigit() else 1400
+distance_num = int(distance)
 
 if distance_num <= 1400:
     distance_type = "short"
@@ -333,7 +327,6 @@ strong_horse = st.number_input(
     step=1
 )
 strong_horse_text = f"{strong_horse}番 {real_horses[strong_horse - 1]}"
-popular_horse_label = f"{strong_horse}番 {real_horses[strong_horse - 1]}"
 
 others = [
     horse for horse in numbered_horses
@@ -408,20 +401,7 @@ for horse in horses:
     score = 0
     front_keep_count = 0
     tare_count = 0
-    # 2〜4番手維持型を評価
-    first_positions = [flow[0] for flow in race_flows if len(flow) >= 2]
-    last_positions = [flow[-1] for flow in race_flows if len(flow) >= 2]
 
-    avg_first = sum(first_positions) / len(first_positions) if first_positions else 99
-    avg_last = sum(last_positions) / len(last_positions) if last_positions else 99
-
-    # 2〜4番手維持型
-    if 2 <= avg_first <= 4:
-        score += 300
-
-    # 中団から押し上げ型
-    if avg_first >= 5 and avg_last <= avg_first - 2:
-        score += 200
     if distance_num >= 1900:
         short_distance_count = len(re.findall(r"(?:右|左)?(?:800|900|1000|1200|1300|1400)", horse_text))
         long_distance_count = len(re.findall(r"(?:右|左)?(?:1600|1700|1800|1900|2000)", horse_text))
@@ -449,7 +429,7 @@ for horse in horses:
         recent_bonus = idx + 1
 
         # 1番グラファス型：前〜中団で流れに乗って大きく崩れない
-        if 2 <= first <= 6 and last <= 7 and max(flow) <= 7:
+        if first <= 6 and last <= 7 and max(flow) <= 7:
             score += 45 * recent_bonus
             front_keep_count += 1
 
@@ -501,6 +481,7 @@ long_spurt_candidates = [
 long_spurt_display_candidates = [
     h for h in long_spurt_candidates
     if h["馬番"] != front_best["馬番"]
+    and h["馬番"] != strong_horse
 ]
 if debug_mode:
     st.subheader("長く脚を使える馬スコア")
@@ -579,12 +560,12 @@ if strong_avg_first <= 2 and strong_avg_last <= 4:
 elif strong_avg_first <= 4 and strong_avg_last <= 5:
     kyakushoku_type = "前に行って押し切るタイプ"
 elif strong_avg_first >= 7:
-    kyakushoku_type = "流れひとつタイプ"
+    kyakushoku_type = "差してくるタイプ"
 else:
-    kyakushoku_type = "流れひとつタイプ"
+    kyakushoku_type = "先行気勢強めのタイプ"
 type_comment = {
     "前に行って押し切るタイプ": "",
-    "流れひとつタイプ": "流れ次第で浮上する人気馬です",
+    "差してくるタイプ": "後方から脚を使って伸びてくる人気馬です",
     "先行気勢強めのタイプ": "先頭で押し切る人気馬です",
 }
  
@@ -611,7 +592,7 @@ for horse in horses:
 
     avg_first = avg_nonzero(firsts)
     avg_last = avg_nonzero(lasts)
-    
+
     score = 0
     
     # 人気馬が前タイプ → 似た脚色で一緒に前で踏める馬
@@ -846,7 +827,7 @@ st.markdown(
         font-size:16px;
 font-weight:400;
     ">
-    ◎ 人気馬 {popular_horse_label}
+    ◎ 人気の馬 {strong_horse}番 {real_horses[strong_horse - 1]}
     （オッズは変わるので1番人気は適宜変更してください）
     </div>
     """,
@@ -854,7 +835,7 @@ font-weight:400;
 )
 
 # 三連複 軸2頭固定
-main_horses = [popular_horse_label, long_spurt_horse]
+main_horses = [f"{strong_horse}番 {real_horses[strong_horse - 1]}", long_spurt_horse]
 
 sub_candidates = [front_horse, tenkai_horse, ana_horse]
 
