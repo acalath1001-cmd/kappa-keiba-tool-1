@@ -754,13 +754,42 @@ total_best_horse = f"{total_best['馬番']}番 {total_best['馬名']}"
 used_for_ana = [
     strong_horse,
     tenkai_best["馬番"],
-    long_best["馬番"]
+    long_best["馬番"],
+    front_best["馬番"]  # 先行気勢1位とは被らせない
 ]
 
 ana_candidates = []
 
 for h in front_candidates:
     if h["馬番"] in used_for_ana:
+        continue
+
+    # 最後に垂れる馬は期待値馬から除外
+    target_horse = None
+    for horse in horses:
+        if horse["馬番"] == h["馬番"]:
+            target_horse = horse
+            break
+
+    is_tare = False
+
+    if target_horse:
+        flows = target_horse.get("通過順", [])
+        finishes = target_horse.get("着順", [])
+
+        for idx, flow in enumerate(flows):
+            if len(flow) < 2:
+                continue
+
+            last = flow[-1]
+            finish = finishes[idx] if idx < len(finishes) else None
+
+            # 4角前にいたのに着順が悪い馬
+            if finish is not None and last <= 4 and finish >= 6:
+                is_tare = True
+                break
+
+    if is_tare:
         continue
 
     ana_candidates.append({
@@ -902,59 +931,66 @@ if not tenkai_list:
 
 if not front_list:
     front_list = [front_horse]
-
-
 # 三連複2点
-st.subheader("三連複 軸2頭固定買い目")
+st.subheader("三連複 2点")
 
 trio_bets = []
 
-# 基本形
-# 1点目：人気馬 - 展開馬 - 期待値馬
-# 2点目：人気馬 - 展開馬 - 先行スコア2位
-third_pool = []
+popular = f"{strong_horse}番 {real_horses[strong_horse - 1]}"
+total_horse = total_best_horse
+long_horse = long_spurt_horse
+tenkai_horse_text = tenkai_horse
 
-third_pool += ana_list
-third_pool += front_list[1:]   # 先行スコア2位以降
-third_pool += long_list
-third_pool += front_list       # 足りない時の保険
+# 本線
+trio_patterns = [
+    [popular, long_horse, tenkai_horse_text],
+    [total_horse, long_horse, tenkai_horse_text],
 
-for tenkai in tenkai_list:
-    for third in third_pool:
-        trio_bets = add_unique_bet(
-            trio_bets,
-            [popular, tenkai, third],
-            max_count=2
-        )
+    # 被った時の保険
+    [popular, tenkai_horse_text, ana_horse],
+    [total_horse, tenkai_horse_text, ana_horse],
+    [popular, tenkai_horse_text, front_horse],
+    [total_horse, tenkai_horse_text, front_horse],
+    [popular, long_horse, ana_horse],
+    [total_horse, long_horse, ana_horse],
+]
 
-        if len(trio_bets) >= 2:
-            break
+for pattern in trio_patterns:
+    trio_bets = add_unique_bet(
+        trio_bets,
+        pattern,
+        max_count=2
+    )
 
     if len(trio_bets) >= 2:
         break
 
 for bet in trio_bets:
     st.write(f"{bet[0]} - {bet[1]} - {bet[2]}")
-
-
-# 資金を減らさないワイド2点
-st.subheader("資金を減らさないワイド2点")
+# ワイド2点
+st.subheader("ワイド 2点")
 
 wide_bets = []
 
-wide_axis = front_list[0]
+popular = f"{strong_horse}番 {real_horses[strong_horse - 1]}"
+total_horse = total_best_horse
+tenkai_horse_text = tenkai_horse
 
-wide_partner_pool = []
-wide_partner_pool += tenkai_list
-wide_partner_pool += [popular]
-wide_partner_pool += ana_list
-wide_partner_pool += long_list
-wide_partner_pool += front_list[1:]
+wide_patterns = [
+    [popular, tenkai_horse_text],
+    [total_horse, tenkai_horse_text],
 
-for partner in wide_partner_pool:
+    # 被った時の保険
+    [popular, long_spurt_horse],
+    [total_horse, long_spurt_horse],
+    [popular, ana_horse],
+    [total_horse, ana_horse],
+]
+
+for pattern in wide_patterns:
     wide_bets = add_unique_bet(
         wide_bets,
-        [wide_axis, partner],
+        pattern,
         max_count=2
     )
 
