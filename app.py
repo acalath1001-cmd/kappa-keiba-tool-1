@@ -565,8 +565,8 @@ def avg_nonzero(values):
         return 99
     return sum(values) / len(values)
 
-strong_firsts = [flow[0] for flow in strong_flows if len(flow) >= 4]
-strong_lasts = [flow[-1] for flow in strong_flows if len(flow) >= 4]
+strong_firsts = [flow[0] for flow in strong_flows if len(flow) >= 2]
+strong_lasts = [flow[-1] for flow in strong_flows if len(flow) >= 2]
 
 strong_avg_first = avg_nonzero(strong_firsts)
 strong_avg_last = avg_nonzero(strong_lasts)
@@ -656,12 +656,33 @@ for horse in horses:
         if avg_last <= 6:
             score += 20
 
-    # 人気馬が中団タイプ → 位置取りが近い馬
+    # 人気馬が流れひとつ型 → 前に行けて4角で残れる馬を評価
     else:
-        score -= abs(avg_first - strong_avg_first) * 3
-        score -= abs(avg_last - strong_avg_last) * 3
-        if 3 <= avg_first <= 8 and 3 <= avg_last <= 8:
-            score += 25
+        if avg_first <= 4:
+            score += 45
+
+        if avg_last <= 5:
+            score += 35
+
+        # 前半から4角まで大きく下がらない馬
+        if avg_last - avg_first <= 2:
+            score += 30
+
+        # 近走で逃げ・先行経験がある馬
+        recent_front_count = 0
+
+        for flow in race_flows[-3:]:
+            if len(flow) < 2:
+                continue
+
+            if flow[0] <= 3:
+                recent_front_count += 1
+
+        score += recent_front_count * 25
+
+        # 後方待機型は下げる
+        if avg_first >= 7:
+            score -= 40
 
     tenkai_candidates.append({
         "馬番": horse_no,
@@ -727,97 +748,50 @@ total_best_horse = f"{total_best['馬番']}番 {total_best['馬名']}"
 # 展開が向く馬と先行気勢の馬が同じなら、
 # 先行気勢の馬をスコア2位以降にずらす
 # 期待値高めおすすめ穴馬
-# 上記4頭（人気馬・前で長く脚・展開・先行気勢）以外から選ぶ
+# 穴馬は「前進気勢スコア3位」を採用する
+# ただし、人気馬・展開馬・長く脚の馬と被る場合は次点へずらす
 
-used_numbers = [
+used_for_ana = [
     strong_horse,
-    long_best["馬番"],
     tenkai_best["馬番"],
-    front_best["馬番"]
+    long_best["馬番"]
 ]
-# 穴馬候補では、ベストタイム持ちの馬は除外しない
 
 ana_candidates = []
 
-for horse in horses:
-    horse_no = horse["馬番"]
-    horse_name = horse["馬名"]
-    horse_text = horse.get("取得テキスト", "")
-    race_times = horse.get("走破タイム", [])
-    # ベストタイムを持っている馬は除外しない
-    # それ以外の重複馬だけ除外
-
-    ana_score = 0
-    time_score = 0
-    # 距離一致の持ちタイムを自動抽出して評価
-    # 例：1200mなら、horse_text内の1200付近にある 1:12.3 などを拾う
-    target_distance = distance
-
-    # 距離一致の持ちタイムを広めに拾う
-    best_time = None
-
-    for t in race_times:
-        minute, sec = t.split(":")
-        time_value = int(minute) * 60 + float(sec)
-        # 距離ごとの異常タイム除外
-        if distance_num == 1000:
-            if time_value < 58 or time_value > 66:
-                continue
-
-        elif distance_num == 1200:
-            if time_value < 65 or time_value > 90:
-                continue
-
-        elif distance_num == 1400:
-            if time_value < 80 or time_value > 110:
-                continue
-        if best_time is None or time_value < best_time:
-            best_time = time_value
-
-    # 穴馬は「直近5走の最高持ちタイム」に尖らせる
-    if best_time is not None:
-        time_score = int(10000 - best_time * 100)
-    else:
-        time_score = 0
-
-    ana_score += time_score
-    
-    # 穴馬は、すでに主要候補に出ている馬を除外
-    if horse_no in used_numbers:
+for h in front_candidates:
+    if h["馬番"] in used_for_ana:
         continue
+
     ana_candidates.append({
-        "馬番": horse_no,
-        "馬名": horse_name,
-        "ベストタイム": best_time,
-        "スコア": ana_score
+        "馬番": h["馬番"],
+        "馬名": h["馬名"],
+        "スコア": h["スコア"]
     })
 
-ana_candidates = sorted(
-    ana_candidates,
-    key=lambda x: x["スコア"],
-    reverse=True
-)
+# 候補が空なら、前進気勢候補から拾う
+if not ana_candidates and front_candidates:
+    for h in front_candidates:
+        ana_candidates.append({
+            "馬番": h["馬番"],
+            "馬名": h["馬名"],
+            "スコア": h["スコア"]
+        })
+
 if debug_mode:
     st.subheader("穴馬候補スコア")
     for h in ana_candidates:
-        horse_text = ""
-        for horse in horses:
-            if horse["馬番"] == h["馬番"]:
-                horse_text = horse.get("取得テキスト", "")
-                race_times = horse.get("走破タイム", [])
         st.write(
             f"{h['馬番']}番 {h['馬名']} "
-            f"｜穴スコア {h['スコア']} "
-            f"｜ベストタイム {h.get('ベストタイム')} "
-            f"｜距離一致 {distance in horse_text}"
+            f"｜前進気勢スコア {h['スコア']}"
         )
+
 if ana_candidates:
     ana_best = ana_candidates[0]
 else:
     ana_best = front_candidates[0]
 
 ana_horse = f"{ana_best['馬番']}番 {ana_best['馬名']}"
-
 st.subheader("人気馬の脚色タイプ")
 
 st.markdown(
@@ -853,18 +827,6 @@ font-weight:400;
     """,
     unsafe_allow_html=True
 )
-
-# 三連複 軸2頭固定
-main_horses = [popular_horse_label, long_spurt_horse]
-
-sub_candidates = [front_horse, tenkai_horse, ana_horse]
-
-sub_horses = []
-for h in sub_candidates:
-    if h not in main_horses and h not in sub_horses:
-        sub_horses.append(h)
-
-sub_horses = sub_horses[:2]
 st.write(f"◉ 総合力1位 {total_best_horse}")
 st.caption("総合力上位候補")
 
