@@ -880,10 +880,10 @@ st.markdown(
 )
 st.caption("人気馬の脚色と合うタイプ")
 st.write(f"△ 先行気勢の強い馬\n{front_horse}")
-st.caption("積極的に前に行ける")
+st.caption("積極的に前に行けるタイプ")
 
-st.write(f"☆ 期待値高めおすすめ穴馬\n{ana_horse}")
-st.caption("人気以上に展開が向けば面白い")
+st.write(f"☆ 押さえておきたい馬\n{ana_horse}")
+st.caption("拾っておきたいタイプ")
 def get_num(horse_text):
     return int(horse_text.split("番")[0])
 
