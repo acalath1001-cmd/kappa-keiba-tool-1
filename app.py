@@ -705,8 +705,9 @@ for horse in horses:
     horse_name = horse["馬名"]
 
     total_score = (
-    front_score_map.get(horse_no, 0)
-    + long_score_map.get(horse_no, 0)
+        front_score_map.get(horse_no, 0) * 0.3
+        + long_score_map.get(horse_no, 0) * 0.5
+        + tenkai_score_map.get(horse_no, 0) * 0.2
     )
 
     total_candidates.append({
@@ -892,61 +893,111 @@ st.caption("積極的に前に行ける")
 
 st.write(f"☆ 期待値高めおすすめ穴馬\n{ana_horse}")
 st.caption("人気以上に展開が向けば面白い")
+def get_num(horse_text):
+    return int(horse_text.split("番")[0])
+
+def add_unique_bet(bets, bet, max_count=2):
+    nums = [get_num(h) for h in bet]
+
+    # 1つの買い目内で同じ馬がいたら除外
+    if len(nums) != len(set(nums)):
+        return bets
+
+    # 同じ買い目の重複を除外
+    bet_key = tuple(sorted(nums))
+    existing_keys = [
+        tuple(sorted(get_num(h) for h in b))
+        for b in bets
+    ]
+
+    if bet_key not in existing_keys and len(bets) < max_count:
+        bets.append(bet)
+
+    return bets
+
+def candidate_text_list(candidates):
+    result = []
+    for h in candidates:
+        text = f"{h['馬番']}番 {h['馬名']}"
+        if text not in result:
+            result.append(text)
+    return result
+
+
+popular = f"{strong_horse}番 {real_horses[strong_horse - 1]}"
+
+tenkai_list = candidate_text_list(tenkai_candidates)
+front_list = candidate_text_list(front_candidates)
+ana_list = candidate_text_list(ana_candidates)
+long_list = candidate_text_list(long_spurt_candidates)
+
+# 念のため空なら現在の選出馬を入れる
+if not ana_list:
+    ana_list = [ana_horse]
+
+if not tenkai_list:
+    tenkai_list = [tenkai_horse]
+
+if not front_list:
+    front_list = [front_horse]
+
+
+# 三連複2点
 st.subheader("三連複 軸2頭固定買い目")
 
-strong_horse_name = f"{strong_horse}番 {real_horses[strong_horse - 1]}"
+trio_bets = []
 
-# 三連複は 人気馬 + 総合力1位 を軸にする
-if total_best["馬番"] != strong_horse:
-    main_horses = [strong_horse_name, total_best_horse]
-else:
-    main_horses = [strong_horse_name, long_spurt_horse]
+# 基本形
+# 1点目：人気馬 - 展開馬 - 期待値馬
+# 2点目：人気馬 - 展開馬 - 先行スコア2位
+third_pool = []
 
-sub_candidates = [
-    front_horse,
-    tenkai_horse,
-    ana_horse
-]
+third_pool += ana_list
+third_pool += front_list[1:]   # 先行スコア2位以降
+third_pool += long_list
+third_pool += front_list       # 足りない時の保険
 
-sub_horses = []
+for tenkai in tenkai_list:
+    for third in third_pool:
+        trio_bets = add_unique_bet(
+            trio_bets,
+            [popular, tenkai, third],
+            max_count=2
+        )
 
-for h in sub_candidates:
-    h_num = int(h.split("番")[0])
-    if h_num != strong_horse and h not in main_horses and h not in sub_horses:
-        sub_horses.append(h)
+        if len(trio_bets) >= 2:
+            break
 
-sub_horses = sub_horses[:2]
+    if len(trio_bets) >= 2:
+        break
 
-for h in sub_horses:
-    st.write(f"{main_horses[0]} - {main_horses[1]} - {h}")
+for bet in trio_bets:
+    st.write(f"{bet[0]} - {bet[1]} - {bet[2]}")
 
-s= front_horse
 
 # 資金を減らさないワイド2点
 st.subheader("資金を減らさないワイド2点")
 
-wide_axis = front_horse
+wide_bets = []
 
-wide_candidates = [
-    tenkai_horse,
-    long_spurt_horse,
-    ana_horse
-]
-strong_horse_name = ""
+wide_axis = front_list[0]
 
-for horse in horses:
-    if horse["馬番"] == strong_horse:
-        strong_horse_name = horse["馬名"]
+wide_partner_pool = []
+wide_partner_pool += tenkai_list
+wide_partner_pool += [popular]
+wide_partner_pool += ana_list
+wide_partner_pool += long_list
+wide_partner_pool += front_list[1:]
 
-strong_horse_text = f"{strong_horse}番 {strong_horse_name}"
-wide_partners = []
+for partner in wide_partner_pool:
+    wide_bets = add_unique_bet(
+        wide_bets,
+        [wide_axis, partner],
+        max_count=2
+    )
 
-# 展開が向く馬を追加
-if tenkai_horse != wide_axis:
-    wide_partners.append(tenkai_horse)
+    if len(wide_bets) >= 2:
+        break
 
-# 強い馬を追加
-if strong_horse_text != wide_axis and strong_horse_text not in wide_partners:
-    wide_partners.append(strong_horse_text)
-for h in wide_partners:
-    st.write(f"{wide_axis} - {h}")
+for bet in wide_bets:
+    st.write(f"{bet[0]} - {bet[1]}")
