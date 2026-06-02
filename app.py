@@ -610,7 +610,7 @@ for horse in horses:
             front_pressure_count += 1
             break
 
-front_collapse_warning = front_pressure_count >= 4
+front_collapse_warning = front_pressure_count >= 5
 
 # 人気馬の脚色タイプを判定し、脚色が合う馬を選ぶ
 
@@ -633,14 +633,24 @@ if strong_avg_first <= 2 and strong_avg_last <= 4:
 # 前で踏み続けるタイプ
 elif strong_avg_first <= 4 and strong_avg_last <= 5:
     kyakushoku_type = "前に行って押し切るタイプ"
+
+# 差してくるタイプ：後ろから4角で押し上げる
+elif strong_avg_first >= 5 and strong_avg_last < strong_avg_first:
+    kyakushoku_type = "差してくるタイプ"
+
+# 後方寄りで押し上げも弱い
 elif strong_avg_first >= 7:
-    kyakushoku_type = "流れひとつタイプ"
+    kyakushoku_type = "後方待機タイプ"
+
+# どっちにも寄り切らない
 else:
     kyakushoku_type = "流れひとつタイプ"
 type_comment = {
     "前に行って押し切るタイプ": "",
     "流れひとつタイプ": "流れ次第で浮上する人気馬です",
     "先行気勢強めのタイプ": "先頭で押し切る人気馬です",
+    "差してくるタイプ": "後ろから押し上げる人気馬です",
+    "後方待機タイプ": "展開待ちの人気馬です",
 }
  
 # 人気馬が差してくるタイプなのに先行気勢1位にも出る場合は、
@@ -676,7 +686,7 @@ for horse in horses:
         if avg_first <= 6 and avg_last <= 6:
             score += 30
     # 前に行きたい馬が多い時は、脚を使い直せる馬を評価する
-    if front_collapse_warning:
+    elif front_collapse_warning:
         comeback_count = 0
 
         for flow in race_flows:
