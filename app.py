@@ -54,7 +54,7 @@ def calc_front_score(horse_no, race_flows, finish_positions=None):
     return score
 st.set_page_config(
     page_title="地方競馬予想ツール",
-    page_icon="🐎",
+    page_icon="favicon.png",
     layout="centered"
 )
 
