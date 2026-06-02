@@ -681,10 +681,57 @@ for horse in horses:
     
     # 人気馬が前タイプ → 似た脚色で一緒に前で踏める馬
     if kyakushoku_type == "前に行って押し切るタイプ":
-        score -= abs(avg_first - strong_avg_first) * 3
-        score -= abs(avg_last - strong_avg_last) * 3
+        score -= abs(avg_first - strong_avg_first) * 1.5
+        score -= abs(avg_last - strong_avg_last) * 1.5
+    # 地味馬ボーナス（前に行った時に踏ん張れる馬）
+
+        flows = horse.get("通過順", [])
+        finishes = horse.get("着順", [])
+
+        good_finish = 0
+        bad_finish = 0
+
+        for idx, flow in enumerate(flows):
+            if idx >= len(finishes):
+                continue
+
+            finish = finishes[idx]
+
+            if len(flow) < 2:
+                continue
+
+            first = flow[0]
+
+            # 前に行ったレース
+            if first <= 4:
+
+                if finish <= 5:
+                    good_finish += 1
+
+                elif finish >= 8:
+                    bad_finish += 1
+
+        score += good_finish * 25
+        score -= bad_finish * 25
         if avg_first <= 6 and avg_last <= 6:
             score += 30
+            # 前にいたのに着順が悪い馬は減点
+            for idx, flow in enumerate(flows):
+                if idx >= len(finishes):
+                    continue
+
+                finish = finishes[idx]
+
+                if len(flow) < 2:
+                    continue
+
+                last = flow[-1]
+
+                if last <= 4 and finish >= 6:
+                    score -= 35
+
+                if last <= 3 and finish >= 8:
+                    score -= 60
     # 前に行きたい馬が多い時は、脚を使い直せる馬を評価する
     elif front_collapse_warning:
         comeback_count = 0
@@ -748,7 +795,16 @@ for horse in horses:
         # 後方待機型は下げる
         if avg_first >= 7:
             score -= 40
-
+        # ほんのり内枠補正：4角である程度前に来れる馬だけ
+    if avg_last <= 5:
+        if horse_no == 1:
+            score += 4
+        elif horse_no == 2:
+            score += 3.5
+        elif horse_no == 3:
+            score += 3
+        elif horse_no <= 5:
+            score += 1.5
     tenkai_candidates.append({
         "馬番": horse_no,
         "馬名": horse_name,
@@ -791,9 +847,8 @@ for horse in horses:
     horse_name = horse["馬名"]
 
     total_score = (
-        front_score_map.get(horse_no, 0) * 0.3
-        + long_score_map.get(horse_no, 0) * 0.5
-        + tenkai_score_map.get(horse_no, 0) * 0.2
+    front_score_map.get(horse_no, 0) * 0.15
+    + long_score_map.get(horse_no, 0) * 0.85
     )
     horse_text = horse.get("取得テキスト", "")
 
@@ -808,7 +863,28 @@ for horse in horses:
 
     if jra_transfer:
         total_score += 30
+        flows = horse.get("通過順", [])
+    finishes = horse.get("着順", [])
 
+    for idx, flow in enumerate(flows):
+        if len(flow) < 2:
+            continue
+
+        first = flow[0]
+        last = flow[-1]
+        finish = finishes[idx] if idx < len(finishes) else None
+
+        # 逃げたのに大敗
+        if first <= 2 and finish is not None and finish >= 7:
+            total_score -= 80
+
+        # 前半から4角で大きく後退
+        if first <= 3 and last - first >= 4:
+            total_score -= 60
+
+        # 4角前にいたのに着順が悪い
+        if last <= 4 and finish is not None and finish >= 7:
+            total_score -= 70
     total_candidates.append({
         "馬番": horse_no,
         "馬名": horse_name,
