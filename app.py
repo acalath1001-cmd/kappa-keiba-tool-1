@@ -61,9 +61,34 @@ st.set_page_config(
 st.title("🐎 地方競馬AI")
 debug_mode = st.checkbox("デバッグ表示")
 
-url = st.text_input("出馬表URLを入力してください")
+if "race_url" not in st.session_state:
+    st.session_state.race_url = ""
+
+url = st.text_input(
+    "出馬表URLを入力してください",
+    value=st.session_state.race_url
+)
+
+col1, col2 = st.columns(2)
+
+with col1:
+    analyze = st.button("🔍 分析開始")
+if "analyzed" not in st.session_state:
+    st.session_state.analyzed = False
+with col2:
+    clear_url = st.button("🗑 URL削除")
+if analyze:
+    st.session_state.analyzed = True
+if clear_url:
+    st.session_state.race_url = ""
+    st.rerun()
+
+st.session_state.race_url = url
+if not st.session_state.analyzed:
+    st.stop()
 
 if not url:
+    st.warning("出馬表URLを入力してください")
     st.stop()
 
 st.write("分析開始...")
@@ -103,16 +128,54 @@ race_date = params.get("k_raceDate", ["不明"])[0]
 
 print(f"レース番号：{race_no}R")
 print(f"開催日：{race_date}")
-distance = st.text_input("距離を入力してください（例 1400）:")
 
-if not distance:
-    st.stop()
+
+
+
+print("◎ 本命候補")
+print("○ 対抗候補")
+print("▲ 穴候補")
+print(url)
+response = requests.get(url)
+soup = BeautifulSoup(response.text, "html.parser")
+
+print("ページ取得成功")
+page_text = soup.get_text(" ", strip=True)
+distance_match = re.search(
+    r"([０-９0-9]{3,4})\s*(?:m|ｍ|メートル)",
+    page_text
+)
+
+if distance_match:
+    distance = distance_match.group(1)
+    distance = distance.translate(
+        str.maketrans("０１２３４５６７８９", "0123456789")
+    )
+
+    baba_name = "競馬場不明"
+
+    for code, name in keibajo.items():
+        if f"k_babaCode={code}" in url:
+            baba_name = name.replace("競馬", "")
+            break
+
+    st.success(
+        f"距離を自動取得しました：{baba_name}{race_no}R　{distance}m戦"
+    )
+
+else:
+    distance = st.text_input("距離を入力してください（例 1400）:")
+
+    if not distance:
+        st.warning("距離が自動取得できませんでした。手入力してください。")
+        st.stop()
+
 course_name = ""
 
 print(f"{distance}m戦")
+
 # 距離カテゴリ
 distance_num = int(distance) if str(distance).isdigit() else 1400
-
 if distance_num <= 1400:
     distance_type = "short"
 
@@ -121,6 +184,7 @@ elif distance_num <= 1800:
 
 else:
     distance_type = "long"
+
 if distance == "1400":
     print("前有利コース")
 
@@ -132,15 +196,6 @@ elif distance == "1800":
 
 else:
     print("データ不足")
-print("◎ 本命候補")
-print("○ 対抗候補")
-print("▲ 穴候補")
-print(url)
-response = requests.get(url)
-soup = BeautifulSoup(response.text, "html.parser")
-
-print("ページ取得成功")
-
 st.write("出走馬一覧")
 horse_list = []
 
@@ -730,6 +785,19 @@ for horse in horses:
         + long_score_map.get(horse_no, 0) * 0.5
         + tenkai_score_map.get(horse_no, 0) * 0.2
     )
+    horse_text = horse.get("取得テキスト", "")
+
+    jra_transfer = any(
+        place in horse_text
+        for place in [
+            "東京", "中山", "京都", "阪神",
+            "中京", "新潟", "福島",
+            "小倉", "札幌", "函館"
+        ]
+    )
+
+    if jra_transfer:
+        total_score += 30
 
     total_candidates.append({
         "馬番": horse_no,
@@ -932,7 +1000,7 @@ if not tenkai_list:
 if not front_list:
     front_list = [front_horse]
 # 三連複2点
-st.subheader("三連複 2点")
+st.subheader("おすすめの三連複 2点")
 
 trio_bets = []
 
@@ -968,7 +1036,7 @@ for pattern in trio_patterns:
 for bet in trio_bets:
     st.write(f"{bet[0]} - {bet[1]} - {bet[2]}")
 # ワイド2点
-st.subheader("ワイド 2点")
+st.subheader("おすすめのワイド 2点")
 
 wide_bets = []
 
@@ -977,14 +1045,17 @@ total_horse = total_best_horse
 tenkai_horse_text = tenkai_horse
 
 wide_patterns = [
+    # 本線：人気馬 × 展開馬
     [popular, tenkai_horse_text],
-    [total_horse, tenkai_horse_text],
+
+    # 保険：総合力1位 × 押さえておきたい馬
+    [total_horse, ana_horse],
 
     # 被った時の保険
     [popular, long_spurt_horse],
     [total_horse, long_spurt_horse],
     [popular, ana_horse],
-    [total_horse, ana_horse],
+    [total_horse, tenkai_horse_text],
 ]
 
 for pattern in wide_patterns:
@@ -999,3 +1070,6 @@ for pattern in wide_patterns:
 
 for bet in wide_bets:
     st.write(f"{bet[0]} - {bet[1]}")
+st.caption(
+"※買い目の一例です。最終判断はオッズや馬場を見て調整してください。"
+)
