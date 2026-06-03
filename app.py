@@ -468,6 +468,7 @@ if not front_candidates:
     st.stop()
 
 front_best = front_candidates[0]
+
 front_horse = f"{front_best['馬番']}番 {front_best['馬名']}"
 
 long_spurt_candidates = []
@@ -1069,6 +1070,11 @@ total_candidates = sorted(
 
 total_best = total_candidates[0]
 total_best_horse = f"{total_best['馬番']}番 {total_best['馬名']}"
+# 総合力1位と先行気勢が被ったら、遊び心で先行気勢4位を採用
+if front_best["馬番"] == total_best["馬番"]:
+    if len(front_candidates) >= 4:
+        front_best = front_candidates[3]
+        front_horse = f"{front_best['馬番']}番 {front_best['馬名']}"
 if debug_mode:
     st.subheader("総合力ランキング")
 
