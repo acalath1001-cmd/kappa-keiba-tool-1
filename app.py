@@ -380,19 +380,28 @@ for i, horse in enumerate(real_horses, start=1):
 
 top_popular = numbered_horses
 
-strong_horse = st.number_input(
-    "◎ 人気馬番号",
+st.markdown("### 🎯 最初に軸馬を番号で選んでください")
+
+popular_horse_num = st.number_input(
+    "軸馬の馬番",
     min_value=1,
-    max_value=len(real_horses),
+    max_value=18,
     value=1,
     step=1
 )
-strong_horse_text = f"{strong_horse}番 {real_horses[strong_horse - 1]}"
-popular_horse_label = f"{strong_horse}番 {real_horses[strong_horse - 1]}"
+
+st.info(
+    "※オッズは変動するため、現在の1番人気や\n"
+    "自分が来ると思う馬を選択してください。\n\n"
+    "※選択した馬を中心に展開分析と\n"
+    "買い目を表示します。"
+)
+popular_horse_num_text = f"{popular_horse_num}番 {real_horses[popular_horse_num - 1]}"
+popular_horse_label = f"{popular_horse_num}番 {real_horses[popular_horse_num - 1]}"
 
 others = [
     horse for horse in numbered_horses
-    if horse != strong_horse_text
+    if horse != popular_horse_num_text
 ]
 # ランダム選出を廃止
 yosou = others
@@ -446,7 +455,16 @@ if debug_mode:
             f"｜4角 {h['4角位置']}"
         )
 if not front_candidates:
-    st.error("前進気勢の評価データが取れていません")
+    st.info(
+        """
+🐎 新馬戦
+
+過去レースデータが無いため、
+前進気勢・地力・展開分析は行えません。
+
+オッズ・馬体重・騎手を参考にしてください。
+        """
+    )
     st.stop()
 
 front_best = front_candidates[0]
@@ -662,8 +680,8 @@ pre_total_candidates = sorted(
 pre_total_best = pre_total_candidates[0]
 # 展開が向く馬：人気馬の脚色と合う馬を選ぶ
 
-# 展開馬は総合力1位の脚色から算出する
-base_horse_no = pre_total_best["馬番"]
+# 展開馬は、使用者が選んだ人気馬の脚色から算出する
+base_horse_no = popular_horse_num
 
 strong_data = None
 
@@ -740,9 +758,9 @@ type_comment = {
  
 # 人気馬が差してくるタイプなのに先行気勢1位にも出る場合は、
 # 先行気勢の馬を次点候補にずらす
-if kyakushoku_type == "差してくるタイプ" and front_best["馬番"] == strong_horse:
+if kyakushoku_type == "差してくるタイプ" and front_best["馬番"] == popular_horse_num:
     for h in front_candidates:
-        if h["馬番"] != strong_horse:
+        if h["馬番"] != popular_horse_num:
             front_best = h
             front_horse = f"{front_best['馬番']}番 {front_best['馬名']}"
             break
@@ -1147,7 +1165,7 @@ st.markdown(
         font-weight:400;
         margin-bottom:10px;
     ">
-    <b>{strong_horse}番 {real_horses[strong_horse - 1]}</b><br>
+    <b>{popular_horse_num}番 {real_horses[popular_horse_num - 1]}</b><br>
     人気馬：<b>{kyakushoku_type}</b><br>
     </div>
     """,
@@ -1228,7 +1246,7 @@ def candidate_text_list(candidates):
     return result
 
 
-popular = f"{strong_horse}番 {real_horses[strong_horse - 1]}"
+popular = f"{popular_horse_num}番 {real_horses[popular_horse_num - 1]}"
 
 tenkai_list = candidate_text_list(tenkai_candidates)
 front_list = candidate_text_list(front_candidates)
@@ -1249,7 +1267,7 @@ st.subheader("おすすめの三連複 2点")
 
 trio_bets = []
 
-popular = f"{strong_horse}番 {real_horses[strong_horse - 1]}"
+popular = f"{popular_horse_num}番 {real_horses[popular_horse_num - 1]}"
 total_horse = total_best_horse
 long_horse = long_spurt_horse
 tenkai_horse_text = tenkai_horse
@@ -1282,7 +1300,7 @@ st.subheader("おすすめのワイド 2点")
 
 wide_bets = []
 
-popular = f"{strong_horse}番 {real_horses[strong_horse - 1]}"
+popular = f"{popular_horse_num}番 {real_horses[popular_horse_num - 1]}"
 total_horse = total_best_horse
 tenkai_horse_text = tenkai_horse
 
