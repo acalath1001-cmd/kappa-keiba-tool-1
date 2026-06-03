@@ -25,11 +25,11 @@ def calc_front_score(horse_no, race_flows, finish_positions=None):
         elif first <= 4:
             score += 5
 
-        # 4角でも前にいる
-        if last <= 4:
-            score += 15
-        elif last <= 6:
-            score += 7
+        # 前進気勢は4角ではなく、序盤の位置取りを重視する
+        if first <= 2:
+            score += 20
+        elif first <= 4:
+            score += 10
 
         # 順位を保つ・上げる
         if last <= first:
@@ -261,7 +261,7 @@ for t in texts:
 import re
 
 page_text = soup.get_text(" ", strip=True)
-pattern = r"(?:^|\s)(?:[1-8]\s+)?([1-9][0-9]?)\s+([ァ-ヴー]{3,})\s+"
+pattern = r"(?:^|\s)(?:[1-8]\s+)?([1-9][0-9]?)\s+([ァ-ヴー]{2,})\s+"
 
 matches = re.findall(pattern, page_text)
 
@@ -517,7 +517,21 @@ for horse in horses:
         if last - first >= 3:
             score -= 80 * recent_bonus
             tare_count += 1
+        # 4角では前にいたのに、着順で垂れた馬を地力評価から下げる
+        finishes = horse.get("着順", [])
+        finish = finishes[idx] if idx < len(finishes) else None
 
+        if finish is not None:
+            drop = finish - last
+
+            if drop >= 5:
+                score -= 100 * recent_bonus
+                tare_count += 1
+            elif drop >= 3:
+                score -= 60 * recent_bonus
+                tare_count += 1
+            elif drop >= 2:
+                score -= 30 * recent_bonus
         # 3角までは前、4角で急に下がる馬を強く減点
         if third <= 4 and last - third >= 3:
             score -= 120 * recent_bonus
@@ -581,13 +595,80 @@ if not long_spurt_candidates:
 
 long_best = long_spurt_display_candidates[0]
 long_spurt_horse = f"{long_best['馬番']}番 {long_best['馬名']}"
+# 仮の総合力1位を先に決める
+front_score_map = {h["馬番"]: h["スコア"] for h in front_candidates}
+long_score_map = {h["馬番"]: h["スコア"] for h in long_spurt_candidates}
 
+pre_total_candidates = []
+
+for horse in horses:
+    horse_no = horse["馬番"]
+    horse_name = horse["馬名"]
+
+    pre_total_score = 0
+
+    pre_total_score += long_score_map.get(horse_no, 0) * 0.25
+    pre_total_score += front_score_map.get(horse_no, 0) * 0.10
+
+    race_times = horse.get("走破タイム", [])
+    time_seconds = []
+
+    for t in race_times:
+        try:
+            minutes, seconds = t.split(":")
+            total_seconds = int(minutes) * 60 + float(seconds)
+            time_seconds.append(total_seconds)
+        except:
+            pass
+
+    if time_seconds:
+        best_time = min(time_seconds)
+        pre_total_score += max(0, 200 - best_time) * 3
+
+    finishes = horse.get("着順", [])
+
+    for finish in finishes:
+        if finish <= 3:
+            pre_total_score += 40
+        elif finish <= 5:
+            pre_total_score += 20
+        elif finish >= 8:
+            pre_total_score -= 30
+
+    if finishes:
+        avg_finish = sum(finishes) / len(finishes)
+
+        if avg_finish <= 3:
+            pre_total_score += 100
+        elif avg_finish <= 5:
+            pre_total_score += 60
+        elif avg_finish <= 7:
+            pre_total_score += 20
+        elif avg_finish >= 8:
+            pre_total_score -= 50
+
+    pre_total_candidates.append({
+        "馬番": horse_no,
+        "馬名": horse_name,
+        "総合スコア": pre_total_score
+    })
+
+pre_total_candidates = sorted(
+    pre_total_candidates,
+    key=lambda x: x["総合スコア"],
+    reverse=True
+)
+
+pre_total_best = pre_total_candidates[0]
 # 展開が向く馬：人気馬の脚色と合う馬を選ぶ
+
+# 展開馬は総合力1位の脚色から算出する
+base_horse_no = pre_total_best["馬番"]
 
 strong_data = None
 
 for horse in horses:
-    if horse["馬番"] == strong_horse:
+    if horse["馬番"] == base_horse_no:
         strong_data = horse
         break
 
@@ -610,7 +691,11 @@ for horse in horses:
             front_pressure_count += 1
             break
 
-front_collapse_warning = front_pressure_count >= 5
+runner_count = len(horses)
+
+front_collapse_warning = (
+    front_pressure_count >= max(6, int(runner_count * 0.6))
+)
 
 # 人気馬の脚色タイプを判定し、脚色が合う馬を選ぶ
 
@@ -668,7 +753,7 @@ for horse in horses:
     horse_name = horse["馬名"]
     race_flows = horse["通過順"]
 
-    if horse_no == strong_horse:
+    if horse_no == base_horse_no:
         continue
 
     firsts = [flow[0] for flow in race_flows if len(flow) >= 2]
@@ -846,10 +931,76 @@ for horse in horses:
     horse_no = horse["馬番"]
     horse_name = horse["馬名"]
 
-    total_score = (
-    front_score_map.get(horse_no, 0) * 0.15
-    + long_score_map.get(horse_no, 0) * 0.85
-    )
+    total_score = 0
+
+    # 地力は少しだけ反映
+    total_score += long_score_map.get(horse_no, 0) * 0.25
+
+    # 前進気勢も少しだけ
+    total_score += front_score_map.get(horse_no, 0) * 0.10
+    # 走破タイムが速い馬を総合力に加点
+    race_times = horse.get("走破タイム", [])
+
+    time_seconds = []
+
+    for t in race_times:
+        try:
+            minutes, seconds = t.split(":")
+            total_seconds = int(minutes) * 60 + float(seconds)
+            time_seconds.append(total_seconds)
+        except:
+            pass
+
+    if time_seconds:
+        best_time = min(time_seconds)
+
+        # 距離一致タイムがある馬の数で、持ちタイム評価の強さを変える
+        distance_match_count = 0
+
+        for h in horses:
+            if h.get("走破タイム", []):
+                distance_match_count += 1
+
+        if distance_match_count >= len(horses) * 0.5:
+            time_weight = 3.0
+        elif distance_match_count >= 3:
+            time_weight = 1.8
+        elif distance_match_count >= 1:
+            time_weight = 0.8
+        else:
+            time_weight = 0
+
+        total_score += max(0, 200 - best_time) * time_weight
+    # 着順重視
+    finishes = horse.get("着順", [])
+
+    for finish in finishes:
+
+        if finish <= 3:
+            total_score += 40
+
+        elif finish <= 5:
+            total_score += 20
+
+        elif finish >= 8:
+            total_score -= 30
+
+    # 平均着順
+    if finishes:
+
+        avg_finish = sum(finishes) / len(finishes)
+
+        if avg_finish <= 3:
+            total_score += 100
+
+        elif avg_finish <= 5:
+            total_score += 60
+
+        elif avg_finish <= 7:
+            total_score += 20
+
+        elif avg_finish >= 8:
+            total_score -= 50
     horse_text = horse.get("取得テキスト", "")
 
     jra_transfer = any(
@@ -863,7 +1014,8 @@ for horse in horses:
 
     if jra_transfer:
         total_score += 30
-        flows = horse.get("通過順", [])
+
+    flows = horse.get("通過順", [])
     finishes = horse.get("着順", [])
 
     for idx, flow in enumerate(flows):
@@ -899,6 +1051,14 @@ total_candidates = sorted(
 
 total_best = total_candidates[0]
 total_best_horse = f"{total_best['馬番']}番 {total_best['馬名']}"
+if debug_mode:
+    st.subheader("総合力ランキング")
+
+    for h in total_candidates[:10]:
+        st.write(
+            f"{h['馬番']}番 {h['馬名']} "
+            f"｜総合スコア {round(h['総合スコア'], 1)}"
+        )
 # 展開が向く馬と先行気勢の馬が同じなら、
 # 先行気勢の馬をスコア2位以降にずらす
 # 期待値高めおすすめ穴馬
@@ -906,10 +1066,9 @@ total_best_horse = f"{total_best['馬番']}番 {total_best['馬名']}"
 # ただし、人気馬・展開馬・長く脚の馬と被る場合は次点へずらす
 
 used_for_ana = [
-    strong_horse,
-    tenkai_best["馬番"],
+    total_best["馬番"],
     long_best["馬番"],
-    front_best["馬番"]  # 先行気勢1位とは被らせない
+    front_best["馬番"]
 ]
 
 ana_candidates = []
@@ -1032,7 +1191,7 @@ st.markdown(
     """,
     unsafe_allow_html=True
 )
-st.caption("人気馬の脚色と合うタイプ")
+st.caption("総合力1位の脚色と合うタイプ")
 st.write(f"△ 先行気勢の強い馬\n{front_horse}")
 st.caption("積極的に前に行けるタイプ")
 
@@ -1097,16 +1256,13 @@ tenkai_horse_text = tenkai_horse
 
 # 本線
 trio_patterns = [
-    [popular, long_horse, tenkai_horse_text],
-    [total_horse, long_horse, tenkai_horse_text],
+    [total_horse, popular, tenkai_horse_text],
+    [total_horse, long_horse, ana_horse],
 
     # 被った時の保険
-    [popular, tenkai_horse_text, ana_horse],
     [total_horse, tenkai_horse_text, ana_horse],
-    [popular, tenkai_horse_text, front_horse],
-    [total_horse, tenkai_horse_text, front_horse],
-    [popular, long_horse, ana_horse],
-    [total_horse, long_horse, ana_horse],
+    [total_horse, long_horse, front_horse],
+    [total_horse, popular, ana_horse],
 ]
 
 for pattern in trio_patterns:
