@@ -1069,6 +1069,8 @@ total_candidates = sorted(
 )
 
 total_best = total_candidates[0]
+total_fourth = total_candidates[3]
+total_fourth_horse = f"{total_fourth['馬番']}番 {total_fourth['馬名']}"
 total_best_horse = f"{total_best['馬番']}番 {total_best['馬名']}"
 # 総合力1位と先行気勢が被ったら、遊び心で先行気勢4位を採用
 if front_best["馬番"] == total_best["馬番"]:
@@ -1158,6 +1160,13 @@ else:
     ana_best = front_candidates[0]
 
 ana_horse = f"{ana_best['馬番']}番 {ana_best['馬名']}"
+# 穴馬候補3位
+if len(ana_candidates) >= 3:
+    ana_third = ana_candidates[2]
+else:
+    ana_third = ana_candidates[-1]
+
+ana_third_horse = f"{ana_third['馬番']}番 {ana_third['馬名']}"
 st.subheader("人気馬の脚色タイプ")
 
 st.markdown(
@@ -1279,6 +1288,10 @@ long_horse = long_spurt_horse
 tenkai_horse_text = tenkai_horse
 
 # 本線
+henna_ba_active = (
+    total_best["馬番"] == long_best["馬番"]
+    and total_best["馬番"] == popular_horse_num
+)
 trio_patterns = [
     [total_horse, popular, tenkai_horse_text],
     [total_horse, long_horse, ana_horse],
@@ -1287,7 +1300,22 @@ trio_patterns = [
     [total_horse, tenkai_horse_text, ana_horse],
     [total_horse, long_horse, front_horse],
     [total_horse, popular, ana_horse],
+
+    [total_horse, tenkai_horse_text, front_horse],
+    [popular, tenkai_horse_text, front_horse],
+
+    # 2点目用：穴馬候補スコア3位
+    [total_horse, tenkai_horse_text, ana_third_horse],
+    [popular, tenkai_horse_text, ana_third_horse],
 ]
+if henna_ba_active:
+        trio_patterns.append(
+            [
+                popular,
+                ana_third_horse,
+                total_fourth_horse
+            ]
+        )
 
 for pattern in trio_patterns:
     trio_bets = add_unique_bet(
@@ -1322,7 +1350,9 @@ wide_patterns = [
     [total_horse, long_spurt_horse],
     [popular, ana_horse],
     [total_horse, tenkai_horse_text],
-]
+    [front_horse, tenkai_horse_text],
+    [front_horse, ana_horse],
+    ]
 
 for pattern in wide_patterns:
     wide_bets = add_unique_bet(
