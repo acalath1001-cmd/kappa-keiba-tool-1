@@ -381,7 +381,7 @@ for i, horse in enumerate(real_horses, start=1):
     # 出走取消・競走除外判定
     is_scratched = any(
         word in horse_text
-        for word in ["取消", "出走取消", "競走除外", "除外"]
+        for word in ["出走取消", "競走除外", "出走除外"]
     )
     horses.append({
         "馬番": i,
@@ -625,7 +625,9 @@ for horse in horses:
 
     score += front_keep_count * 60
     score -= tare_count * 180
-
+    # 望月騎手補正
+    if "望月" in horse_text:
+        score += 80
     long_spurt_candidates.append({
         "馬番": horse_no,
         "馬名": horse_name,
