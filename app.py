@@ -1205,7 +1205,8 @@ if debug_mode:
 used_for_ana = [
     total_best["馬番"],
     long_best["馬番"],
-    front_best["馬番"]
+    front_best["馬番"], 
+    tenkai_best["馬番"], 
 ]
 
 ana_candidates = []
@@ -1335,7 +1336,7 @@ st.markdown(
     """,
     unsafe_allow_html=True
 )
-st.caption("総合力1位の脚色と合うタイプ")
+st.caption("人気馬の脚色と合うタイプ")
 st.write(f"△ 先行気勢の強い馬\n{front_horse}")
 st.caption("積極的に前に行けるタイプ")
 
