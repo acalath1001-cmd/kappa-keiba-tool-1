@@ -383,10 +383,15 @@ for i, horse in enumerate(real_horses, start=1):
 
     finish_positions = finish_positions[-5:]
     corner_positions = [flow[-1] for flow in race_flows]
-
+    # 出走取消・競走除外判定
+    is_scratched = any(
+        word in horse_text
+        for word in ["取消", "出走取消", "競走除外", "除外"]
+    )
     horses.append({
         "馬番": i,
         "馬名": horse,
+        "取消除外": is_scratched,
         "4角位置": corner_positions,
         "通過順": race_flows,
         "走破タイム": race_times,
@@ -395,9 +400,19 @@ for i, horse in enumerate(real_horses, start=1):
         "望月騎手": "望月" in horse_text,
         "取得テキスト": horse_text,
         })
-for i, horse in enumerate(real_horses, start=1):
-        st.write(f"{i}番 {horse}")
 
+for h in horses:
+    if h.get("取消除外", False):
+        st.markdown(
+        f"<span style='color:red'>{h['馬番']}番 {h['馬名']}（競走除外）</span>",
+        unsafe_allow_html=True
+    )
+    else:
+        st.write(f"{h['馬番']}番 {h['馬名']}")
+horses = [
+    h for h in horses
+    if not h.get("取消除外", False)
+]
 # ランダム予想を廃止
 # ここからはスコア順で選出する
 
@@ -527,9 +542,6 @@ for horse in horses:
             score -= 700
         elif short_distance_count > long_distance_count:
             score -= 500
-
-    if "k_babaCode=24" in url and horse.get("望月騎手"):
-        score += 2
 
     for idx, flow in enumerate(race_flows):
         if len(flow) < 2:
@@ -1091,10 +1103,14 @@ for horse in horses:
     if not jra_transfer:
         total_score += long_score_map.get(horse_no, 0) * 0.25
     if jra_transfer:
-    # 実験用：JRA転入馬は加点だけ残して減点なし
+        # 実験用：JRA転入馬は加点だけ残して減点なし
         total_score += 30
-            
-
+    # 吉村智洋騎手補正
+    if "吉村" in horse_text and "智洋" in horse_text:
+        total_score += 35
+    # 望月洵輝騎手補正
+    if "望月" in horse_text:
+        total_score += 35
     if not jra_transfer:
 
         flows = horse.get("通過順", [])
