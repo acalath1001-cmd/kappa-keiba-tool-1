@@ -1222,7 +1222,7 @@ for h in front_candidates:
             target_horse = horse
             break
 
-    is_tare = False
+    ana_score = h["スコア"]
 
     if target_horse:
         flows = target_horse.get("通過順", [])
@@ -1235,28 +1235,19 @@ for h in front_candidates:
             last = flow[-1]
             finish = finishes[idx] if idx < len(finishes) else None
 
-            # 4角前にいたのに着順が悪い馬
+            # 4角前にいたのに着順が悪い馬は、除外せず減点だけ
             if finish is not None and last <= 4 and finish >= 6:
-                is_tare = True
-                break
+                ana_score -= 50
 
-    if is_tare:
-        continue
+            # 4角3番手以内から8着以下は強めに減点
+            if finish is not None and last <= 3 and finish >= 8:
+                ana_score -= 80
 
     ana_candidates.append({
         "馬番": h["馬番"],
         "馬名": h["馬名"],
-        "スコア": h["スコア"]
+        "スコア": ana_score
     })
-
-# 候補が空なら、前進気勢候補から拾う
-if not ana_candidates and front_candidates:
-    for h in front_candidates:
-        ana_candidates.append({
-            "馬番": h["馬番"],
-            "馬名": h["馬名"],
-            "スコア": h["スコア"]
-        })
 
 if debug_mode:
     st.subheader("穴馬候補スコア")
@@ -1420,8 +1411,8 @@ henna_ba_active = (
     and total_best["馬番"] == popular_horse_num
 )
 trio_patterns = [
-    [total_horse, popular, tenkai_horse_text],
-    [total_horse, long_horse, ana_horse],
+    [popular, tenkai_horse_text, ana_horse],
+    [total_horse, tenkai_horse_text, ana_horse],
 
     # 被った時の保険
     [total_horse, tenkai_horse_text, ana_horse],
