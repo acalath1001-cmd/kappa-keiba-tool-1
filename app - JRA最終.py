@@ -15,20 +15,24 @@ def calc_front_score(horse_no, race_flows, finish_positions=None):
         last = flow[-1]
         finish = finish_positions[idx] if idx < len(finish_positions) else None
 
-        # 前進気勢は1角の位置取りを重視する
+        # 本当に前に行く馬を評価
         if first == 1:
-            score += 50
-        elif first == 2:
             score += 40
-        elif first == 3:
-            score += 30
-        elif first == 4:
+
+        elif first == 2:
+            score += 25
+
+        elif first <= 4:
+            score += 5
+
+        # 前進気勢は4角ではなく、序盤の位置取りを重視する
+        if first <= 2:
             score += 20
-        elif first == 5:
+        elif first <= 4:
             score += 10
 
-        # 前に行った馬だけ、順位維持を評価
-        if first <= 5 and last <= first:
+        # 順位を保つ・上げる
+        if last <= first:
             score += 12
 
         # 通過順でズルズル下がる馬は減点
@@ -43,6 +47,7 @@ def calc_front_score(horse_no, race_flows, finish_positions=None):
             if last <= 3 and finish >= 8:
                 score -= 70
 
+            # 前で押し切った馬は加点
             if first <= 4 and last <= 4 and finish <= 3:
                 score += 25
 
@@ -324,7 +329,7 @@ for i, horse in enumerate(real_horses, start=1):
 
     # 距離一覧を取得
     distance_matches = re.findall(
-        r"(?:右|左|芝|ダ)(820|850|900|920|1000|1200|1300|1400|1500|1600|1700|1800|1900|2000|2100|2200)",
+        r"右(820|850|900|920|1000|1200|1300|1400|1500|1600|1700|1800|1900|2000|2100|2200)",
         horse_text
     )
 
@@ -378,15 +383,10 @@ for i, horse in enumerate(real_horses, start=1):
 
     finish_positions = finish_positions[-5:]
     corner_positions = [flow[-1] for flow in race_flows]
-    # 出走取消・競走除外判定
-    is_scratched = any(
-        word in horse_text
-        for word in ["取消", "出走取消", "競走除外", "除外"]
-    )
+
     horses.append({
         "馬番": i,
         "馬名": horse,
-        "取消除外": is_scratched,
         "4角位置": corner_positions,
         "通過順": race_flows,
         "走破タイム": race_times,
@@ -395,19 +395,9 @@ for i, horse in enumerate(real_horses, start=1):
         "望月騎手": "望月" in horse_text,
         "取得テキスト": horse_text,
         })
+for i, horse in enumerate(real_horses, start=1):
+        st.write(f"{i}番 {horse}")
 
-for h in horses:
-    if h.get("取消除外", False):
-        st.markdown(
-        f"<span style='color:red'>{h['馬番']}番 {h['馬名']}（競走除外）</span>",
-        unsafe_allow_html=True
-    )
-    else:
-        st.write(f"{h['馬番']}番 {h['馬名']}")
-horses = [
-    h for h in horses
-    if not h.get("取消除外", False)
-]
 # ランダム予想を廃止
 # ここからはスコア順で選出する
 
@@ -452,26 +442,6 @@ for horse in horses:
         horse["通過順"],
         horse.get("着順", [])
     )
-    # JRA転入馬は、前に行けた実績を少し評価する
-    horse_text = horse.get("取得テキスト", "")
-
-    jra_transfer = any(
-        word in horse_text
-        for word in [
-            "東京", "中山", "京都", "阪神",
-            "中京", "新潟", "福島",
-            "小倉", "札幌", "函館"
-        ]
-    )
-    if jra_transfer:
-        for flow in horse["通過順"]:
-            if len(flow) >= 2:
-                first = flow[0]
-
-                if first <= 4:
-                    front_score += 35
-                elif first <= 6:
-                    front_score += 15
     # 長距離では、短距離だけの先行実績を少し弱める
     if distance_num >= 1900:
         horse_text = horse.get("取得テキスト", "")
@@ -488,7 +458,7 @@ for horse in horses:
         "馬番": horse_no,
         "馬名": horse_name,
         "スコア": front_score,
-        "1角位置": [flow[0] for flow in horse["通過順"] if len(flow) >= 1]
+        "4角位置": corner_positions
     })
 
 front_candidates = sorted(
@@ -505,16 +475,7 @@ if debug_mode:
         st.write(
             f"{h['馬番']}番 {h['馬名']} "
             f"｜スコア {h['スコア']} "
-            f"｜1角 {h['1角位置']}"
-        )
-if debug_mode:
-    st.subheader("通過順確認")
-
-    for horse in horses:
-        st.write(
-            f"{horse['馬番']}番 {horse['馬名']} "
-            f"｜通過順 {horse['通過順']} "
-            f"｜着順 {horse['着順']}"
+            f"｜4角 {h['4角位置']}"
         )
 if not front_candidates:
     st.info(
@@ -566,6 +527,9 @@ for horse in horses:
             score -= 700
         elif short_distance_count > long_distance_count:
             score -= 500
+
+    if "k_babaCode=24" in url and horse.get("望月騎手"):
+        score += 2
 
     for idx, flow in enumerate(race_flows):
         if len(flow) < 2:
@@ -705,9 +669,7 @@ for horse in horses:
 
     race_times = horse.get("走破タイム", [])
     time_seconds = []
-    time_score = 0
-    best_time = None
-    time_weight = 0
+
     for t in race_times:
         try:
             minutes, seconds = t.split(":")
@@ -1045,16 +1007,14 @@ for horse in horses:
     distance_times = horse.get("距離付きタイム", [])
 
     time_seconds = []
-    time_score = 0
-    best_time = None
-    time_weight = 0
+
     for item in distance_times:
 
         race_distance = item["距離"]
 
         # 距離帯が近いものだけ採用
-        if distance_num >= 1500:
-            distance_ok = abs(race_distance - distance_num) <= 300
+        if distance_num >= 1900:
+            distance_ok = abs(race_distance - distance_num) <= 200
         else:
             distance_ok = abs(race_distance - distance_num) <= 100
 
@@ -1080,16 +1040,15 @@ for horse in horses:
                 distance_match_count += 1
 
         if distance_match_count >= len(horses) * 0.5:
-            time_weight = 2.2
+            time_weight = 1.5
         elif distance_match_count >= 3:
-            time_weight = 2.5
+            time_weight = 1.8
         elif distance_match_count >= 1:
-            time_weight = 1.2
+            time_weight = 0.8
         else:
             time_weight = 0
 
-        time_score = max(0, 200 - best_time) * time_weight
-        total_score += time_score
+        total_score += max(0, 200 - best_time) * time_weight
     # 着順重視（JRA馬はスキップ）
     if not jra_transfer:
 
@@ -1127,14 +1086,10 @@ for horse in horses:
     if not jra_transfer:
         total_score += long_score_map.get(horse_no, 0) * 0.25
     if jra_transfer:
-        # 実験用：JRA転入馬は加点だけ残して減点なし
+    # 実験用：JRA転入馬は加点だけ残して減点なし
         total_score += 30
-    # 吉村智洋騎手補正
-    if "吉村" in horse_text and "智洋" in horse_text:
-        total_score += 35
-    # 望月洵輝騎手補正
-    if "望月" in horse_text:
-        total_score += 35
+            
+
     if not jra_transfer:
 
         flows = horse.get("通過順", [])
@@ -1162,10 +1117,7 @@ for horse in horses:
     total_candidates.append({
         "馬番": horse_no,
         "馬名": horse_name,
-        "総合スコア": total_score,
-        "持ちタイムスコア": time_score,
-        "ベストタイム": best_time,
-        "タイム係数": time_weight
+        "総合スコア": total_score
     })
 
 total_candidates = sorted(
@@ -1186,13 +1138,10 @@ if front_best["馬番"] == total_best["馬番"]:
 if debug_mode:
     st.subheader("総合力ランキング")
 
-    for h in total_candidates:
+    for h in total_candidates[:10]:
         st.write(
             f"{h['馬番']}番 {h['馬名']} "
-            f"｜総合スコア {round(h['総合スコア'], 1)} "
-            f"｜持ちタイム {round(h['持ちタイムスコア'], 1)} "
-            f"｜ベスト {h['ベストタイム']} "
-            f"｜係数 {h['タイム係数']}"
+            f"｜総合スコア {round(h['総合スコア'], 1)}"
         )
 # 展開が向く馬と先行気勢の馬が同じなら、
 # 先行気勢の馬をスコア2位以降にずらす

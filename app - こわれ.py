@@ -3,19 +3,27 @@ import requests
 import re
 from bs4 import BeautifulSoup
 from urllib.parse import urlparse, parse_qs, urljoin
-def calc_front_score(horse_no, race_flows):
+def calc_front_score(horse_no, race_flows, finish_positions=None):
     score = 0
+    finish_positions = finish_positions or []
 
-    for flow in race_flows:
+    for idx, flow in enumerate(race_flows):
         if len(flow) < 2:
             continue
 
         first = flow[0]
         last = flow[-1]
+        finish = finish_positions[idx] if idx < len(finish_positions) else None
 
-        # 前に行ける
-        if first <= 4:
-            score += 10
+        # 本当に前に行く馬を評価
+        if first == 1:
+            score += 40
+
+        elif first == 2:
+            score += 25
+
+        elif first <= 4:
+            score += 5
 
         # 4角でも前にいる
         if last <= 4:
@@ -27,23 +35,60 @@ def calc_front_score(horse_no, race_flows):
         if last <= first:
             score += 12
 
-        # ズルズル下がる馬は減点
+        # 通過順でズルズル下がる馬は減点
         if last - first >= 3:
-            score -= 15
+            score -= 25
+
+        # 4角前にいたのに着順で垂れた馬を減点
+        if finish is not None:
+            if last <= 4 and finish >= 6:
+                score -= 40
+
+            if last <= 3 and finish >= 8:
+                score -= 70
+
+            # 前で押し切った馬は加点
+            if first <= 4 and last <= 4 and finish <= 3:
+                score += 25
 
     return score
 st.set_page_config(
     page_title="地方競馬予想ツール",
-    page_icon="🐎",
+    page_icon="favicon.png",
     layout="centered"
 )
 
 st.title("🐎 地方競馬AI")
 debug_mode = st.checkbox("デバッグ表示")
 
-url = st.text_input("出馬表URLを入力してください")
+if "race_url" not in st.session_state:
+    st.session_state.race_url = ""
+
+url = st.text_input(
+    "出馬表URLを入力してください",
+    value=st.session_state.race_url
+)
+
+col1, col2 = st.columns(2)
+
+with col1:
+    analyze = st.button("🔍 分析開始")
+if "analyzed" not in st.session_state:
+    st.session_state.analyzed = False
+with col2:
+    clear_url = st.button("🗑 URL削除")
+if analyze:
+    st.session_state.analyzed = True
+if clear_url:
+    st.session_state.race_url = ""
+    st.rerun()
+
+st.session_state.race_url = url
+if not st.session_state.analyzed:
+    st.stop()
 
 if not url:
+    st.warning("出馬表URLを入力してください")
     st.stop()
 
 st.write("分析開始...")
@@ -83,16 +128,54 @@ race_date = params.get("k_raceDate", ["不明"])[0]
 
 print(f"レース番号：{race_no}R")
 print(f"開催日：{race_date}")
-distance = st.text_input("距離を入力してください（例 1400）:")
 
-if not distance:
-    st.stop()
+
+
+
+print("◎ 本命候補")
+print("○ 対抗候補")
+print("▲ 穴候補")
+print(url)
+response = requests.get(url)
+soup = BeautifulSoup(response.text, "html.parser")
+
+print("ページ取得成功")
+page_text = soup.get_text(" ", strip=True)
+distance_match = re.search(
+    r"([０-９0-9]{3,4})\s*(?:m|ｍ|メートル)",
+    page_text
+)
+
+if distance_match:
+    distance = distance_match.group(1)
+    distance = distance.translate(
+        str.maketrans("０１２３４５６７８９", "0123456789")
+    )
+
+    baba_name = "競馬場不明"
+
+    for code, name in keibajo.items():
+        if f"k_babaCode={code}" in url:
+            baba_name = name.replace("競馬", "")
+            break
+
+    st.success(
+        f"距離を自動取得しました：{baba_name}{race_no}R　{distance}m戦"
+    )
+
+else:
+    distance = st.text_input("距離を入力してください（例 1400）:")
+
+    if not distance:
+        st.warning("距離が自動取得できませんでした。手入力してください。")
+        st.stop()
+
 course_name = ""
 
 print(f"{distance}m戦")
-# 距離カテゴリ
-distance_num = int(distance)
 
+# 距離カテゴリ
+distance_num = int(distance) if str(distance).isdigit() else 1400
 if distance_num <= 1400:
     distance_type = "short"
 
@@ -101,6 +184,7 @@ elif distance_num <= 1800:
 
 else:
     distance_type = "long"
+
 if distance == "1400":
     print("前有利コース")
 
@@ -112,15 +196,6 @@ elif distance == "1800":
 
 else:
     print("データ不足")
-print("◎ 本命候補")
-print("○ 対抗候補")
-print("▲ 穴候補")
-print(url)
-response = requests.get(url)
-soup = BeautifulSoup(response.text, "html.parser")
-
-print("ページ取得成功")
-
 st.write("出走馬一覧")
 horse_list = []
 
@@ -220,7 +295,8 @@ for i, horse in enumerate(real_horses, start=1):
                 # 次の馬の行に入ったら終了
                 if j > idx and i < len(real_horses):
                     next_horse = real_horses[i]
-                    if re.search(rf"(?:^|\s){i+1}\s+{next_horse}(?:\s|$)", nearby_text):
+
+                    if next_horse in nearby_text:
                         break
 
                 horse_text += nearby_text + "\n"
@@ -299,8 +375,14 @@ for i, horse in enumerate(real_horses, start=1):
         })
 for i, horse in enumerate(real_horses, start=1):
         st.write(f"{i}番 {horse}")
-        print("展開込み5頭")
+if debug_mode:
+    st.subheader("取得テキスト長")
 
+    for h in horses:
+        st.write(
+            f"{h['馬番']}番 {h['馬名']} "
+            f"｜文字数 {len(h['取得テキスト'])}"
+        )
 # ランダム予想を廃止
 # ここからはスコア順で選出する
 
@@ -314,6 +396,7 @@ strong_horse = st.number_input(
     step=1
 )
 strong_horse_text = f"{strong_horse}番 {real_horses[strong_horse - 1]}"
+popular_horse_label = f"{strong_horse}番 {real_horses[strong_horse - 1]}"
 
 others = [
     horse for horse in numbered_horses
@@ -330,7 +413,11 @@ for horse in horses:
     horse_name = horse["馬名"]
     corner_positions = horse["4角位置"]
 
-    front_score = calc_front_score(horse_no, horse["通過順"])
+    front_score = calc_front_score(
+        horse_no,
+        horse["通過順"],
+        horse.get("着順", [])
+    )
     # 長距離では、短距離だけの先行実績を少し弱める
     if distance_num >= 1900:
         horse_text = horse.get("取得テキスト", "")
@@ -384,7 +471,20 @@ for horse in horses:
     score = 0
     front_keep_count = 0
     tare_count = 0
+    # 2〜4番手維持型を評価
+    first_positions = [flow[0] for flow in race_flows if len(flow) >= 2]
+    last_positions = [flow[-1] for flow in race_flows if len(flow) >= 2]
 
+    avg_first = sum(first_positions) / len(first_positions) if first_positions else 99
+    avg_last = sum(last_positions) / len(last_positions) if last_positions else 99
+
+    # 2〜4番手維持型
+    if 2 <= avg_first <= 4:
+        score += 300
+
+    # 中団から押し上げ型
+    if avg_first >= 5 and avg_last <= avg_first - 2:
+        score += 200
     if distance_num >= 1900:
         short_distance_count = len(re.findall(r"(?:右|左)?(?:800|900|1000|1200|1300|1400)", horse_text))
         long_distance_count = len(re.findall(r"(?:右|左)?(?:1600|1700|1800|1900|2000)", horse_text))
@@ -412,7 +512,7 @@ for horse in horses:
         recent_bonus = idx + 1
 
         # 1番グラファス型：前〜中団で流れに乗って大きく崩れない
-        if first <= 6 and last <= 7 and max(flow) <= 7:
+        if 2 <= first <= 6 and last <= 7 and max(flow) <= 7:
             score += 45 * recent_bonus
             front_keep_count += 1
 
@@ -489,17 +589,103 @@ if not long_spurt_candidates:
 
 long_best = long_spurt_display_candidates[0]
 long_spurt_horse = f"{long_best['馬番']}番 {long_best['馬名']}"
+# 仮の総合力1位を先に決める
+front_score_map = {h["馬番"]: h["スコア"] for h in front_candidates}
+long_score_map = {h["馬番"]: h["スコア"] for h in long_spurt_candidates}
 
+pre_total_candidates = []
+
+for horse in horses:
+    horse_no = horse["馬番"]
+    horse_name = horse["馬名"]
+
+    pre_total_score = 0
+
+    pre_total_score += long_score_map.get(horse_no, 0) * 0.25
+    pre_total_score += front_score_map.get(horse_no, 0) * 0.10
+
+    race_times = horse.get("走破タイム", [])
+    time_seconds = []
+
+    for t in race_times:
+        try:
+            minutes, seconds = t.split(":")
+            total_seconds = int(minutes) * 60 + float(seconds)
+            time_seconds.append(total_seconds)
+        except:
+            pass
+
+    if time_seconds:
+        best_time = min(time_seconds)
+        pre_total_score += max(0, 200 - best_time) * 3
+
+    finishes = horse.get("着順", [])
+
+    for finish in finishes:
+        if finish <= 3:
+            pre_total_score += 40
+        elif finish <= 5:
+            pre_total_score += 20
+        elif finish >= 8:
+            pre_total_score -= 30
+
+    if finishes:
+        avg_finish = sum(finishes) / len(finishes)
+
+        if avg_finish <= 3:
+            pre_total_score += 100
+        elif avg_finish <= 5:
+            pre_total_score += 60
+        elif avg_finish <= 7:
+            pre_total_score += 20
+        elif avg_finish >= 8:
+            pre_total_score -= 50
+
+    pre_total_candidates.append({
+        "馬番": horse_no,
+        "馬名": horse_name,
+        "総合スコア": pre_total_score
+    })
+
+pre_total_candidates = sorted(
+    pre_total_candidates,
+    key=lambda x: x["総合スコア"],
+    reverse=True
+)
+
+pre_total_best = pre_total_candidates[0]
 # 展開が向く馬：人気馬の脚色と合う馬を選ぶ
+
+# 展開馬は総合力1位の脚色から算出する
+base_horse_no = pre_total_best["馬番"]
 
 strong_data = None
 
 for horse in horses:
-    if horse["馬番"] == strong_horse:
+    if horse["馬番"] == base_horse_no:
         strong_data = horse
         break
 
 strong_flows = strong_data["通過順"] if strong_data else []
+# レース全体の前崩れ警戒判定
+front_pressure_count = 0
+
+for horse in horses:
+    flows = horse.get("通過順", [])
+
+    for flow in flows[-3:]:
+        if len(flow) < 2:
+            continue
+
+        first = flow[0]
+        last = flow[-1]
+
+        # 近走で前に行く意思がある馬
+        if first <= 4:
+            front_pressure_count += 1
+            break
+
+front_collapse_warning = front_pressure_count >= 5
 
 # 人気馬の脚色タイプを判定し、脚色が合う馬を選ぶ
 
@@ -509,8 +695,8 @@ def avg_nonzero(values):
         return 99
     return sum(values) / len(values)
 
-strong_firsts = [flow[0] for flow in strong_flows if len(flow) >= 4]
-strong_lasts = [flow[-1] for flow in strong_flows if len(flow) >= 4]
+strong_firsts = [flow[0] for flow in strong_flows if len(flow) >= 2]
+strong_lasts = [flow[-1] for flow in strong_flows if len(flow) >= 2]
 
 strong_avg_first = avg_nonzero(strong_firsts)
 strong_avg_last = avg_nonzero(strong_lasts)
@@ -522,14 +708,24 @@ if strong_avg_first <= 2 and strong_avg_last <= 4:
 # 前で踏み続けるタイプ
 elif strong_avg_first <= 4 and strong_avg_last <= 5:
     kyakushoku_type = "前に行って押し切るタイプ"
-elif strong_avg_first >= 7:
+
+# 差してくるタイプ：後ろから4角で押し上げる
+elif strong_avg_first >= 5 and strong_avg_last < strong_avg_first:
     kyakushoku_type = "差してくるタイプ"
+
+# 後方寄りで押し上げも弱い
+elif strong_avg_first >= 7:
+    kyakushoku_type = "後方待機タイプ"
+
+# どっちにも寄り切らない
 else:
-    kyakushoku_type = "先行気勢強めのタイプ"
+    kyakushoku_type = "流れひとつタイプ"
 type_comment = {
     "前に行って押し切るタイプ": "",
-    "差してくるタイプ": "後方から脚を使って伸びてくる人気馬です",
+    "流れひとつタイプ": "流れ次第で浮上する人気馬です",
     "先行気勢強めのタイプ": "先頭で押し切る人気馬です",
+    "差してくるタイプ": "後ろから押し上げる人気馬です",
+    "後方待機タイプ": "展開待ちの人気馬です",
 }
  
 # 人気馬が差してくるタイプなのに先行気勢1位にも出る場合は、
@@ -547,7 +743,7 @@ for horse in horses:
     horse_name = horse["馬名"]
     race_flows = horse["通過順"]
 
-    if horse_no == strong_horse:
+    if horse_no == base_horse_no:
         continue
 
     firsts = [flow[0] for flow in race_flows if len(flow) >= 2]
@@ -555,16 +751,91 @@ for horse in horses:
 
     avg_first = avg_nonzero(firsts)
     avg_last = avg_nonzero(lasts)
-
+    
     score = 0
-
+    
     # 人気馬が前タイプ → 似た脚色で一緒に前で踏める馬
-    if kyakushoku_type == "前で踏み続けるタイプ":
-        score -= abs(avg_first - strong_avg_first) * 3
-        score -= abs(avg_last - strong_avg_last) * 3
+    if kyakushoku_type == "前に行って押し切るタイプ":
+        score -= abs(avg_first - strong_avg_first) * 1.5
+        score -= abs(avg_last - strong_avg_last) * 1.5
+    # 地味馬ボーナス（前に行った時に踏ん張れる馬）
+
+        flows = horse.get("通過順", [])
+        finishes = horse.get("着順", [])
+
+        good_finish = 0
+        bad_finish = 0
+
+        for idx, flow in enumerate(flows):
+            if idx >= len(finishes):
+                continue
+
+            finish = finishes[idx]
+
+            if len(flow) < 2:
+                continue
+
+            first = flow[0]
+
+            # 前に行ったレース
+            if first <= 4:
+
+                if finish <= 5:
+                    good_finish += 1
+
+                elif finish >= 8:
+                    bad_finish += 1
+
+        score += good_finish * 25
+        score -= bad_finish * 25
         if avg_first <= 6 and avg_last <= 6:
             score += 30
+            # 前にいたのに着順が悪い馬は減点
+            for idx, flow in enumerate(flows):
+                if idx >= len(finishes):
+                    continue
 
+                finish = finishes[idx]
+
+                if len(flow) < 2:
+                    continue
+
+                last = flow[-1]
+
+                if last <= 4 and finish >= 6:
+                    score -= 35
+
+                if last <= 3 and finish >= 8:
+                    score -= 60
+    # 前に行きたい馬が多い時は、脚を使い直せる馬を評価する
+    elif front_collapse_warning:
+        comeback_count = 0
+
+        for flow in race_flows:
+            if len(flow) < 3:
+                continue
+
+            first = flow[0]
+            middle = flow[len(flow) // 2]
+            last = flow[-1]
+
+            # 中団〜後方から馬券圏内へ来る馬
+            if first >= 6 and last <= 5:
+                score += 80
+                comeback_count += 1
+
+            elif first >= 5 and last <= 6:
+                score += 40
+                comeback_count += 1
+
+            if middle > first and last < middle:
+                score += 35
+                comeback_count += 1
+
+            if first <= 3 and last <= 4:
+                score -= 25
+
+        score += comeback_count * 25
     # 人気馬が差しタイプ → 前で残れる馬を相手にする
     elif kyakushoku_type == "差してくるタイプ":
         if avg_first <= 5:
@@ -572,13 +843,43 @@ for horse in horses:
         if avg_last <= 6:
             score += 20
 
-    # 人気馬が中団タイプ → 位置取りが近い馬
+    # 人気馬が流れひとつ型 → 前に行けて4角で残れる馬を評価
     else:
-        score -= abs(avg_first - strong_avg_first) * 3
-        score -= abs(avg_last - strong_avg_last) * 3
-        if 3 <= avg_first <= 8 and 3 <= avg_last <= 8:
-            score += 25
+        if avg_first <= 4:
+            score += 45
 
+        if avg_last <= 5:
+            score += 35
+
+        # 前半から4角まで大きく下がらない馬
+        if avg_last - avg_first <= 2:
+            score += 30
+
+        # 近走で逃げ・先行経験がある馬
+        recent_front_count = 0
+
+        for flow in race_flows[-3:]:
+            if len(flow) < 2:
+                continue
+
+            if flow[0] <= 3:
+                recent_front_count += 1
+
+        score += recent_front_count * 25
+
+        # 後方待機型は下げる
+        if avg_first >= 7:
+            score -= 40
+        # ほんのり内枠補正：4角である程度前に来れる馬だけ
+    if avg_last <= 5:
+        if horse_no == 1:
+            score += 4
+        elif horse_no == 2:
+            score += 3.5
+        elif horse_no == 3:
+            score += 3
+        elif horse_no <= 5:
+            score += 1.5
     tenkai_candidates.append({
         "馬番": horse_no,
         "馬名": horse_name,
@@ -596,6 +897,7 @@ tenkai_candidates = sorted(
 if debug_mode:
     st.subheader("展開が向く馬スコア")
     st.write(f"人気馬タイプ：{kyakushoku_type}")
+    st.write(f"前崩れ警戒：{front_collapse_warning}｜前圧カウント：{front_pressure_count}")
     st.write(f"人気馬 平均前半：{strong_avg_first}｜平均4角：{strong_avg_last}")
 
     for h in tenkai_candidates:
@@ -619,15 +921,104 @@ for horse in horses:
     horse_no = horse["馬番"]
     horse_name = horse["馬名"]
 
-    total_score = (
-    front_score_map.get(horse_no, 0)
-    + long_score_map.get(horse_no, 0)
+    total_score = 0
+
+    # 地力はかなり薄く反映
+    total_score += long_score_map.get(horse_no, 0) * 0.05
+
+    # 前進気勢もかなり薄く反映
+    total_score += front_score_map.get(horse_no, 0) * 0.03
+    # 走破タイムが速い馬を総合力に加点
+    race_times = horse.get("走破タイム", [])
+
+    time_seconds = []
+
+    for t in race_times:
+        try:
+            minutes, seconds = t.split(":")
+            total_seconds = int(minutes) * 60 + float(seconds)
+            time_seconds.append(total_seconds)
+        except:
+            pass
+
+    if time_seconds:
+        best_time = min(time_seconds)
+
+        # 速いほど加点。1500mなら100秒前後なので調整値を使用
+        total_score += max(0, 200 - best_time) * 8
+    # 着順重視
+    finishes = horse.get("着順", [])
+
+    for finish in finishes:
+
+        if finish <= 3:
+            total_score += 40
+
+        elif finish <= 5:
+            total_score += 20
+
+        elif finish >= 8:
+            total_score -= 30
+
+    # 平均着順
+    if finishes:
+
+        avg_finish = sum(finishes) / len(finishes)
+
+        if avg_finish <= 3:
+            total_score += 100
+
+        elif avg_finish <= 5:
+            total_score += 60
+
+        elif avg_finish <= 7:
+            total_score += 20
+
+        elif avg_finish >= 8:
+            total_score -= 50
+    horse_text = horse.get("取得テキスト", "")
+
+    jra_transfer = any(
+        place in horse_text
+        for place in [
+            "東京", "中山", "京都", "阪神",
+            "中京", "新潟", "福島",
+            "小倉", "札幌", "函館"
+        ]
     )
 
+    if jra_transfer:
+        total_score += 30
+        flows = horse.get("通過順", [])
+    finishes = horse.get("着順", [])
+
+    for idx, flow in enumerate(flows):
+        if len(flow) < 2:
+            continue
+
+        first = flow[0]
+        last = flow[-1]
+        finish = finishes[idx] if idx < len(finishes) else None
+
+        # 逃げたのに大敗
+        if first <= 2 and finish is not None and finish >= 7:
+            total_score -= 80
+
+        # 前半から4角で大きく後退
+        if first <= 3 and last - first >= 4:
+            total_score -= 60
+
+        # 4角前にいたのに着順が悪い
+        if last <= 4 and finish is not None and finish >= 7:
+            total_score -= 70
     total_candidates.append({
         "馬番": horse_no,
         "馬名": horse_name,
-        "総合スコア": total_score
+        "総合スコア": total_score,
+        "前進": front_score_map.get(horse_no, 0),
+        "地力": long_score_map.get(horse_no, 0),
+        "タイム": best_time if time_seconds else 999,
+        "着順": finishes
     })
 
 total_candidates = sorted(
@@ -638,100 +1029,93 @@ total_candidates = sorted(
 
 total_best = total_candidates[0]
 total_best_horse = f"{total_best['馬番']}番 {total_best['馬名']}"
+if debug_mode:
+    st.subheader("総合力ランキング")
+
+    for h in total_candidates[:10]:
+        st.write(
+            f"{h['馬番']}番 {h['馬名']} "
+            f"｜総合 {round(h['総合スコア'],1)} "
+            f"｜前進 {h['前進']} "
+            f"｜地力 {h['地力']} "
+            f"｜タイム {h['タイム']} "
+            f"｜着順 {h['着順']}"
+        )
 # 展開が向く馬と先行気勢の馬が同じなら、
 # 先行気勢の馬をスコア2位以降にずらす
 # 期待値高めおすすめ穴馬
-# 上記4頭（人気馬・前で長く脚・展開・先行気勢）以外から選ぶ
+# 穴馬は「前進気勢スコア3位」を採用する
+# ただし、人気馬・展開馬・長く脚の馬と被る場合は次点へずらす
 
-used_numbers = [
-    strong_horse,
+used_for_ana = [
+    total_best["馬番"],
     long_best["馬番"],
-    tenkai_best["馬番"],
     front_best["馬番"]
 ]
-# 穴馬候補では、ベストタイム持ちの馬は除外しない
 
 ana_candidates = []
 
-for horse in horses:
-    horse_no = horse["馬番"]
-    horse_name = horse["馬名"]
-    horse_text = horse.get("取得テキスト", "")
-    race_times = horse.get("走破タイム", [])
-    # ベストタイムを持っている馬は除外しない
-    # それ以外の重複馬だけ除外
-
-    ana_score = 0
-    time_score = 0
-    # 距離一致の持ちタイムを自動抽出して評価
-    # 例：1200mなら、horse_text内の1200付近にある 1:12.3 などを拾う
-    target_distance = distance
-
-    # 距離一致の持ちタイムを広めに拾う
-    best_time = None
-
-    for t in race_times:
-        minute, sec = t.split(":")
-        time_value = int(minute) * 60 + float(sec)
-        # 距離ごとの異常タイム除外
-        if distance_num == 1000:
-            if time_value < 58 or time_value > 66:
-                continue
-
-        elif distance_num == 1200:
-            if time_value < 65 or time_value > 90:
-                continue
-
-        elif distance_num == 1400:
-            if time_value < 80 or time_value > 110:
-                continue
-        if best_time is None or time_value < best_time:
-            best_time = time_value
-
-    # 穴馬は「直近5走の最高持ちタイム」に尖らせる
-    if best_time is not None:
-        time_score = int(10000 - best_time * 100)
-    else:
-        time_score = 0
-
-    ana_score += time_score
-    
-    # 穴馬は、すでに主要候補に出ている馬を除外
-    if horse_no in used_numbers:
+for h in front_candidates:
+    if h["馬番"] in used_for_ana:
         continue
+
+    # 最後に垂れる馬は期待値馬から除外
+    target_horse = None
+    for horse in horses:
+        if horse["馬番"] == h["馬番"]:
+            target_horse = horse
+            break
+
+    is_tare = False
+
+    if target_horse:
+        flows = target_horse.get("通過順", [])
+        finishes = target_horse.get("着順", [])
+
+        for idx, flow in enumerate(flows):
+            if len(flow) < 2:
+                continue
+
+            last = flow[-1]
+            finish = finishes[idx] if idx < len(finishes) else None
+
+            # 4角前にいたのに着順が悪い馬
+            if finish is not None and last <= 4 and finish >= 6:
+                is_tare = True
+                break
+
+    if is_tare:
+        continue
+
     ana_candidates.append({
-        "馬番": horse_no,
-        "馬名": horse_name,
-        "ベストタイム": best_time,
-        "スコア": ana_score
+        "馬番": h["馬番"],
+        "馬名": h["馬名"],
+        "スコア": h["スコア"]
     })
 
-ana_candidates = sorted(
-    ana_candidates,
-    key=lambda x: x["スコア"],
-    reverse=True
-)
+# 候補が空なら、前進気勢候補から拾う
+if not ana_candidates and front_candidates:
+    for h in front_candidates:
+        ana_candidates.append({
+            "馬番": h["馬番"],
+            "馬名": h["馬名"],
+            "スコア": h["スコア"]
+        })
+
 if debug_mode:
     st.subheader("穴馬候補スコア")
     for h in ana_candidates:
-        horse_text = ""
-        for horse in horses:
-            if horse["馬番"] == h["馬番"]:
-                horse_text = horse.get("取得テキスト", "")
-                race_times = horse.get("走破タイム", [])
         st.write(
             f"{h['馬番']}番 {h['馬名']} "
-            f"｜穴スコア {h['スコア']} "
-            f"｜ベストタイム {h.get('ベストタイム')} "
-            f"｜距離一致 {distance in horse_text}"
+            f"｜前進気勢スコア {h['スコア']}"
         )
+
 if ana_candidates:
     ana_best = ana_candidates[0]
 else:
     ana_best = front_candidates[0]
 
 ana_horse = f"{ana_best['馬番']}番 {ana_best['馬名']}"
-
 st.subheader("人気馬の脚色タイプ")
 
 st.markdown(
@@ -761,30 +1145,18 @@ st.markdown(
         font-size:16px;
 font-weight:400;
     ">
-    ◎ 人気の馬 {strong_horse}番 {real_horses[strong_horse - 1]}
+    ◎ 人気馬 {popular_horse_label}
     （オッズは変わるので1番人気は適宜変更してください）
     </div>
     """,
     unsafe_allow_html=True
 )
-
-# 三連複 軸2頭固定
-main_horses = [f"{strong_horse}番 {real_horses[strong_horse - 1]}", long_spurt_horse]
-
-sub_candidates = [front_horse, tenkai_horse, ana_horse]
-
-sub_horses = []
-for h in sub_candidates:
-    if h not in main_horses and h not in sub_horses:
-        sub_horses.append(h)
-
-sub_horses = sub_horses[:2]
 st.write(f"◉ 総合力1位 {total_best_horse}")
 st.caption("総合力上位候補")
 
 
-st.info(f"○ 前に行って押し切る馬 {long_spurt_horse}")
-st.caption("前に行って力を出せるタイプ")
+st.info(f"○ 地力があり狙い目の馬 {long_spurt_horse}")
+st.caption("長く脚を使えるタイプ")
 
 st.markdown(
     f"""
@@ -801,67 +1173,127 @@ st.markdown(
     """,
     unsafe_allow_html=True
 )
-st.caption("人気馬の脚色と合うタイプ")
+st.caption("総合力1位の脚色と合うタイプ")
 st.write(f"△ 先行気勢の強い馬\n{front_horse}")
-st.caption("積極的に前に行ける")
+st.caption("積極的に前に行けるタイプ")
 
-st.write(f"☆ 期待値高めおすすめ穴馬\n{ana_horse}")
-st.caption("人気以上に展開が向けば面白い")
-st.subheader("三連複 軸2頭固定買い目")
+st.write(f"☆ 押さえておきたい馬\n{ana_horse}")
+st.caption("拾っておきたいタイプ")
+def get_num(horse_text):
+    return int(horse_text.split("番")[0])
 
-strong_horse_name = f"{strong_horse}番 {real_horses[strong_horse - 1]}"
+def add_unique_bet(bets, bet, max_count=2):
+    nums = [get_num(h) for h in bet]
 
-# 三連複は 人気馬 + 総合力1位 を軸にする
-if total_best["馬番"] != strong_horse:
-    main_horses = [strong_horse_name, total_best_horse]
-else:
-    main_horses = [strong_horse_name, long_spurt_horse]
+    # 1つの買い目内で同じ馬がいたら除外
+    if len(nums) != len(set(nums)):
+        return bets
 
-sub_candidates = [
-    front_horse,
-    tenkai_horse,
-    ana_horse
+    # 同じ買い目の重複を除外
+    bet_key = tuple(sorted(nums))
+    existing_keys = [
+        tuple(sorted(get_num(h) for h in b))
+        for b in bets
+    ]
+
+    if bet_key not in existing_keys and len(bets) < max_count:
+        bets.append(bet)
+
+    return bets
+
+def candidate_text_list(candidates):
+    result = []
+    for h in candidates:
+        text = f"{h['馬番']}番 {h['馬名']}"
+        if text not in result:
+            result.append(text)
+    return result
+
+
+popular = f"{strong_horse}番 {real_horses[strong_horse - 1]}"
+
+tenkai_list = candidate_text_list(tenkai_candidates)
+front_list = candidate_text_list(front_candidates)
+ana_list = candidate_text_list(ana_candidates)
+long_list = candidate_text_list(long_spurt_candidates)
+
+# 念のため空なら現在の選出馬を入れる
+if not ana_list:
+    ana_list = [ana_horse]
+
+if not tenkai_list:
+    tenkai_list = [tenkai_horse]
+
+if not front_list:
+    front_list = [front_horse]
+# 三連複2点
+st.subheader("おすすめの三連複 2点")
+
+trio_bets = []
+
+popular = f"{strong_horse}番 {real_horses[strong_horse - 1]}"
+total_horse = total_best_horse
+long_horse = long_spurt_horse
+tenkai_horse_text = tenkai_horse
+
+# 本線
+trio_patterns = [
+    [total_horse, popular, tenkai_horse_text],
+    [total_horse, long_horse, ana_horse],
+
+    # 被った時の保険
+    [total_horse, tenkai_horse_text, ana_horse],
+    [total_horse, long_horse, front_horse],
+    [total_horse, popular, ana_horse],
 ]
 
-sub_horses = []
+for pattern in trio_patterns:
+    trio_bets = add_unique_bet(
+        trio_bets,
+        pattern,
+        max_count=2
+    )
 
-for h in sub_candidates:
-    h_num = int(h.split("番")[0])
-    if h_num != strong_horse and h not in main_horses and h not in sub_horses:
-        sub_horses.append(h)
+    if len(trio_bets) >= 2:
+        break
 
-sub_horses = sub_horses[:2]
+for bet in trio_bets:
+    st.write(f"{bet[0]} - {bet[1]} - {bet[2]}")
+# ワイド2点
+st.subheader("おすすめのワイド 2点")
 
-for h in sub_horses:
-    st.write(f"{main_horses[0]} - {main_horses[1]} - {h}")
+wide_bets = []
 
-s= front_horse
+popular = f"{strong_horse}番 {real_horses[strong_horse - 1]}"
+total_horse = total_best_horse
+tenkai_horse_text = tenkai_horse
 
-# 資金を減らさないワイド2点
-st.subheader("資金を減らさないワイド2点")
+wide_patterns = [
+    # 本線：人気馬 × 展開馬
+    [popular, tenkai_horse_text],
 
-wide_axis = front_horse
+    # 保険：総合力1位 × 押さえておきたい馬
+    [total_horse, ana_horse],
 
-wide_candidates = [
-    tenkai_horse,
-    long_spurt_horse,
-    ana_horse
+    # 被った時の保険
+    [popular, long_spurt_horse],
+    [total_horse, long_spurt_horse],
+    [popular, ana_horse],
+    [total_horse, tenkai_horse_text],
 ]
-strong_horse_name = ""
 
-for horse in horses:
-    if horse["馬番"] == strong_horse:
-        strong_horse_name = horse["馬名"]
+for pattern in wide_patterns:
+    wide_bets = add_unique_bet(
+        wide_bets,
+        pattern,
+        max_count=2
+    )
 
-strong_horse_text = f"{strong_horse}番 {strong_horse_name}"
-wide_partners = []
+    if len(wide_bets) >= 2:
+        break
 
-# 展開が向く馬を追加
-if tenkai_horse != wide_axis:
-    wide_partners.append(tenkai_horse)
-
-# 強い馬を追加
-if strong_horse_text != wide_axis and strong_horse_text not in wide_partners:
-    wide_partners.append(strong_horse_text)
-for h in wide_partners:
-    st.write(f"{wide_axis} - {h}")
+for bet in wide_bets:
+    st.write(f"{bet[0]} - {bet[1]}")
+st.caption(
+"※買い目の一例です。最終判断はオッズや馬場を見て調整してください。"
+)
