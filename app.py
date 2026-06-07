@@ -426,7 +426,7 @@ popular_horse_num = st.number_input(
 st.info(
     "※オッズは変動するため、現在の1番人気や\n"
     "自分が来ると思う馬を選択してください。\n\n"
-    "※選択した馬を中心に展開分析と\n"
+    "※選択した馬を軸に展開分析と\n"
     "買い目を表示します。"
 )
 popular_horse_num_text = f"{popular_horse_num}番 {real_horses[popular_horse_num - 1]}"
@@ -1248,7 +1248,44 @@ for h in front_candidates:
         "馬名": h["馬名"],
         "スコア": ana_score
     })
+# 穴候補が少ない時は、他カテゴリの残り馬から掘り返す
+if len(ana_candidates) < 3:
+    extra_ana_pool = []
 
+    for h in total_candidates:
+        if h["馬番"] in used_for_ana:
+            continue
+        if any(a["馬番"] == h["馬番"] for a in ana_candidates):
+            continue
+
+        extra_ana_pool.append({
+            "馬番": h["馬番"],
+            "馬名": h["馬名"],
+            "スコア": h["総合スコア"] * 0.3
+        })
+
+    for h in tenkai_candidates:
+        if h["馬番"] in used_for_ana:
+            continue
+        if any(a["馬番"] == h["馬番"] for a in ana_candidates):
+            continue
+
+        extra_ana_pool.append({
+            "馬番": h["馬番"],
+            "馬名": h["馬名"],
+            "スコア": h["スコア"] + 20
+        })
+
+    extra_ana_pool = sorted(
+        extra_ana_pool,
+        key=lambda x: x["スコア"],
+        reverse=True
+    )
+
+    for h in extra_ana_pool:
+        if len(ana_candidates) >= 3:
+            break
+        ana_candidates.append(h)
 if debug_mode:
     st.subheader("穴馬候補スコア")
     for h in ana_candidates:
@@ -1270,7 +1307,7 @@ else:
     ana_third = ana_candidates[-1]
 
 ana_third_horse = f"{ana_third['馬番']}番 {ana_third['馬名']}"
-st.subheader("人気馬の脚色タイプ")
+st.subheader("軸馬の脚色タイプ")
 
 st.markdown(
     f"""
@@ -1284,7 +1321,7 @@ st.markdown(
         margin-bottom:10px;
     ">
     <b>{popular_horse_num}番 {real_horses[popular_horse_num - 1]}</b><br>
-    人気馬：<b>{kyakushoku_type}</b><br>
+    軸馬：<b>{kyakushoku_type}</b><br>
     </div>
     """,
     unsafe_allow_html=True
@@ -1299,8 +1336,8 @@ st.markdown(
         font-size:16px;
 font-weight:400;
     ">
-    ◎ 人気馬 {popular_horse_label}
-    （オッズは変わるので1番人気は適宜変更してください）
+    ◎ 軸馬 {popular_horse_label}
+    （オッズは変わるので軸は適宜変更してください）
     </div>
     """,
     unsafe_allow_html=True
