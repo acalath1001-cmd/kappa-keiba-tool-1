@@ -418,10 +418,14 @@ st.markdown("### 🎯 最初に軸馬を番号で選んでください")
 popular_horse_num = st.number_input(
     "軸馬の馬番",
     min_value=1,
-    max_value=18,
+    max_value=len(real_horses),
     value=1,
     step=1
 )
+
+if popular_horse_num > len(real_horses):
+    st.error(f"軸馬は1〜{len(real_horses)}番を選択してください")
+    st.stop()
 
 st.info(
     "※オッズは変動するため、現在の1番人気や\n"
@@ -1203,10 +1207,9 @@ if debug_mode:
 # ただし、人気馬・展開馬・長く脚の馬と被る場合は次点へずらす
 
 used_for_ana = [
-    total_best["馬番"],
-    long_best["馬番"],
-    front_best["馬番"], 
-    tenkai_best["馬番"], 
+    popular_horse_num,      # 軸馬とは被らない
+    total_best["馬番"],     # 総合力1位とは被らない
+    front_best["馬番"],     # 先行気勢とは被らない
 ]
 
 ana_candidates = []
@@ -1448,20 +1451,26 @@ henna_ba_active = (
     and total_best["馬番"] == popular_horse_num
 )
 trio_patterns = [
+
+    # ◎本線（固定）
+    [popular, tenkai_horse_text, long_horse],
+
+    # ◎2点目基本
+    [total_horse, popular, long_horse],
+
+    # 地力と総合が被った時
+    [total_horse, popular, ana_third_horse],
+
+    # 総合と軸馬が被った時
+    [total_horse, long_horse, ana_horse],
+
+    # 保険
     [popular, tenkai_horse_text, ana_horse],
-    [total_horse, tenkai_horse_text, ana_horse],
-
-    # 被った時の保険
-    [total_horse, tenkai_horse_text, ana_horse],
-    [total_horse, long_horse, nankan_front_horse],
-    [total_horse, popular, ana_horse],
-
-    [total_horse, tenkai_horse_text, nankan_front_horse],
-    [popular, tenkai_horse_text, nankan_front_horse],
-
-    # 2点目用：穴馬候補スコア3位
     [total_horse, tenkai_horse_text, ana_third_horse],
-    [popular, tenkai_horse_text, ana_third_horse],
+
+    # 南関
+    [total_horse, long_horse, nankan_front_horse],
+    [popular, tenkai_horse_text, nankan_front_horse],
 ]
 if henna_ba_active:
         trio_patterns.append(
