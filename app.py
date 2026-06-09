@@ -873,7 +873,22 @@ for horse in horses:
     avg_last = avg_nonzero(lasts)
     
     score = 0
-    
+    # 着順が悪い馬は展開評価を少し下げる
+    finishes = horse.get("着順", [])
+
+    if finishes:
+        avg_finish = sum(finishes) / len(finishes)
+        bad_finish_count = sum(1 for f in finishes if f >= 8)
+
+        if avg_finish >= 8:
+            score -= 80
+        elif avg_finish >= 6:
+            score -= 40
+
+        if bad_finish_count >= 3:
+            score -= 80
+        elif bad_finish_count >= 2:
+            score -= 40
     # 人気馬が前タイプ → 似た脚色で一緒に前で踏める馬
     if kyakushoku_type == "前に行って押し切るタイプ":
         score -= abs(avg_first - strong_avg_first) * 1.5
