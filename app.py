@@ -536,7 +536,7 @@ if not front_candidates:
 front_best = front_candidates[0]
 
 front_horse = f"{front_best['馬番']}番 {front_best['馬名']}"
-
+front_score_map = {h["馬番"]: h["スコア"] for h in front_candidates}
 long_spurt_candidates = []
 
 for horse in horses:
@@ -629,6 +629,8 @@ for horse in horses:
 
     score += front_keep_count * 60
     score -= tare_count * 180
+        # 地力評価にも前進気勢を少し反映
+    score += front_score_map.get(horse_no, 0) * 0.25
     # 望月騎手補正
     if "望月" in horse_text:
         score += 80
@@ -679,6 +681,13 @@ if not long_spurt_candidates:
 
 long_best = long_spurt_display_candidates[0]
 long_spurt_horse = f"{long_best['馬番']}番 {long_best['馬名']}"
+# 先行気勢と地力馬が被ったら、先行気勢を次点へ
+if front_best["馬番"] == long_best["馬番"]:
+    for h in front_candidates:
+        if h["馬番"] != long_best["馬番"]:
+            front_best = h
+            front_horse = f"{front_best['馬番']}番 {front_best['馬名']}"
+            break
 # 仮の総合力1位を先に決める
 front_score_map = {h["馬番"]: h["スコア"] for h in front_candidates}
 long_score_map = {h["馬番"]: h["スコア"] for h in long_spurt_candidates}
@@ -1303,6 +1312,14 @@ else:
     ana_best = front_candidates[0]
 
 ana_horse = f"{ana_best['馬番']}番 {ana_best['馬名']}"
+# 穴馬候補2位
+if len(ana_candidates) >= 2:
+    ana_second = ana_candidates[1]
+else:
+    ana_second = ana_candidates[-1]
+
+ana_second_horse = f"{ana_second['馬番']}番 {ana_second['馬名']}"
+
 # 穴馬候補3位
 if len(ana_candidates) >= 3:
     ana_third = ana_candidates[2]
@@ -1460,10 +1477,22 @@ trio_patterns = [
 
     # 地力と総合が被った時
     [total_horse, popular, ana_third_horse],
-
+    # 穴2位・穴3位へ逃がす
+    [total_horse, popular, ana_second_horse],
+    [total_horse, popular, ana_third_horse],
+    [total_horse, long_horse, ana_second_horse],
+    [total_horse, long_horse, ana_third_horse],
+    [popular, tenkai_horse_text, ana_second_horse],
+    [popular, tenkai_horse_text, ana_third_horse],
     # 総合と軸馬が被った時
     [total_horse, long_horse, ana_horse],
-
+    # 総合と軸馬が被った時の追加保険
+    [total_horse, long_horse, ana_third_horse],
+    [total_horse, tenkai_horse_text, ana_third_horse],
+    [popular, long_horse, ana_third_horse],
+    [total_horse, tenkai_horse_text, nankan_front_horse],
+    [popular, tenkai_horse_text, nankan_front_horse],
+    [total_horse, nankan_front_horse, ana_third_horse],
     # 保険
     [popular, tenkai_horse_text, ana_horse],
     [total_horse, tenkai_horse_text, ana_third_horse],
