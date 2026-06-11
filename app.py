@@ -570,8 +570,12 @@ for horse in horses:
         score += 300
 
     # 中団から押し上げ型
-    if avg_first >= 5 and avg_last <= avg_first - 2:
-        score += 200
+    # ただし後方すぎる馬は地力馬としては評価しすぎない
+    if 5 <= avg_first <= 7 and avg_last <= avg_first - 2:
+        score += 80
+
+    elif avg_first >= 8 and avg_last <= avg_first - 2:
+        score += 20
     if distance_num >= 1900:
         short_distance_count = len(re.findall(r"(?:右|左)?(?:800|900|1000|1200|1300|1400)", horse_text))
         long_distance_count = len(re.findall(r"(?:右|左)?(?:1600|1700|1800|1900|2000)", horse_text))
@@ -691,13 +695,7 @@ if not long_spurt_candidates:
 
 long_best = long_spurt_display_candidates[0]
 long_spurt_horse = f"{long_best['馬番']}番 {long_best['馬名']}"
-# 先行気勢と地力馬が被ったら、先行気勢を次点へ
-if front_best["馬番"] == long_best["馬番"]:
-    for h in front_candidates:
-        if h["馬番"] != long_best["馬番"]:
-            front_best = h
-            front_horse = f"{front_best['馬番']}番 {front_best['馬名']}"
-            break
+
 # 仮の総合力1位を先に決める
 front_score_map = {h["馬番"]: h["スコア"] for h in front_candidates}
 long_score_map = {h["馬番"]: h["スコア"] for h in long_spurt_candidates}
@@ -917,13 +915,6 @@ elif strong_push_count >= 2 or (strong_avg_first >= 5 and strong_avg_last < stro
 # ⑤展開待ち
 else:
     kyakushoku_type = "展開待ち"
-type_comment = {
-    "逃げ": "ハナを切って粘り込むタイプです",
-    "先行": "前目で流れに乗るタイプです",
-    "差し": "中団以降から脚を使うタイプです",
-    "展開待ち": "展開がハマると浮上するタイプです",
-    "惰性で長く脚を使えるタイプ": "前〜中団で長く脚を使えるタイプです",
-}
  
 # 人気馬が差してくるタイプなのに先行気勢1位にも出る場合は、
 # 先行気勢の馬を次点候補にずらす
@@ -966,6 +957,16 @@ for horse in horses:
             score -= 80
         elif bad_finish_count >= 2:
             score -= 40
+    # 軸馬が逃げで前崩れ期待が低い時は、前残り想定なので減点をゆるめる
+    if kyakushoku_type == "逃げ" and front_collapse_score <= 30:
+        tare_penalty_1 = 20
+        tare_penalty_2 = 40
+        tare_penalty_3 = 60
+    else:
+        tare_penalty_1 = 40
+        tare_penalty_2 = 70
+        tare_penalty_3 = 100
+
     # 前で競馬したのに最後垂れる馬は展開評価を下げる
     for idx, flow in enumerate(race_flows):
 
@@ -978,19 +979,7 @@ for horse in horses:
         if finish is None:
             continue
 
-    # 軸馬が逃げで前崩れ期待が低い時は、前残り想定なので減点をゆるめる
-    if kyakushoku_type == "逃げ" and front_collapse_score <= 30:
-        tare_penalty_1 = 20
-        tare_penalty_2 = 40
-        tare_penalty_3 = 60
-    else:
-        tare_penalty_1 = 40
-        tare_penalty_2 = 70
-        tare_penalty_3 = 100
-
-    # 4角5番手以内から6着以下
-    if finish is not None:
-
+        # 4角5番手以内から6着以下
         if last <= 5 and finish >= 6:
             score -= tare_penalty_1
 
@@ -1001,76 +990,54 @@ for horse in horses:
         # 4角3番手以内から10着以下
         if last <= 3 and finish >= 10:
             score -= tare_penalty_3
-    # 軸馬タイプに合わせて、展開馬をシンプルに評価する
-    # 軸馬が逃げ・先行なら、
-    # 前進気勢の強い馬を展開馬候補として加点
-    if kyakushoku_type in ["逃げ", "先行"]:
-        score += front_score_map.get(horse_no, 0) * 0.5
-    # 逃げ：一緒に前で残れる馬
-    if kyakushoku_type == "逃げ":
+     # 軸馬タイプを大きく2系統で見る
+    # 逃げ・先行・展開待ち
+    # → 先行できて垂れない馬を相手にする
+    if kyakushoku_type in ["逃げ", "先行", "展開待ち"]:
+
+        # 前進気勢を強めに評価
+        score += front_score_map.get(horse_no, 0) * 0.6
+
+        # 前〜中団で競馬できる馬
         if avg_first <= 5:
-            score += 45
+            score += 60
+
         if avg_last <= 5:
-            score += 45
-        if abs(avg_last - avg_first) <= 2:
-            score += 30
+            score += 60
 
-    # 先行：前〜中団で流れに乗れる馬
-    elif kyakushoku_type == "先行":
-        if avg_first <= 6:
-            score += 40
-        if avg_last <= 6:
-            score += 40
+        # 位置取りを大きく落とさない馬
         if abs(avg_last - avg_first) <= 2:
-            score += 35
-        score += long_score_map.get(horse_no, 0) * 0.04
-
-    # 差し：前で残れる馬を相手にする
-    elif kyakushoku_type == "差し":
-        if avg_first <= 5:
             score += 50
-        if avg_last <= 6:
-            score += 40
-        if avg_first >= 8:
-            score -= 30
 
-    # 展開待ち：相手は安定して前〜中団にいる馬
-    elif kyakushoku_type == "展開待ち":
-        if avg_first <= 6:
-            score += 45
-        if avg_last <= 6:
-            score += 45
-        if abs(avg_last - avg_first) <= 2:
-            score += 35
+        # 後方型は展開馬から下げる
         if avg_first >= 8 and avg_last >= 8:
-            score -= 60
+            score -= 80
 
-    # 惰性で長く脚を使えるタイプ：
-    # 軸馬の位置に近く、同じように長く脚を使える馬
-    elif kyakushoku_type == "惰性で長く脚を使えるタイプ":
-        position_gap = abs(avg_last - strong_avg_last)
+    # 惰性・差し
+    # → 地力っぽい馬、長く脚を使える馬を相手にする
+    elif kyakushoku_type in ["惰性で長く脚を使えるタイプ", "差し"]:
 
-        # 軸馬の4角位置に近い馬
-        score += max(0, 70 - position_gap * 15)
+        # 地力・長く脚スコアを強めに反映
+        score += long_score_map.get(horse_no, 0) * 0.12
 
-        # 前〜中団で流れに乗れる馬
+        # 前〜中団で長く脚を使える馬
         if 2 <= avg_first <= 7:
-            score += 35
+            score += 45
 
         if 2 <= avg_last <= 7:
-            score += 35
+            score += 45
 
         # 大きく崩れない馬
         if abs(avg_last - avg_first) <= 2:
-            score += 45
+            score += 50
 
-        # 長く脚を使えるスコアを少し反映
-        score += long_score_map.get(horse_no, 0) * 0.05
+        # 少し押し上げる馬も評価
+        if avg_last < avg_first and avg_last <= 6:
+            score += 35
 
         # 完全後方型は下げる
         if avg_first >= 8 and avg_last >= 8:
-            score -= 70
-
+            score -= 70  
     # 前崩れ警戒時だけ、後ろから押し上げる馬を少し加点
         # 前崩れ山型理論
     # 完全後方馬ではなく、
@@ -1145,6 +1112,24 @@ long_score_map = {h["馬番"]: h["スコア"] for h in long_spurt_candidates}
 tenkai_score_map = {h["馬番"]: h["スコア"] for h in tenkai_candidates}
 
 total_candidates = []
+# 今回の距離と完全一致する最速タイムを探す
+fastest_same_distance_time = None
+
+for horse in horses:
+    for item in horse.get("距離付きタイム", []):
+
+        if item["距離"] != distance_num:
+            continue
+
+        try:
+            minutes, seconds = item["タイム"].split(":")
+            t = int(minutes) * 60 + float(seconds)
+
+            if fastest_same_distance_time is None or t < fastest_same_distance_time:
+                fastest_same_distance_time = t
+
+        except:
+            pass
 
 for horse in horses:
     horse_no = horse["馬番"]
@@ -1154,7 +1139,35 @@ for horse in horses:
     finishes = horse.get("着順", [])
     flows = horse.get("通過順", [])
     horse_text = horse.get("取得テキスト", "")
+    # 平均1角位置補正
+    first_positions = []
 
+    for flow in flows:
+        if len(flow) >= 1:
+            first_positions.append(flow[0])
+
+    if first_positions:
+
+        avg_first = sum(first_positions) / len(first_positions)
+
+        if avg_first <= 4:
+            total_score += 30
+
+        elif avg_first <= 6:
+            total_score += 10
+
+        elif avg_first >= 7:
+            total_score -= 30
+    debug_total_parts = {
+        "前進気勢": 0,
+        "持ちタイム": 0,
+        "着順": 0,
+        "平均着順": 0,
+        "地力": 0,
+        "JRA": 0,
+        "騎手": 0,
+        "減点": 0,
+    }
     jra_transfer = any(
         word in horse_text
         for word in [
@@ -1167,7 +1180,9 @@ for horse in horses:
         ]
     )
     # 前進気勢も少しだけ
-    total_score += front_score_map.get(horse_no, 0) * 0.10
+    front_part = front_score_map.get(horse_no, 0) * 0.10
+    total_score += front_part
+    debug_total_parts["前進気勢"] += front_part
     # 走破タイムが速い馬を総合力に加点
     distance_times = horse.get("距離付きタイム", [])
 
@@ -1233,7 +1248,18 @@ for horse in horses:
             time_weight = 0
 
         time_score = max(0, 200 - best_time) * time_weight
+        # 今回の距離一致タイムで最速馬から遅い馬は減点
+        if fastest_same_distance_time is not None and best_time is not None:
+
+            diff = best_time - fastest_same_distance_time
+
+            if diff >= 2.0:
+                total_score -= 120
+
+            elif diff >= 1.5:
+                total_score -= 60
         total_score += time_score
+        debug_total_parts["持ちタイム"] += time_score
     # 着順重視（JRA馬はスキップ）
     if not jra_transfer:
 
@@ -1269,7 +1295,9 @@ for horse in horses:
     
     # 地力（通過順）はJRA馬だけ無視
     if not jra_transfer:
-        total_score += long_score_map.get(horse_no, 0) * 0.25
+        long_part = long_score_map.get(horse_no, 0) * 0.25
+        total_score += long_part
+        debug_total_parts["地力"] += long_part
     if jra_transfer:
         # 実験用：JRA転入馬は加点だけ残して減点なし
         total_score += 30
@@ -1309,7 +1337,8 @@ for horse in horses:
         "総合スコア": total_score,
         "持ちタイムスコア": time_score,
         "ベストタイム": best_time,
-        "タイム係数": time_weight
+        "タイム係数": time_weight,
+        "内訳": debug_total_parts
     })
 
 total_candidates = sorted(
@@ -1322,21 +1351,20 @@ total_best = total_candidates[0]
 total_fourth = total_candidates[3]
 total_fourth_horse = f"{total_fourth['馬番']}番 {total_fourth['馬名']}"
 total_best_horse = f"{total_best['馬番']}番 {total_best['馬名']}"
-# 総合力1位と先行気勢が被ったら、遊び心で先行気勢4位を採用
-if front_best["馬番"] == total_best["馬番"]:
-    if len(front_candidates) >= 4:
-        front_best = front_candidates[3]
-        front_horse = f"{front_best['馬番']}番 {front_best['馬名']}"
+
 if debug_mode:
     st.subheader("総合力ランキング")
 
     for h in total_candidates:
         st.write(
             f"{h['馬番']}番 {h['馬名']} "
-            f"｜総合スコア {round(h['総合スコア'], 1)} "
-            f"｜持ちタイム {round(h['持ちタイムスコア'], 1)} "
-            f"｜ベスト {h['ベストタイム']} "
-            f"｜係数 {h['タイム係数']}"
+            f"｜総合 {round(h['総合スコア'], 1)} "
+            f"｜前進 {round(h['内訳']['前進気勢'], 1)} "
+            f"｜タイム {round(h['内訳']['持ちタイム'], 1)} "
+            f"｜地力 {round(h['内訳']['地力'], 1)} "
+            f"｜着順 {round(h['内訳']['着順'], 1)} "
+            f"｜平均 {round(h['内訳']['平均着順'], 1)} "
+            f"｜減点 {round(h['内訳']['減点'], 1)}"
         )
 # 展開が向く馬と先行気勢の馬が同じなら、
 # 先行気勢の馬をスコア2位以降にずらす
@@ -1552,20 +1580,6 @@ def candidate_text_list(candidates):
 
 popular = f"{popular_horse_num}番 {real_horses[popular_horse_num - 1]}"
 
-tenkai_list = candidate_text_list(tenkai_candidates)
-front_list = candidate_text_list(front_candidates)
-ana_list = candidate_text_list(ana_candidates)
-long_list = candidate_text_list(long_spurt_candidates)
-
-# 念のため空なら現在の選出馬を入れる
-if not ana_list:
-    ana_list = [ana_horse]
-
-if not tenkai_list:
-    tenkai_list = [tenkai_horse]
-
-if not front_list:
-    front_list = [front_horse]
 # 三連複2点
 st.subheader("おすすめの三連複 2点")
 
@@ -1598,39 +1612,22 @@ henna_ba_active = (
 )
 trio_patterns = [
 
-    # ◎1点目基本：軸馬－展開馬－先行馬
+    # 1点目：軸馬－展開馬－先行馬
     [popular, tenkai_horse_text, front_horse],
 
-    # ◎2点目基本：総合1位－地力馬－穴3位
+    # 2点目：総合力1位－地力馬－穴3位
     [total_horse, long_horse, ana_third_horse],
 
-    # 総合と地力が被った時の逃げ道
+    # 2点目の逃げ道：総合力1位－押さえ－穴3位
     [total_horse, ana_horse, ana_third_horse],
 
-    # 地力と総合が被った時
-    [total_horse, popular, ana_third_horse],
-    # 穴2位・穴3位へ逃がす
-    [total_horse, popular, ana_second_horse],
-    [total_horse, popular, ana_third_horse],
-    [total_horse, long_horse, ana_second_horse],
-    [total_horse, long_horse, ana_third_horse],
-    [popular, tenkai_horse_text, ana_second_horse],
-    [popular, tenkai_horse_text, ana_third_horse],
-    # 総合と軸馬が被った時
-    [total_horse, long_horse, ana_horse],
-    # 総合と軸馬が被った時の追加保険
-    [total_horse, long_horse, ana_third_horse],
-    [total_horse, tenkai_horse_text, ana_third_horse],
-    [popular, long_horse, ana_third_horse],
-    [total_horse, tenkai_horse_text, nankan_front_horse],
-    [popular, tenkai_horse_text, nankan_front_horse],
-    [total_horse, nankan_front_horse, ana_third_horse],
-    # 保険
+    # 保険：軸馬－展開馬－押さえ
     [popular, tenkai_horse_text, ana_horse],
+
+    # 保険：総合力1位－展開馬－穴3位
     [total_horse, tenkai_horse_text, ana_third_horse],
 
-    # 南関
-    [total_horse, long_horse, nankan_front_horse],
+    # 南関保険：軸馬－展開馬－先行2位
     [popular, tenkai_horse_text, nankan_front_horse],
 ]
 if henna_ba_active:
