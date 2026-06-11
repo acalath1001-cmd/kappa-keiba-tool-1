@@ -1612,8 +1612,13 @@ henna_ba_active = (
 )
 trio_patterns = [
 
-    # 1点目：軸馬－展開馬－先行馬
-    [popular, tenkai_horse_text, front_horse],
+    # 1点目：軸馬タイプ別
+    [
+        popular,
+        tenkai_horse_text,
+        front_horse if kyakushoku_type in ["逃げ", "先行", "展開待ち"]
+        else ana_horse
+    ],
 
     # 2点目：総合力1位－地力馬－穴3位
     [total_horse, long_horse, ana_third_horse],
