@@ -1698,13 +1698,13 @@ st.markdown("### 🛟 カッパの浮き輪保険")
 float_bets = []
 
 float_patterns = [
-    # 初心者さん向けの保険：軸馬 × 先行気勢の強い馬
-    [popular, front_horse],
+    # カッパの保険：総合力1位 × 穴3位
+    [total_horse, ana_third_horse],
 
     # 被った時の逃げ道
-    [popular, long_spurt_horse],
-    [popular, tenkai_horse_text],
-    [popular, ana_horse],
+    [total_horse, ana_second_horse],
+    [total_horse, ana_horse],
+    [popular, ana_third_horse],
 ]
 
 for pattern in float_patterns:
