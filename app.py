@@ -1598,14 +1598,14 @@ henna_ba_active = (
 )
 trio_patterns = [
 
-    # ◎2点目基本：総合1位－軸馬－地力馬
-    [total_horse, popular, long_horse],
+    # ◎1点目基本：軸馬－展開馬－先行馬
+    [popular, tenkai_horse_text, front_horse],
 
-    # 準本線：総合1位－軸馬－先行馬
-    [total_horse, popular, front_horse],
+    # ◎2点目基本：総合1位－地力馬－穴3位
+    [total_horse, long_horse, ana_third_horse],
 
-    # 逃げ道：総合1位－軸馬－穴3位
-    [total_horse, popular, ana_third_horse],
+    # 総合と地力が被った時の逃げ道
+    [total_horse, ana_horse, ana_third_horse],
 
     # 地力と総合が被った時
     [total_horse, popular, ana_third_horse],
@@ -1651,7 +1651,11 @@ for pattern in trio_patterns:
 
     if len(trio_bets) >= 2:
         break
-
+# 軸馬流しを先に表示
+trio_bets = sorted(
+    trio_bets,
+    key=lambda x: 0 if (tenkai_horse_text in x and front_horse in x) else 1
+)
 for bet in trio_bets:
     st.write(f"{bet[0]} - {bet[1]} - {bet[2]}")
 # ワイド 本線2点＋カッパの浮き輪保険1点
