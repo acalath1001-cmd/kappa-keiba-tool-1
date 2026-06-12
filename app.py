@@ -322,42 +322,65 @@ for i, horse in enumerate(real_horses, start=1):
     race_times = []
     distance_time_pairs = []
 
-    # 距離・タイム・通過順を1レース単位で取得する
+    # 距離・タイム・通過順を取得
+    # 笠松など「タイムと距離が別行」の競馬場に対応するため
+    # 除外・取消を除いた日付行から距離を取得し、
+    # タイムと通過順はhorse_text全体から別途取得してインデックス対応
+
     distance_time_pairs = []
     race_times = []
 
-    race_blocks = re.split(
-        r"(?=\d{2}\.\d{2}\.\d{2})",
-        horse_text
-    )
+    # ① 除外・取消を除いた日付行から距離を順番に取得
+    valid_distances = []
+    valid_places = []
 
-    for block in race_blocks:
-        # 除外・取消・中止レースは距離とタイムのズレ原因になるのでスキップ
+    date_blocks = re.split(r"(?=\d{2}\.\d{2}\.\d{2})", horse_text)
+
+    for block in date_blocks:
         if any(word in block for word in ["除外", "取消", "中止", "競走除外", "出走取消"]):
             continue
-        # 距離
-        distance_match = re.search(
+
+        d_match = re.search(
             r"(?:右|左|芝|ダ)\s*"
             r"(800|820|850|900|920|1000|1200|1230|1300|1400|1500|1600|1700|1800|1870|1900|2000|2100|2200)",
             block
         )
-
-        if not distance_match:
+        if not d_match:
             continue
 
-        # タイム＋通過順
-        time_flow_match = re.search(
-            r"(\d+:\d{2}\.\d+)[\s　]+"
-            r"(\d{1,2}-\d{1,2}(?:-\d{1,2})?(?:-\d{1,2})?)",
-            block
-        )
+        place_match = re.search(r"(園田|姫路)", block)
+        valid_distances.append(int(d_match.group(1)))
+        valid_places.append(place_match.group(1) if place_match else "")
 
-        if not time_flow_match:
+    # ② タイム＋通過順のペアをhorse_text全体から順番に取得
+    time_flow_pairs = re.findall(
+        r"(\d+:\d{2}\.\d+)[\s　]{1,6}(\d{1,2}-\d{1,2}(?:-\d{1,2})?(?:-\d{1,2})?)",
+        horse_text
+    )
+
+    valid_time_flows = []
+
+    for time_text, flow_text in time_flow_pairs:
+
+        try:
+            minutes, seconds = time_text.split(":")
+            total_sec = int(minutes) * 60 + float(seconds)
+
+            # 短すぎる区間タイムを除外
+            if distance_num >= 1400:
+                if total_sec < 70:
+                    continue
+
+            elif distance_num >= 1200:
+                if total_sec < 60:
+                    continue
+
+            elif distance_num >= 1000:
+                if total_sec < 50:
+                    continue
+
+        except:
             continue
-
-        race_distance = int(distance_match.group(1))
-        time_text = time_flow_match.group(1)
-        flow_text = time_flow_match.group(2)
 
         flow_nums = [int(x) for x in flow_text.split("-")]
 
@@ -367,19 +390,27 @@ for i, horse in enumerate(real_horses, start=1):
         if any(n >= 30 for n in flow_nums):
             continue
 
-        place_match = re.search(r"(園田|姫路)", block)
-        place = place_match.group(1) if place_match else ""
+        valid_time_flows.append((time_text, flow_nums))
 
+    # ③ インデックスで対応付け（件数が少ない方に合わせる）
+    pair_count = min(len(valid_distances), len(valid_time_flows))
+
+    for idx in range(pair_count):
+        time_text, flow_nums = valid_time_flows[idx]
+        distance_time_pairs.append({
+            "距離": valid_distances[idx],
+            "タイム": time_text,
+            "競馬場": valid_places[idx],
+            "通過順": flow_nums
+        })
         race_times.append(time_text)
 
-        distance_time_pairs.append({
-            "距離": race_distance,
-            "タイム": time_text,
-            "競馬場": place
-        })
-
-    race_times = race_times[-5:]
+    # 最後の5走分に絞る
     distance_time_pairs = distance_time_pairs[-5:]
+    race_times = race_times[-5:]
+
+    # race_flowsも distance_time_pairs から取り直す
+    race_flows = [pair["通過順"] for pair in distance_time_pairs]
     # 過去5走の着順をセルの先頭から取得
     finish_positions = []
 
@@ -402,6 +433,12 @@ for i, horse in enumerate(real_horses, start=1):
         word in horse_text
         for word in ["出走取消", "競走除外", "出走除外"]
     )
+    if debug_mode:
+        st.write(
+            f"{i}番 {horse}｜距離付きタイム数 {len(distance_time_pairs)} "
+            f"｜通過順数 {len(race_flows)} "
+            f"｜着順数 {len(finish_positions)}"
+        )
     horses.append({
         "馬番": i,
         "馬名": horse,
@@ -751,21 +788,34 @@ for horse in horses:
     pre_total_score = front_score_map.get(horse_no, 0) * 0.10
 
 
-    race_times = horse.get("走破タイム", [])
-    time_seconds = []
-    time_score = 0
-    best_time = None
-    time_weight = 0
-    for t in race_times:
+    # 距離フィルター付きのタイムだけ使う
+    distance_times = horse.get("距離付きタイム", [])
+    same_distance_exists = any(
+        x["距離"] == distance_num for x in distance_times
+    )
+    pre_time_seconds = []
+
+    for item in distance_times:
+        race_distance = item["距離"]
+        if same_distance_exists:
+            distance_ok = (race_distance == distance_num)
+        else:
+            if distance_num == 1400:
+                distance_ok = (abs(race_distance - distance_num) <= 200 and race_distance >= 1200)
+            elif distance_num >= 1500:
+                distance_ok = abs(race_distance - distance_num) <= 300
+            else:
+                distance_ok = abs(race_distance - distance_num) <= 100
+        if not distance_ok:
+            continue
         try:
-            minutes, seconds = t.split(":")
-            total_seconds = int(minutes) * 60 + float(seconds)
-            time_seconds.append(total_seconds)
+            minutes, seconds = item["タイム"].split(":")
+            pre_time_seconds.append(int(minutes) * 60 + float(seconds))
         except:
             pass
 
-    if time_seconds:
-        best_time = min(time_seconds)
+    if pre_time_seconds:
+        best_time = min(pre_time_seconds)
         pre_total_score += max(0, 200 - best_time) * 3
 
     finishes = horse.get("着順", [])
@@ -1021,6 +1071,15 @@ for horse in horses:
     # 展開馬の一次試験：今回距離で戦えるタイムがあるか
     tenkai_best_time = None
     distance_times = horse.get("距離付きタイム", [])
+
+    same_distance_exists = any(
+        x["距離"] == distance_num
+        for x in distance_times
+    )
+
+    # 展開馬のタイム評価
+    # 距離一致を最優先。
+    # 1400m戦で800m・820m・900mのタイムを評価しない。
 
     same_distance_exists = any(
         x["距離"] == distance_num
@@ -1337,53 +1396,38 @@ for horse in horses:
     time_score = 0
     best_time = None
     time_weight = 0
-    for item in distance_times:
 
+    # 総合力のタイム評価（距離一致を最優先）
+    same_distance_exists = any(
+        x["距離"] == distance_num
+        for x in distance_times
+    )
+
+    for item in distance_times:
         race_distance = item["距離"]
 
-        # 総合力のタイム評価
-        # 距離一致を最優先。
-        # 1400m戦で800m・820m・900mのタイムを評価しない。
-
-        # その馬に距離一致タイムがあるなら、それだけを見る
-        same_distance_exists = any(
-            x["距離"] == distance_num
-            for x in distance_times
-        )
-
-        for item in distance_times:
-
-            race_distance = item["距離"]
-
-            if same_distance_exists:
-                distance_ok = (race_distance == distance_num)
-
+        if same_distance_exists:
+            distance_ok = (race_distance == distance_num)
+        else:
+            if distance_num == 1400:
+                distance_ok = (
+                    abs(race_distance - distance_num) <= 200
+                    and race_distance >= 1200
+                )
+            elif distance_num in [1200, 1230, 1300]:
+                distance_ok = (
+                    abs(race_distance - distance_num) <= 200
+                    and race_distance >= 1000
+                )
+            elif distance_num >= 1900:
+                distance_ok = race_distance in [
+                    1600, 1700, 1800, 1870, 1900, 2000, 2100
+                ]
+            elif distance_num >= 1500:
+                distance_ok = abs(race_distance - distance_num) <= 300
             else:
-                if distance_num == 1400:
-                    distance_ok = (
-                        abs(race_distance - distance_num) <= 200
-                        and race_distance >= 1200
-                    )
+                distance_ok = abs(race_distance - distance_num) <= 100
 
-                elif distance_num in [1200, 1230, 1300]:
-                    distance_ok = (
-                        abs(race_distance - distance_num) <= 200
-                        and race_distance >= 1000
-                    )
-
-                elif distance_num >= 1900:
-                    distance_ok = race_distance in [
-                        1600,1700,1800,1870,1900,2000,2100
-                    ]
-
-                elif distance_num >= 1500:
-                    distance_ok = abs(race_distance - distance_num) <= 300
-
-                else:
-                    distance_ok = abs(race_distance - distance_num) <= 100
-
-            if not distance_ok:
-                continue
         if not distance_ok:
             continue
 
@@ -1392,30 +1436,22 @@ for horse in horses:
             total_seconds = int(minutes) * 60 + float(seconds)
 
             past_place = item.get("競馬場", "")
-
-            # 園田・姫路タイム補正
-            # 園田開催で姫路の過去タイムを見る時は +5秒
-            # 姫路開催で園田の過去タイムを見る時は -5秒
             if baba_name == "園田" and past_place == "姫路":
                 total_seconds += 5.0
-
             elif baba_name == "姫路" and past_place == "園田":
                 total_seconds -= 5.0
 
             time_seconds.append(total_seconds)
-
         except:
             pass
 
     if time_seconds:
         best_time = min(time_seconds)
 
-        # 距離一致タイムがある馬の数で、持ちタイム評価の強さを変える
-        distance_match_count = 0
-
-        for h in horses:
-            if h.get("走破タイム", []):
-                distance_match_count += 1
+        distance_match_count = sum(
+            1 for h in horses
+            if any(x["距離"] == distance_num for x in h.get("距離付きタイム", []))
+        )
 
         if distance_match_count >= len(horses) * 0.5:
             time_weight = 3.0
@@ -1427,27 +1463,22 @@ for horse in horses:
             time_weight = 0
 
         time_score = max(0, 200 - best_time) * time_weight
-        # 今回距離のベストタイム差を強めに評価
-        # クラス上がりで時計が足りない馬を落とす
+
         if fastest_same_distance_time is not None and best_time is not None:
-
             diff = best_time - fastest_same_distance_time
-
             if diff >= 3.0:
                 total_score -= 300
                 debug_total_parts["減点"] -= 300
-
             elif diff >= 2.0:
                 total_score -= 220
                 debug_total_parts["減点"] -= 220
-
             elif diff >= 1.5:
                 total_score -= 140
                 debug_total_parts["減点"] -= 140
-
             elif diff >= 1.0:
                 total_score -= 80
                 debug_total_parts["減点"] -= 80
+
         total_score += time_score
         debug_total_parts["持ちタイム"] += time_score
     # 過去5走の着順スコア
