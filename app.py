@@ -567,28 +567,7 @@ if debug_mode:
             f"｜スコア {h['スコア']} "
             f"｜1角 {h['1角位置']}"
         )
-if debug_mode:
-    st.subheader("通過順確認")
-if debug_mode:
-    st.subheader("距離付きタイム確認")
-if debug_mode:
-    st.subheader("元データ確認")
 
-    for horse in horses:
-        st.write(f"{horse['馬番']}番 {horse['馬名']}")
-        st.text(horse.get("取得テキスト", "")[:2000])
-        break
-    for horse in horses:
-        st.write(
-            f"{horse['馬番']}番 {horse['馬名']} "
-            f"｜距離付きタイム {horse.get('距離付きタイム', [])}"
-        )
-    for horse in horses:
-        st.write(
-            f"{horse['馬番']}番 {horse['馬名']} "
-            f"｜通過順 {horse['通過順']} "
-            f"｜着順 {horse['着順']}"
-        )
 if not front_candidates:
     st.info(
         """
