@@ -943,15 +943,45 @@ for flow in strong_flows:
         strong_back_count += 1
 
 
+# 逃げ判定：2角・3角に1が多い馬を逃げにする
+# 通過順が2個しかない場合は、1-1 / 1-2 / 2-1 を逃げ扱いにする
+
+strong_escape_count = 0
+
+for flow in strong_flows:
+    if len(flow) >= 4:
+        second = flow[1]
+        third = flow[2]
+
+        if second == 1 or third == 1:
+            strong_escape_count += 1
+
+    elif len(flow) == 2:
+        first = flow[0]
+        second = flow[1]
+
+        if first == 1 or second == 1:
+            strong_escape_count += 1
+
 # ①逃げ
-if strong_avg_first <= 2 and strong_front_count >= 2:
+if strong_escape_count >= 2:
     kyakushoku_type = "逃げ"
 
 # ②先行
 elif strong_avg_first <= 4 and strong_avg_last <= 5:
     kyakushoku_type = "先行"
 
-# ③惰性で長く脚を使えるタイプ
+# ③差し
+elif (
+    strong_push_count >= 2
+    or (
+        strong_avg_first >= 5
+        and strong_avg_last < strong_avg_first
+    )
+):
+    kyakushoku_type = "差し"
+
+# ④持続
 elif (
     strong_stable_count >= 2
     or (
@@ -960,11 +990,7 @@ elif (
         and abs(strong_avg_last - strong_avg_first) <= 2
     )
 ):
-    kyakushoku_type = "惰性で長く脚を使えるタイプ"
-
-# ④差し
-elif strong_push_count >= 2 or (strong_avg_first >= 5 and strong_avg_last < strong_avg_first):
-    kyakushoku_type = "差し"
+    kyakushoku_type = "持続"
 
 # ⑤展開待ち
 else:
@@ -1191,7 +1217,7 @@ for horse in horses:
 
     # 惰性・差し
     # → 地力っぽい馬、長く脚を使える馬を相手にする
-    elif kyakushoku_type in ["惰性で長く脚を使えるタイプ", "差し"]:
+    elif kyakushoku_type in ["持続", "差し"]:
 
         # 地力・長く脚スコアを強めに反映
         score += long_score_map.get(horse_no, 0) * 0.12
