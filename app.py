@@ -963,15 +963,11 @@ for flow in strong_flows:
         if first == 1 or second == 1:
             strong_escape_count += 1
 
-# ①逃げ
-if strong_escape_count >= 2:
-    kyakushoku_type = "逃げ"
-
-# ②先行
-elif strong_avg_first <= 4 and strong_avg_last <= 5:
+# ①先行
+if strong_avg_first <= 4 and strong_avg_last <= 5:
     kyakushoku_type = "先行"
 
-# ③差し
+# ②差し
 elif (
     strong_push_count >= 2
     or (
@@ -980,6 +976,10 @@ elif (
     )
 ):
     kyakushoku_type = "差し"
+
+# ③逃げ
+elif strong_escape_count >= 2:
+    kyakushoku_type = "逃げ"
 
 # ④持続
 elif (
