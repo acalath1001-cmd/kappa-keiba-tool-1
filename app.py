@@ -1356,6 +1356,36 @@ if debug_mode:
 
 tenkai_best = tenkai_candidates[0]
 tenkai_horse = f"{tenkai_best['馬番']}番 {tenkai_best['馬名']}"
+# JRA転入馬が多いレースは警告表示
+jra_count = 0
+
+for horse in horses:
+    horse_text = horse.get("取得テキスト", "")
+
+    if any(
+        word in horse_text
+        for word in [
+            "東京", "中山", "京都", "阪神",
+            "中京", "新潟", "福島",
+            "小倉", "札幌", "函館",
+            "3歳未勝利", "３歳未勝利",
+            "2歳未勝利", "２歳未勝利"
+        ]
+    ):
+        jra_count += 1
+
+jra_rate = (
+    jra_count / len(horses)
+    if len(horses) > 0
+    else 0
+)
+
+if jra_rate >= 0.7:
+    st.warning(
+        "⚠️ JRA転入馬が多いレースです。\n\n"
+        "地力・展開評価の信頼度が低くなるため、"
+        "総合力や持ちタイムも参考にしてください。"
+    )
 # 総合力1位を裏側で判定
 front_score_map = {h["馬番"]: h["スコア"] for h in front_candidates}
 long_score_map = {h["馬番"]: h["スコア"] for h in long_spurt_candidates}
