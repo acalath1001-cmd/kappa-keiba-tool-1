@@ -592,6 +592,27 @@ for horse in horses:
     horse_name = horse["馬名"]
     race_flows = horse["通過順"]
     horse_text = horse.get("取得テキスト", "")
+    # 持続評価にも距離フィルターを入れる
+    filtered_flows = []
+
+    for item in horse.get("距離付きタイム", []):
+        race_distance = item["距離"]
+
+        if distance_num == 1400:
+            distance_ok = (
+                abs(race_distance - distance_num) <= 200
+                and race_distance >= 1200
+            )
+        elif distance_num >= 1500:
+            distance_ok = abs(race_distance - distance_num) <= 300
+        else:
+            distance_ok = abs(race_distance - distance_num) <= 100
+
+        if distance_ok:
+            filtered_flows.append(item["通過順"])
+
+    if filtered_flows:
+        race_flows = filtered_flows[-5:]
 
     score = 0
     front_keep_count = 0
@@ -1746,7 +1767,27 @@ for h in ana_base_candidates:
             # 4角3番手以内から8着以下は強めに減点
             if finish is not None and last <= 3 and finish >= 8:
                 ana_score -= 80
+            # 1600m以上は差し・押し上げ型を少し評価
+            if distance_num >= 1600 and target_horse:
 
+                flows = target_horse.get("通過順", [])
+
+                front_positions = [
+                    flow[0] for flow in flows
+                    if len(flow) >= 2
+                ]
+
+                last_positions = [
+                    flow[-1] for flow in flows
+                    if len(flow) >= 2
+                ]
+
+                if front_positions and last_positions:
+                    avg_front = sum(front_positions) / len(front_positions)
+                    avg_last = sum(last_positions) / len(last_positions)
+
+                    if avg_front >= 7 and avg_last <= 5:
+                        ana_score += 50
     ana_candidates.append({
         "馬番": h["馬番"],
         "馬名": h["馬名"],
