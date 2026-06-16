@@ -1143,6 +1143,10 @@ for horse in horses:
             score -= 140
         elif diff >= 1.0:
             score -= 80
+
+    else:
+        # 今回距離で使える展開タイムがない馬は未知数として強めに減点
+        score -= 180
     # 着順が悪い馬は展開評価を少し下げる
     finishes = horse.get("着順", [])
 
@@ -1220,7 +1224,12 @@ for horse in horses:
     elif kyakushoku_type in ["持続", "差し"]:
 
         # 地力・長く脚スコアを強めに反映
-        score += long_score_map.get(horse_no, 0) * 0.12
+        long_score = long_score_map.get(horse_no, 0)
+
+        # 地力スコアはプラス評価だけ展開に使う
+        # マイナス地力は差し馬を潰しすぎるので反映しない
+        if long_score > 0:
+            score += long_score * 0.12
 
         # 前〜中団で長く脚を使える馬
         if 2 <= avg_first <= 7:
@@ -1609,21 +1618,45 @@ if debug_mode:
         )
 # 展開が向く馬と先行気勢の馬が同じなら、
 # 先行気勢の馬をスコア2位以降にずらす
-# 期待値高めおすすめ穴馬
-# 穴馬は「前進気勢スコア3位」を採用する
-# ただし、人気馬・展開馬・長く脚の馬と被る場合は次点へずらす
+# 期待値高めおすすめ馬
+# 穴馬は前進気勢固定をやめる
+# 上位4頭と被らない残り馬から、展開・総合寄りで拾う
 
 used_for_ana = [
     popular_horse_num,      # 軸馬とは被らない
     total_best["馬番"],     # 総合力1位とは被らない
+    tenkai_best["馬番"],    # 展開馬とは被らない
+    long_best["馬番"],      # 地力馬とは被らない
     front_best["馬番"],     # 先行気勢とは被らない
 ]
 
 ana_candidates = []
 
-for h in front_candidates:
+ana_base_candidates = []
+
+for h in tenkai_candidates:
     if h["馬番"] in used_for_ana:
         continue
+
+    ana_base_candidates.append({
+        "馬番": h["馬番"],
+        "馬名": h["馬名"],
+        "スコア": h["スコア"]
+    })
+
+for h in total_candidates:
+    if h["馬番"] in used_for_ana:
+        continue
+    if any(a["馬番"] == h["馬番"] for a in ana_base_candidates):
+        continue
+
+    ana_base_candidates.append({
+        "馬番": h["馬番"],
+        "馬名": h["馬名"],
+        "スコア": h["総合スコア"] * 0.5
+    })
+
+for h in ana_base_candidates:
 
     # 最後に垂れる馬は期待値馬から除外
     target_horse = None
@@ -1697,11 +1730,11 @@ if len(ana_candidates) < 3:
             break
         ana_candidates.append(h)
 if debug_mode:
-    st.subheader("穴馬候補スコア")
+    st.subheader("押さえ候補スコア")
     for h in ana_candidates:
         st.write(
             f"{h['馬番']}番 {h['馬名']} "
-            f"｜前進気勢スコア {h['スコア']}"
+            f"｜押さえスコア {round(h['スコア'], 1)}"
         )
 
 if ana_candidates:
@@ -1898,8 +1931,16 @@ def make_unique_trio(first, second, third, fallback_list):
 
 
 # 1点目：軸馬から
-if kyakushoku_type in ["逃げ", "先行", "展開待ち"]:
+
+# 総合と展開が被った時は穴3を使う
+if total_best["馬番"] == tenkai_best["馬番"]:
+    axis_third = ana_third_horse
+
+# 通常
+elif kyakushoku_type in ["逃げ", "先行", "展開待ち"]:
     axis_third = front_horse_for_trio
+
+# 差し・持続
 else:
     axis_third = ana_horse
 
