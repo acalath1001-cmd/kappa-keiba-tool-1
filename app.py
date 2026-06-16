@@ -2001,9 +2001,13 @@ if total_best["馬番"] == tenkai_best["馬番"]:
 elif kyakushoku_type in ["逃げ", "先行", "展開待ち"]:
     axis_third = front_horse_for_trio
 
-# 差し・持続
-else:
+# 差し
+elif kyakushoku_type == "差し":
     axis_third = ana_horse
+
+# 持続
+else:
+    axis_third = front_horse_for_trio
 
 axis_fallbacks = [
     ana_horse,
