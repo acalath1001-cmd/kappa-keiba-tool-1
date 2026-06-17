@@ -1892,7 +1892,7 @@ def show_card(icon, title, subtitle, horse_text, bg_color, border_color, title_c
             ">
                 {horse_text}
             </div>
-        </div>
+        </div>n
         """,
         unsafe_allow_html=True
     )
