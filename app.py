@@ -1868,9 +1868,9 @@ def show_card(icon, title, subtitle, horse_text, bg_color, border_color, title_c
         <div style="
             background-color:{bg_color};
             border:1.5px solid {border_color};
-            padding:14px 16px;
-            border-radius:10px;
-            margin-bottom:10px;
+            padding:10px 14px;
+            border-radius:8px;
+            margin-bottom:6px;
             color:#222222;
         ">
             <div style="
