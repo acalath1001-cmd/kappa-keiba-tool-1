@@ -1860,69 +1860,104 @@ else:
     ana_third = ana_candidates[-1]
 
 ana_third_horse = f"{ana_third['馬番']}番 {ana_third['馬名']}"
-st.subheader("軸馬の脚色タイプ")
 
-st.markdown(
-    f"""
-    <div style="
-        background-color:#f3f6fb;
-        padding:14px;
-        border-radius:10px;
-        color:#222222;
-        font-size:16px;
-        font-weight:400;
-        margin-bottom:10px;
-    ">
-    <b>{popular_horse_num}番 {real_horses[popular_horse_num - 1]}</b><br>
-    軸馬：<b>{kyakushoku_type}</b><br>
-    </div>
-    """,
-    unsafe_allow_html=True
+
+def show_card(icon, title, subtitle, horse_text, bg_color, border_color, title_color):
+    st.markdown(
+        f"""
+        <div style="
+            background-color:{bg_color};
+            border:1.5px solid {border_color};
+            padding:14px 16px;
+            border-radius:10px;
+            margin-bottom:10px;
+            color:#222222;
+        ">
+            <div style="
+                font-size:18px;
+                font-weight:700;
+                color:{title_color};
+                margin-bottom:6px;
+            ">
+                {icon} {title}
+                <span style="
+                    font-size:14px;
+                    font-weight:600;
+                ">（{subtitle}）</span>
+            </div>
+            <div style="
+                font-size:18px;
+                font-weight:700;
+                color:#111827;
+            ">
+                {horse_text}
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+
+show_card(
+    "🎯",
+    "軸馬",
+    f"脚色タイプ：{kyakushoku_type}",
+    popular_horse_label,
+    "#fff1f2",
+    "#f5b5c0",
+    "#e11d48"
 )
-st.markdown(
-    f"""
-    <div style="
-        background-color:#f8eaea;
-        padding:15px;
-        border-radius:10px;
-        color:#222222;
-        font-size:16px;
-font-weight:400;
-    ">
-    ◎ 軸馬 {popular_horse_label}
-    （オッズは変わるので軸は適宜変更してください）
-    </div>
-    """,
-    unsafe_allow_html=True
+
+show_card(
+    "👑",
+    "総合力1位",
+    "総合力上位候補",
+    total_best_horse,
+    "#f5f0ff",
+    "#d8c7ff",
+    "#7e22ce"
 )
-st.write(f"◉ 総合力1位 {total_best_horse}")
-st.caption("総合力上位候補")
 
-
-st.info(f"○ 地力があり狙い目の馬 {long_spurt_horse}")
-st.caption("長く脚を使えるタイプ")
-
-st.markdown(
-    f"""
-    <div style="
-        background-color:#f6f3df;
-        padding:15px;
-        border-radius:10px;
-        color:#222222;
-        font-weight:400;
-        font-size:16px;
-    ">
-    ▲ 展開が向く馬 {tenkai_horse}
-    </div>
-    """,
-    unsafe_allow_html=True
+show_card(
+    "🌋",
+    "地力のある馬",
+    "持続して脚を使えるタイプ",
+    long_spurt_horse,
+    "#fff9e8",
+    "#f3d58b",
+    "#d97706"
 )
-st.caption("軸馬の脚色と合うタイプ")
-st.write(f"△ 先行気勢の強い馬\n{front_horse}")
-st.caption("積極的に前に行けるタイプ")
 
-st.write(f"☆ 押さえておきたい馬\n{ana_horse}")
-st.caption("拾っておきたいタイプ")
+show_card(
+    "🌊",
+    "展開の向く馬",
+    "軸馬と脚色が合うタイプ",
+    tenkai_horse,
+    "#e0f2fe",
+    "#7dd3fc",
+    "#0369a1"
+)
+
+show_card(
+    "☄️",
+    "先行力のある馬",
+    "前に行けるタイプ",
+    front_horse,
+    "#f0fdf4",
+    "#bbf7d0",
+    "#16a34a"
+)
+
+show_card(
+    "⭐",
+    "抑え馬",
+    "拾っておきたいタイプ",
+    ana_horse,
+    "#fff7ed",
+    "#fed7aa",
+    "#f97316"
+)
+
 def get_num(horse_text):
     return int(horse_text.split("番")[0])
 
