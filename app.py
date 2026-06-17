@@ -1881,8 +1881,8 @@ def show_card(icon, title, subtitle, horse_text, bg_color, border_color, title_c
             ">
                 {icon} {title}
                 <span style="
-                    font-size:14px;
-                    font-weight:600;
+                    font-size:12px;
+                    font-weight:500;
                 ">（{subtitle}）</span>
             </div>
             <div style="
