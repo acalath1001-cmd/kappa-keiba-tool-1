@@ -1186,6 +1186,18 @@ for horse in horses:
     if finishes:
         avg_finish = sum(finishes) / len(finishes)
         bad_finish_count = sum(1 for f in finishes if f >= 8)
+        # 展開馬の足切り：近走で着順が悪すぎる馬は除外
+        # 例：10,6,12,12,11 みたいな馬
+        if finishes:
+            avg_finish = sum(finishes) / len(finishes)
+            best_finish = min(finishes)
+            bad_finish_count = sum(1 for f in finishes if f >= 8)
+
+            if avg_finish >= 8 and best_finish >= 6:
+                continue
+
+            if bad_finish_count >= 4:
+                continue
 
         if avg_finish >= 8:
             score -= 80
@@ -2162,20 +2174,39 @@ popular = f"{popular_horse_num}番 {real_horses[popular_horse_num - 1]}"
 tenkai_horse_text = tenkai_horse
 
 # 本線2点
-wide_patterns = [
-    # 本線1：軸馬 × 展開馬
-    [popular, tenkai_horse_text],
+# 総合力1位と地力馬が同じなら、
+# その馬は3着以内期待が高いのでワイド1点目に優先する
+if total_best["馬番"] == long_best["馬番"]:
+    wide_patterns = [
+        # 本線1：軸馬 × 総合＝地力
+        [popular, total_horse],
 
-    # 本線2：総合力1位 × 地力馬
-    [total_horse, long_horse],
+        # 本線2：軸馬 × 展開馬
+        [popular, tenkai_horse_text],
 
-    # 被った時の逃げ道
-    [popular, ana_horse],
-    [popular, ana_second_horse],
-    [total_horse, ana_horse],
-    [total_horse, ana_second_horse],
-    [tenkai_horse_text, ana_horse],
-]
+        # 被った時の逃げ道
+        [popular, ana_horse],
+        [popular, ana_second_horse],
+        [total_horse, ana_horse],
+        [total_horse, ana_second_horse],
+        [tenkai_horse_text, ana_horse],
+    ]
+
+else:
+    wide_patterns = [
+        # 本線1：軸馬 × 展開馬
+        [popular, tenkai_horse_text],
+
+        # 本線2：総合力1位 × 地力馬
+        [total_horse, long_horse],
+
+        # 被った時の逃げ道
+        [popular, ana_horse],
+        [popular, ana_second_horse],
+        [total_horse, ana_horse],
+        [total_horse, ana_second_horse],
+        [tenkai_horse_text, ana_horse],
+    ]
 
 for pattern in wide_patterns:
     wide_bets = add_unique_bet(
