@@ -2252,43 +2252,36 @@ tenkai_horse_text = tenkai_horse
 # 総合力1位と地力馬が同じなら、
 # その馬は3着以内期待が高いのでワイド1点目に優先する
 # ワイド1点目を明確に決める
-# 三連複1点目・2点目の共通2頭を確認
-trio1 = trio_bets[0] if len(trio_bets) >= 1 else []
-trio2 = trio_bets[1] if len(trio_bets) >= 2 else []
+wide_patterns = []
 
-common_horses = []
+# 1点目：軸－総合
+first_target = total_horse
 
-if len(trio1) == 3 and len(trio2) == 3:
-    common_horses = list(set(trio1) & set(trio2))
-
-# 基本は軸－展開
-first_target = tenkai_horse_text
-
-# 三連複2点が「軸－展開」を共通で持っている時だけ逃がす
-if (
-    len(common_horses) == 2
-    and popular in common_horses
-    and tenkai_horse_text in common_horses
-):
+# 軸＝総合なら、軸－地力
+if get_num(popular) == get_num(first_target):
     first_target = long_horse
 
-    if get_num(first_target) == get_num(tenkai_horse_text):
-        first_target = ana_third_horse
+# 地力＝展開なら、展開と被るので穴3へ逃がす
+if get_num(first_target) == get_num(tenkai_horse_text):
+    first_target = ana_third_horse
 
-    if get_num(popular) == get_num(first_target):
-        first_target = ana_horse
+# 軸＝地力・穴3でも被るなら、抑え1へ逃がす
+if get_num(popular) == get_num(first_target):
+    first_target = ana_horse
 
-    if get_num(popular) == get_num(first_target):
-        first_target = ana_second_horse
+# それでも被るなら、抑え2
+if get_num(popular) == get_num(first_target):
+    first_target = ana_second_horse
 
-wide_patterns = [
-    [popular, first_target]
-]
+wide_patterns.append([popular, first_target])
 
 # 2点目候補
 wide_patterns += [
 
     # 軸－展開は1点目で役割を終えたので使わない
+
+    [popular, ana_horse],
+    [popular, ana_second_horse],
 
     [total_horse, ana_horse],
     [total_horse, ana_second_horse],
@@ -2314,25 +2307,38 @@ st.markdown("### 🛟 カッパの浮き輪保険")
 
 float_bets = []
 
-# 三連複2点で A-B-C / A-B-D の形なら
-# 共通しているA-Bはワイドで買わず、浮き輪保険は 先行－抑え にする
+# 軸・総合・展開が被った時は
+# 人気馬シナリオを捨てて、
+# 穴2－穴3の別世界線を買う
 
-trio1 = trio_bets[0] if len(trio_bets) >= 1 else []
-trio2 = trio_bets[1] if len(trio_bets) >= 2 else []
+main_nums = {
+    popular_horse_num,
+    total_best["馬番"],
+    tenkai_best["馬番"],
+}
 
-common_horses = []
-
-if len(trio1) == 3 and len(trio2) == 3:
-    common_horses = list(set(trio1) & set(trio2))
-
-if len(common_horses) == 2:
+# 軸が総合 or 展開と被った時は、人気馬依存が強いので穴2－穴3
+if (
+    popular_horse_num == total_best["馬番"]
+    or popular_horse_num == tenkai_best["馬番"]
+):
 
     float_patterns = [
-        [front_horse_for_trio, ana_horse],
-        [front_horse_for_trio, ana_second_horse],
-        [front_horse_for_trio, ana_third_horse],
+        [ana_second_horse, ana_third_horse],
+        [ana_horse, ana_third_horse],
+        [long_horse, ana_third_horse],
     ]
 
+# 総合と展開だけが被った時は、総合－穴2
+elif total_best["馬番"] == tenkai_best["馬番"]:
+
+    float_patterns = [
+        [total_horse, ana_second_horse],
+        [total_horse, ana_third_horse],
+        [popular, ana_second_horse],
+    ]
+
+# 3頭とも別なら通常保険
 else:
 
     float_patterns = [
