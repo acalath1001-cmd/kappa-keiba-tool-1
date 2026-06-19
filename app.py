@@ -1397,7 +1397,7 @@ for horse in horses:
     total_rank = pre_total_rank_map.get(horse_no, 99)
 
     if total_rank <= 3:
-        score += 20
+        score += 10
         # ほんのり内枠補正：4角である程度前に来れる馬だけ
     if avg_last <= 5:
         if horse_no == 1:
