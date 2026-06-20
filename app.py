@@ -2306,6 +2306,19 @@ for bet in wide_bets:
 st.markdown("### 🛟 カッパの浮き輪保険")
 
 float_bets = []
+# 三連複2点が2頭被りなら、その残り2頭を浮き輪保険にする
+if len(trio_bets) == 2:
+
+    common = set(trio_bets[0]) & set(trio_bets[1])
+
+    if len(common) == 2:
+
+        diff = list(
+            (set(trio_bets[0]) | set(trio_bets[1]))
+            - common
+        )
+
+        float_bets = [diff]
 
 # 軸・総合・展開が被った時は
 # 人気馬シナリオを捨てて、
@@ -2347,15 +2360,17 @@ else:
         [popular, ana_third_horse],
     ]
 
-for pattern in float_patterns:
-    float_bets = add_unique_bet(
-        float_bets,
-        pattern,
-        max_count=1
-    )
+if not float_bets:
 
-    if len(float_bets) >= 1:
-        break
+    for pattern in float_patterns:
+        float_bets = add_unique_bet(
+            float_bets,
+            pattern,
+            max_count=1
+        )
+
+        if len(float_bets) >= 1:
+            break
 
 for bet in float_bets:
     st.write(f"{bet[0]} - {bet[1]}")
