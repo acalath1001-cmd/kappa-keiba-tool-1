@@ -2254,22 +2254,18 @@ tenkai_horse_text = tenkai_horse
 # ワイド1点目を明確に決める
 wide_patterns = []
 
-# 1点目：軸－総合
-first_target = total_horse
+# 1点目：軸－展開
+first_target = tenkai_horse_text
 
-# 軸＝総合なら、軸－地力
+# 軸＝展開なら軸－地力
 if get_num(popular) == get_num(first_target):
     first_target = long_horse
 
-# 地力＝展開なら、展開と被るので穴3へ逃がす
-if get_num(first_target) == get_num(tenkai_horse_text):
-    first_target = ana_third_horse
-
-# 軸＝地力・穴3でも被るなら、抑え1へ逃がす
+# 軸＝地力なら抑え1
 if get_num(popular) == get_num(first_target):
     first_target = ana_horse
 
-# それでも被るなら、抑え2
+# それでも被るなら抑え2
 if get_num(popular) == get_num(first_target):
     first_target = ana_second_horse
 
