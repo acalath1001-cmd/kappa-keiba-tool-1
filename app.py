@@ -728,6 +728,11 @@ long_spurt_candidates = [
     h for h in long_spurt_candidates
     if h["通過順"]
 ]
+# 地力順位マップ
+long_rank_map = {}
+
+for rank, h in enumerate(long_spurt_candidates, start=1):
+    long_rank_map[h["馬番"]] = rank
 # 表示用の「長く脚」は、先行気勢1位と被らないようにする
 long_spurt_display_candidates = [
     h for h in long_spurt_candidates
@@ -948,7 +953,8 @@ for idx, flow in enumerate(strong_flows):
 
     first = flow[0]
     last = flow[-1]
-
+    finishes = strong_data.get("着順", []) if strong_data else []
+    finish = finishes[idx] if idx < len(finishes) else None
     # 逃げ・先行経験
     if first <= 2:
         strong_front_count += 1
@@ -956,19 +962,28 @@ for idx, flow in enumerate(strong_flows):
     # 前〜中団で大きく崩れず長く脚を使う
     if 3 <= first <= 6 and 3 <= last <= 6 and abs(last - first) <= 2:
         strong_stable_count += 1
-
     # 中団〜後方から脚を使える馬を差し候補にする
-    # 押し上げ型：8-6-5-4 など
-    # 差しは後方〜中団からしっかり脚を使う馬
-    if first >= 6 and last <= 5 and last < first:
-        strong_push_count += 1
-
-    # 後方一気型：8-8-8-8 で1着・2着など
-    finish = None
-    finishes = strong_data.get("着順", []) if strong_data else []
-
-    if idx < len(finishes):
-        finish = finishes[idx]
+    if distance_num >= 1500:
+        if (
+            first >= 6
+            and finish is not None
+            and (
+                (
+                    last <= 7
+                    and last < first
+                    and (first - last) >= 2
+                    and finish <= 5
+                )
+                or (
+                    first >= 7
+                    and finish <= 3
+                )
+            )
+        ):
+            strong_push_count += 1
+    else:
+        if first >= 6 and last <= 5 and last < first:
+            strong_push_count += 1
 
     if first >= 7 and last >= 7 and finish is not None and finish <= 2:
         strong_push_count += 1
@@ -1024,7 +1039,13 @@ elif strong_avg_first <= 4 and strong_avg_last <= 5:
     kyakushoku_type = "先行"
 
 # ③差し
-elif push_rate >= 0.4:
+elif (
+    push_rate >= 0.4
+    or (
+        distance_num >= 1500
+        and push_rate >= 0.3
+    )
+):
     kyakushoku_type = "差し"
 
 # ④持続
@@ -1064,7 +1085,14 @@ else:
         st.write(f"後方カウント：{strong_back_count}")
 
         st.write(f"最終判定：{kyakushoku_type}")
- 
+# 地力上位なのに展開待ちなら持続へ昇格
+popular_long_rank = long_rank_map.get(popular_horse_num, 99)
+
+if (
+    kyakushoku_type == "展開待ち"
+    and popular_long_rank <= 2
+):
+    kyakushoku_type = "持続"
 # 人気馬が差してくるタイプなのに先行気勢1位にも出る場合は、
 # 先行気勢の馬を次点候補にずらす
 if kyakushoku_type == "差し" and front_best["馬番"] == popular_horse_num:
@@ -1280,19 +1308,37 @@ for horse in horses:
      # 軸馬タイプを大きく2系統で見る
     # 逃げ・先行・展開待ち
     # → 先行できて垂れない馬を相手にする
-# 逃げ → 先行馬
+    # 逃げ
     if kyakushoku_type == "逃げ":
 
-        score += front_score_map.get(horse_no, 0) * 0.7
+        # 1500m以上は、逃げ馬の後ろから差してくる馬を相手にする
+        if distance_num >= 1500:
 
-        if 2 <= avg_first <= 5:
-            score += 80
+            # 中団〜後方から4角までに押し上げる馬
+            if avg_first >= 5 and avg_last < avg_first and avg_last <= 7:
+                score += 140
 
-        if 2 <= avg_last <= 5:
-            score += 70
+            # 後方からでも着に来れる地力を少し評価
+            long_score = long_score_map.get(horse_no, 0)
+            if long_score > 0:
+                score += long_score * 0.15
 
-        if abs(avg_last - avg_first) <= 2:
-            score += 50
+            # 完全後方のままは減点
+            if avg_first >= 8 and avg_last >= 8:
+                score -= 80
+
+        # 1400m以下は今まで通り、番手・先行馬を相手にする
+        else:
+            score += front_score_map.get(horse_no, 0) * 0.7
+
+            if 2 <= avg_first <= 5:
+                score += 80
+
+            if 2 <= avg_last <= 5:
+                score += 70
+
+            if abs(avg_last - avg_first) <= 2:
+                score += 50
 
     # 先行 → 先行＋持続
     elif kyakushoku_type == "先行":
