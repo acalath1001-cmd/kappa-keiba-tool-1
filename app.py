@@ -797,9 +797,11 @@ for horse in horses:
 
     for item in distance_times:
         race_distance = item["距離"]
+        distance_match_bonus = 1.0
         if same_distance_exists:
             distance_ok = (race_distance == distance_num)
         else:
+            distance_match_bonus = 0.9
             if distance_num == 1400:
                 distance_ok = (abs(race_distance - distance_num) <= 200 and race_distance >= 1200)
             elif distance_num >= 1500:
@@ -1627,7 +1629,12 @@ for horse in horses:
         else:
             time_weight = 0
 
-        time_score = max(0, 200 - best_time) * time_weight
+        if same_distance_exists:
+            distance_match_bonus = 1.0
+        else:
+            distance_match_bonus = 0.9
+
+        time_score = max(0, 200 - best_time) * time_weight * distance_match_bonus
 
         if fastest_same_distance_time is not None and best_time is not None:
             diff = best_time - fastest_same_distance_time
@@ -2144,14 +2151,14 @@ if total_best["馬番"] == tenkai_best["馬番"]:
     axis_third = ana_horse
 
 # 通常
-elif kyakushoku_type in ["逃げ", "先行", "展開待ち"]:
+elif kyakushoku_type in ["逃げ", "先行"]:
     axis_third = front_horse_for_trio
 
-# 差し
-elif kyakushoku_type == "差し":
+# 差し・持続・展開待ち
+elif kyakushoku_type in ["差し", "持続", "展開待ち"]:
     axis_third = ana_horse
 
-# 持続
+# 念のため
 else:
     axis_third = front_horse_for_trio
 
