@@ -985,6 +985,18 @@ for idx, flow in enumerate(strong_flows):
         if first >= 6 and last <= 5 and last < first:
             strong_push_count += 1
 
+    # 押し上げ差し型の救済
+    # 押し上げ差し型の救済
+    # 1400m以上なら、後方〜中団から4角で射程圏に来る馬を差しで拾う
+    if (
+        distance_num >= 1400
+        and finish is not None
+        and first >= 5
+        and last <= 4
+        and last < first
+        and finish <= 5
+    ):
+        strong_push_count += 1
     if first >= 7 and last >= 7 and finish is not None and finish <= 2:
         strong_push_count += 1
 
@@ -1153,6 +1165,29 @@ for h in horses:
 
         except:
             pass
+  # JRA転入馬の割合を先に計算しておく
+jra_count = 0
+
+for h in horses:
+    horse_text = h.get("取得テキスト", "")
+
+    if any(
+        word in horse_text
+        for word in [
+            "東京", "中山", "京都", "阪神",
+            "中京", "新潟", "福島",
+            "小倉", "札幌", "函館",
+            "3歳未勝利", "３歳未勝利",
+            "2歳未勝利", "２歳未勝利"
+        ]
+    ):
+        jra_count += 1
+
+jra_rate = (
+    jra_count / len(horses)
+    if len(horses) > 0
+    else 0
+)     
 tenkai_candidates = []
 
 for horse in horses:
@@ -1256,6 +1291,11 @@ for horse in horses:
             avg_finish = sum(finishes) / len(finishes)
             best_finish = min(finishes)
             bad_finish_count = sum(1 for f in finishes if f >= 8)
+
+        # JRA転入馬が多いレースは足切りしない
+
+
+        if jra_rate < 0.7:
 
             if avg_finish >= 8 and best_finish >= 6:
                 continue
@@ -1456,6 +1496,127 @@ for horse in horses:
             score += 3
         elif horse_no <= 5:
             score += 1.5
+    # 展開候補の脚色タイプを判定する
+    target_stable_count = 0
+    target_push_count = 0
+    target_escape_count = 0
+
+    target_valid_count = len([
+        flow for flow in race_flows
+        if len(flow) >= 2
+    ])
+
+    for idx2, flow2 in enumerate(race_flows):
+        if len(flow2) < 2:
+            continue
+
+        first2 = flow2[0]
+        last2 = flow2[-1]
+        finish2 = finishes[idx2] if idx2 < len(finishes) else None
+
+        # 逃げ判定
+        if len(flow2) >= 4:
+            second2 = flow2[1]
+            third2 = flow2[2]
+
+            if second2 == 1 or third2 == 1:
+                target_escape_count += 1
+
+        elif len(flow2) == 2:
+            second2 = flow2[1]
+
+            if first2 == 1 or second2 == 1:
+                target_escape_count += 1
+
+        # 持続判定
+        if 3 <= first2 <= 6 and 3 <= last2 <= 6 and abs(last2 - first2) <= 2:
+            target_stable_count += 1
+
+        # 差し判定
+        if distance_num >= 1500:
+            if (
+                first2 >= 6
+                and finish2 is not None
+                and (
+                    (
+                        last2 <= 7
+                        and last2 < first2
+                        and (first2 - last2) >= 2
+                        and finish2 <= 5
+                    )
+                    or (
+                        first2 >= 7
+                        and finish2 <= 3
+                    )
+                )
+            ):
+                target_push_count += 1
+        else:
+            if first2 >= 6 and last2 <= 5 and last2 < first2:
+                target_push_count += 1
+
+        # 押し上げ差し型の救済
+        if (
+            distance_num >= 1400
+            and finish2 is not None
+            and first2 >= 5
+            and last2 <= 4
+            and last2 < first2
+            and finish2 <= 5
+        ):
+            target_push_count += 1
+
+        # 後方から着に来た馬
+        if first2 >= 7 and last2 >= 7 and finish2 is not None and finish2 <= 2:
+            target_push_count += 1
+
+    target_escape_rate = (
+        target_escape_count / target_valid_count
+        if target_valid_count > 0
+        else 0
+    )
+
+    target_push_rate = (
+        target_push_count / target_valid_count
+        if target_valid_count > 0
+        else 0
+    )
+
+    target_type = "展開待ち"
+
+    if target_escape_rate >= 0.5:
+        target_type = "逃げ"
+
+    elif avg_first <= 4 and avg_last <= 5:
+        target_type = "先行"
+
+    elif (
+        target_push_rate >= 0.4
+        or (
+            distance_num >= 1500
+            and target_push_rate >= 0.3
+        )
+    ):
+        target_type = "差し"
+
+    elif (
+        target_stable_count >= 2
+        or (
+            3 <= avg_first <= 6
+            and 3 <= avg_last <= 6
+            and abs(avg_last - avg_first) <= 2
+        )
+        or (
+            target_stable_count >= 1
+            and target_push_count >= 1
+            and avg_last <= 3
+        )
+    ):
+        target_type = "持続"
+
+    # 展開待ちタイプは展開馬候補から除外
+    if target_type == "展開待ち":
+        continue
     tenkai_candidates.append({
         "馬番": horse_no,
         "馬名": horse_name,
@@ -1496,28 +1657,6 @@ if debug_mode:
 tenkai_best = tenkai_candidates[0]
 tenkai_horse = f"{tenkai_best['馬番']}番 {tenkai_best['馬名']}"
 # JRA転入馬が多いレースは警告表示
-jra_count = 0
-
-for horse in horses:
-    horse_text = horse.get("取得テキスト", "")
-
-    if any(
-        word in horse_text
-        for word in [
-            "東京", "中山", "京都", "阪神",
-            "中京", "新潟", "福島",
-            "小倉", "札幌", "函館",
-            "3歳未勝利", "３歳未勝利",
-            "2歳未勝利", "２歳未勝利"
-        ]
-    ):
-        jra_count += 1
-
-jra_rate = (
-    jra_count / len(horses)
-    if len(horses) > 0
-    else 0
-)
 
 if jra_rate >= 0.7:
     st.warning(
@@ -2198,10 +2337,18 @@ if total_best["馬番"] == tenkai_best["馬番"]:
 
 # 通常
 elif kyakushoku_type in ["逃げ", "先行"]:
-    axis_third = front_horse_for_trio
+
+    # 先行馬と軸が被った時は、先行2位より先に地力馬を使う
+    if front_best["馬番"] == popular_horse_num:
+        axis_third = long_horse
+    else:
+        axis_third = front_horse_for_trio
 
 # 差し・持続・展開待ち
-elif kyakushoku_type in ["差し", "持続", "展開待ち"]:
+elif kyakushoku_type == "差し":
+    axis_third = front_horse
+
+elif kyakushoku_type in ["持続", "展開待ち"]:
     axis_third = ana_horse
 
 # 念のため
