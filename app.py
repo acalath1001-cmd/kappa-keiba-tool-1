@@ -1614,9 +1614,9 @@ for horse in horses:
     ):
         target_type = "持続"
 
-    # 展開待ちタイプは展開馬候補から除外
+    # 展開待ちタイプは除外せず、減点して候補には残す
     if target_type == "展開待ち":
-        continue
+        score -= 120
     tenkai_candidates.append({
         "馬番": horse_no,
         "馬名": horse_name,
@@ -1654,6 +1654,9 @@ if debug_mode:
             f"｜最速差 {h.get('タイム差')}"
         )
 
+if not tenkai_candidates:
+    st.error("展開馬候補が0頭になりました")
+    st.stop()
 tenkai_best = tenkai_candidates[0]
 tenkai_horse = f"{tenkai_best['馬番']}番 {tenkai_best['馬名']}"
 # JRA転入馬が多いレースは警告表示
