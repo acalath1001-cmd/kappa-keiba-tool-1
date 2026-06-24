@@ -1226,6 +1226,7 @@ for horse in horses:
     avg_last = avg_nonzero(lasts)
     
     score = 0
+    long_score = long_score_map.get(horse_no, 0)
     # 展開馬の一次試験：今回距離で戦えるタイムがあるか
     tenkai_best_time = None
     distance_times = horse.get("距離付きタイム", [])
@@ -1415,6 +1416,17 @@ for horse in horses:
 
         if avg_last <= 6:
             score += 60
+
+    # 前圧が高い時だけ、差し・地力タイプを少し評価する
+    if front_collapse_score >= 70:
+
+        # 中団から4角までに押し上げる馬
+        if avg_first >= 5 and avg_last < avg_first and avg_last <= 6:
+            score += 50
+
+        # 地力上位馬を少しだけ上げる
+        if long_score > 0:
+            score += long_score * 0.07
 
     # 持続 → 持続＋先行
     elif kyakushoku_type == "持続":
