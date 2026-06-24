@@ -464,6 +464,25 @@ horses = [
     h for h in horses
     if not h.get("取消除外", False)
 ]
+# データ不足注意
+low_data_horses = []
+
+for h in horses:
+    distance_time_count = len(h.get("距離付きタイム", []))
+    flow_count = len(h.get("通過順", []))
+
+    if distance_time_count <= 1 or flow_count <= 1:
+        low_data_horses.append(
+            f"{h['馬番']}番 {h['馬名']}"
+        )
+
+if low_data_horses:
+    st.warning(
+        "⚠️ 過去データが少ない馬がいます。\n\n"
+        + "・" + "\n・".join(low_data_horses)
+        + "\n\n距離付きタイムや通過順が少ないため、"
+        "評価の信頼度は少し下がります。"
+    )
 # ランダム予想を廃止
 # ここからはスコア順で選出する
 
@@ -738,6 +757,8 @@ long_spurt_display_candidates = [
     h for h in long_spurt_candidates
     if h["馬番"] != front_best["馬番"]
 ]
+if not long_spurt_display_candidates:
+    long_spurt_display_candidates = long_spurt_candidates
 if debug_mode:
     st.subheader("長く脚を使える馬スコア")
 
@@ -2505,19 +2526,28 @@ for bet in wide_bets:
 st.markdown("### 🛟 カッパの浮き輪保険")
 
 float_bets = []
-# 三連複2点が2頭被りなら、その残り2頭を浮き輪保険にする
+# 三連複2点が A-B-C / A-B-D の形なら、
+# C－地力を浮き輪保険の最優先にする
 if len(trio_bets) == 2:
 
     common = set(trio_bets[0]) & set(trio_bets[1])
 
     if len(common) == 2:
 
-        diff = list(
-            (set(trio_bets[0]) | set(trio_bets[1]))
-            - common
-        )
+        # 1点目だけにいる馬をC扱い
+        c_candidates = [
+            h for h in trio_bets[0]
+            if h not in common
+        ]
 
-        float_bets = [diff]
+        if c_candidates:
+            c_horse = c_candidates[0]
+
+            float_bets = add_unique_bet(
+                float_bets,
+                [c_horse, long_horse],
+                max_count=1
+            )
 
 # 軸・総合・展開が被った時は
 # 人気馬シナリオを捨てて、
