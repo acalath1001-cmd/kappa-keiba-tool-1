@@ -2374,9 +2374,16 @@ if total_best["馬番"] == tenkai_best["馬番"]:
 # 通常
 elif kyakushoku_type in ["逃げ", "先行"]:
 
-    # 先行馬と軸が被った時は、先行2位より先に地力馬を使う
-    if front_best["馬番"] == popular_horse_num:
+    # 総合と地力が同じ馬なら
+    # 軸－展開－地力を最優先
+    if total_best["馬番"] == long_best["馬番"]:
         axis_third = long_horse
+
+    # 先行馬と軸が被った時は地力馬
+    elif front_best["馬番"] == popular_horse_num:
+        axis_third = long_horse
+
+    # 通常は軸－展開－先行
     else:
         axis_third = front_horse_for_trio
 
