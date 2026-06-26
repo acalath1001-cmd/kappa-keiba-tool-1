@@ -136,6 +136,20 @@ soup = BeautifulSoup(response.text, "html.parser")
 
 print("ページ取得成功")
 page_text = soup.get_text(" ", strip=True)
+# 馬場状態を自動判定
+baba_match = re.search(r"馬場[:：]\s*(良|稍重|重|不良)", page_text)
+
+if baba_match:
+    baba_status = baba_match.group(1)
+else:
+    baba_status = "不明"
+
+if baba_status in ["重", "不良"]:
+    baba_mode = "重・不良"
+    st.info("馬場状態：重・不良")
+else:
+    baba_mode = "良"
+    st.info("馬場状態：良")
 distance_match = re.search(
     r"([０-９0-9]{3,4})\s*(?:m|ｍ|メートル)",
     page_text
@@ -468,19 +482,24 @@ horses = [
 low_data_horses = []
 
 for h in horses:
-    distance_time_count = len(h.get("距離付きタイム", []))
-    flow_count = len(h.get("通過順", []))
+    # 過去レース数を取得
+    past_race_count = len(
+        re.findall(r"\d{2}\.\d{2}\.\d{2}", h.get("取得テキスト", ""))
+    )
+    # 着順数（取得できたレース数）
+    result_count = len(h.get("着順", []))
 
-    if distance_time_count <= 1 or flow_count <= 1:
+    # 過去5走ある中で、取得できたレースが2走以下なら警告
+    if result_count <= 2:
         low_data_horses.append(
             f"{h['馬番']}番 {h['馬名']}"
         )
 
 if low_data_horses:
     st.warning(
-        "⚠️ 過去データが少ない馬がいます。\n\n"
+        "⚠️ 過去データが不足している馬がいます。\n\n"
         + "・" + "\n・".join(low_data_horses)
-        + "\n\n距離付きタイムや通過順が少ないため、"
+        + "\n\n過去5走ある中で取得できたデータが少ないため、"
         "評価の信頼度は少し下がります。"
     )
 # ランダム予想を廃止
@@ -1690,8 +1709,13 @@ if debug_mode:
 if not tenkai_candidates:
     st.error("展開馬候補が0頭になりました")
     st.stop()
-tenkai_best = tenkai_candidates[0]
-tenkai_horse = f"{tenkai_best['馬番']}番 {tenkai_best['馬名']}"
+# 850m以下で軸が逃げなら、展開馬も逃げ・先行寄りにする
+if distance_num <= 850 and kyakushoku_type == "逃げ":
+    tenkai_best = front_best
+    tenkai_horse = front_horse
+else:
+    tenkai_best = tenkai_candidates[0]
+    tenkai_horse = f"{tenkai_best['馬番']}番 {tenkai_best['馬名']}"
 # JRA転入馬が多いレースは警告表示
 
 if jra_rate >= 0.7:
@@ -2517,15 +2541,15 @@ wide_patterns.append([popular, first_target])
 # 2点目候補
 wide_patterns += [
 
-    # 軸－展開は1点目で役割を終えたので使わない
+    # 三連複の買い目と少し離すため、2点目は軸－穴3を優先
+    [popular, ana_third_horse],
 
-    [popular, ana_horse],
+    # 穴3が被った時の保険
     [popular, ana_second_horse],
+    [popular, ana_horse],
 
-    [total_horse, ana_horse],
-    [total_horse, ana_second_horse],
-
-    [tenkai_horse_text, ana_horse],
+    [total_horse, ana_third_horse],
+    [tenkai_horse_text, ana_third_horse],
 ]
 
 for pattern in wide_patterns:
@@ -2603,9 +2627,10 @@ elif total_best["馬番"] == tenkai_best["馬番"]:
 else:
 
     float_patterns = [
-        [total_horse, ana_third_horse],
         [total_horse, ana_second_horse],
-        [popular, ana_third_horse],
+        [long_horse, ana_second_horse],
+        [tenkai_horse_text, ana_second_horse],
+        [front_horse_for_trio, ana_second_horse],
     ]
 
 if not float_bets:
