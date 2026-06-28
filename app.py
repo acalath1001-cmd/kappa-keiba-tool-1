@@ -89,8 +89,8 @@ if not url:
 st.write("分析開始...")
 
 keibajo = {
-    "10": "帯広競馬",
-    "11": "盛岡・水沢競馬",
+    "10": "盛岡競馬",
+    "11": "水沢競馬",
     "18": "浦和競馬",
     "19": "船橋競馬",
     "20": "大井競馬",
@@ -550,6 +550,17 @@ for horse in horses:
         horse["通過順"],
         horse.get("着順", [])
     )
+    # 距離短縮で逃げ経験がある馬は、前進気勢にだけ加点
+    if distance_num <= 1400:
+        for item in horse.get("距離付きタイム", []):
+            past_distance = item["距離"]
+            flow = item["通過順"]
+
+            if past_distance > distance_num and len(flow) >= 2:
+                if flow[0] == 1:
+                    front_score += 120
+                elif flow[0] == 2:
+                    front_score += 60
     # JRA転入馬は、前に行けた実績を少し評価する
     horse_text = horse.get("取得テキスト", "")
 
@@ -1025,6 +1036,16 @@ for idx, flow in enumerate(strong_flows):
         if first >= 6 and last <= 5 and last < first:
             strong_push_count += 1
 
+        # ジワ差し救済：後方から4角7番手以内まで押し上げて、着順も悪くない馬
+        if (
+            first >= 6
+            and last < first
+            and last <= 7
+            and finish is not None
+            and finish <= 4
+        ):
+            strong_push_count += 1
+
     # 押し上げ差し型の救済
     # 押し上げ差し型の救済
     # 1400m以上なら、後方〜中団から4角で射程圏に来る馬を差しで拾う
@@ -1096,6 +1117,13 @@ elif (
     or (
         distance_num >= 1500
         and push_rate >= 0.3
+    )
+    # ジワ差し昇格：差し回数は少なくても、後方のままではなく4角で射程圏に来る馬
+    or (
+        strong_push_count >= 1
+        and strong_back_count <= 2
+        and strong_avg_last <= 7
+        and strong_avg_first >= 6
     )
 ):
     kyakushoku_type = "差し"
@@ -1605,6 +1633,16 @@ for horse in horses:
                 target_push_count += 1
         else:
             if first2 >= 6 and last2 <= 5 and last2 < first2:
+                target_push_count += 1
+
+            # ジワ差し救済：後方から4角7番手以内まで押し上げて、着順も悪くない馬
+            if (
+                first2 >= 6
+                and last2 < first2
+                and last2 <= 7
+                and finish2 is not None
+                and finish2 <= 4
+            ):
                 target_push_count += 1
 
         # 押し上げ差し型の救済
@@ -2443,38 +2481,37 @@ if axis_trio:
         axis_trio,
         max_count=2
     )
-
-
 # 2点目：総合から
 
-# 通常：総合－軸－抑え
+# 通常：総合－先行－穴3
 if total_best["馬番"] != popular_horse_num:
 
     total_trio = make_unique_trio(
         total_horse,
-        popular,
-        ana_horse,
+        front_horse_for_trio,
+        ana_third_horse,
         [
             long_horse,
             ana_second_horse,
-            ana_third_horse,
             tenkai_horse_text,
-            front_horse_for_trio,
+            popular,
+            ana_horse,
         ]
     )
 
-# 総合＝軸：総合－地力－穴3
+# 総合＝軸：総合－先行－穴3
 else:
 
     total_trio = make_unique_trio(
         total_horse,
-        long_horse,
+        front_horse_for_trio,
         ana_third_horse,
         [
-            ana_horse,
+            long_horse,
             ana_second_horse,
             tenkai_horse_text,
-            front_horse_for_trio,
+            popular,
+            ana_horse,
         ]
     )
 
@@ -2484,7 +2521,6 @@ if total_trio:
         total_trio,
         max_count=2
     )
-
 
 # 念のため2点未満なら保険候補で補充
 backup_patterns = [
