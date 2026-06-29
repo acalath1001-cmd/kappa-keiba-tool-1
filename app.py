@@ -2434,31 +2434,28 @@ if total_best["馬番"] == tenkai_best["馬番"]:
     axis_third = ana_horse
 
 # 通常
-elif kyakushoku_type in ["逃げ", "先行"]:
+else:
 
-    # 総合と地力が同じ馬なら
-    # 軸－展開－地力を最優先
-    if total_best["馬番"] == long_best["馬番"]:
+    # 三連複1点目：軸馬から
+    # 差し軸なら 軸－展開－穴3
+    if kyakushoku_type == "差し":
+        axis_third = ana_third_horse
+
+    # 持続・展開待ちは 軸－展開－抑え
+    elif kyakushoku_type in ["持続", "展開待ち"]:
+        axis_third = ana_horse
+
+    # 総合と地力が同じ馬なら 軸－展開－地力
+    elif total_best["馬番"] == long_best["馬番"]:
         axis_third = long_horse
 
     # 先行馬と軸が被った時は地力馬
     elif front_best["馬番"] == popular_horse_num:
         axis_third = long_horse
 
-    # 通常は軸－展開－先行
+    # 通常は 軸－展開－先行
     else:
         axis_third = front_horse_for_trio
-
-# 差し・持続・展開待ち
-elif kyakushoku_type == "差し":
-    axis_third = front_horse
-
-elif kyakushoku_type in ["持続", "展開待ち"]:
-    axis_third = ana_horse
-
-# 念のため
-else:
-    axis_third = front_horse_for_trio
 
 axis_fallbacks = [
     ana_horse,
@@ -2622,11 +2619,21 @@ if len(trio_bets) == 2:
         if c_candidates:
             c_horse = c_candidates[0]
 
-            float_bets = add_unique_bet(
-                float_bets,
-                [c_horse, long_horse],
-                max_count=1
-            )
+            candidate_bet = [c_horse, long_horse]
+
+            wide_existing_keys = [
+                tuple(sorted(get_num(h) for h in bet))
+                for bet in wide_bets
+            ]
+
+            candidate_key = tuple(sorted(get_num(h) for h in candidate_bet))
+
+            if candidate_key not in wide_existing_keys:
+                float_bets = add_unique_bet(
+                    float_bets,
+                    candidate_bet,
+                    max_count=1
+                )
 
 # 軸・総合・展開が被った時は
 # 人気馬シナリオを捨てて、
@@ -2671,7 +2678,18 @@ else:
 
 if not float_bets:
 
+    # すでに出ている通常ワイドと同じ組み合わせは避ける
+    wide_existing_keys = [
+        tuple(sorted(get_num(h) for h in bet))
+        for bet in wide_bets
+    ]
+
     for pattern in float_patterns:
+        pattern_key = tuple(sorted(get_num(h) for h in pattern))
+
+        if pattern_key in wide_existing_keys:
+            continue
+
         float_bets = add_unique_bet(
             float_bets,
             pattern,
