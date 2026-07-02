@@ -2277,14 +2277,15 @@ show_card(
     "#e11d48"
 )
 
+
 show_card(
-    "👑",
-    "総合力1位",
-    "総合力上位候補",
-    total_best_horse,
-    "#f5f0ff",
-    "#d8c7ff",
-    "#7e22ce"
+    "🌊",
+    "展開の向く馬",
+    "軸馬と脚色が合うタイプ",
+    tenkai_horse,
+    "#e0f2fe",
+    "#7dd3fc",
+    "#0369a1"
 )
 
 show_card(
@@ -2295,16 +2296,6 @@ show_card(
     "#fff9e8",
     "#f3d58b",
     "#d97706"
-)
-
-show_card(
-    "🌊",
-    "展開の向く馬",
-    "軸馬と脚色が合うタイプ",
-    tenkai_horse,
-    "#e0f2fe",
-    "#7dd3fc",
-    "#0369a1"
 )
 
 show_card(
@@ -2505,26 +2496,24 @@ if axis_trio:
         axis_trio,
         max_count=2
     )
-# 2点目：総合から
-# 総合－地力－穴3 を基本にする
-# ※展開馬は1点目専用なので、2点目では使わない
+# 2点目：軸－地力－抑え
 
-total_trio = make_unique_trio(
-    total_horse,
+second_trio = make_unique_trio(
+    popular,
     long_horse,
-    ana_third_horse,
+    ana_horse,
     [
-        ana_horse,
         ana_second_horse,
+        ana_third_horse,
         front_horse_for_trio,
-        popular,
+        tenkai_horse_text,
     ]
 )
 
-if total_trio:
+if second_trio:
     trio_bets = add_unique_bet(
         trio_bets,
-        total_trio,
+        second_trio,
         max_count=2
     )
 
@@ -2583,12 +2572,14 @@ wide_patterns.append([popular, first_target])
 # 2点目候補
 wide_patterns += [
 
-    # 三連複の買い目と少し離すため、2点目は軸－穴3を優先
+    # 2点目は軸－抑え1を最優先
+    [popular, ana_horse],
+
+    # 被った時は穴3
     [popular, ana_third_horse],
 
-    # 穴3が被った時の保険
+    # さらに被った時は穴2
     [popular, ana_second_horse],
-    [popular, ana_horse],
 
     [total_horse, ana_third_horse],
     [tenkai_horse_text, ana_third_horse],
