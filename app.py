@@ -1108,7 +1108,10 @@ if escape_rate >= 0.5:
     kyakushoku_type = "逃げ"
 
 # ②先行
-elif strong_avg_first <= 4 and strong_avg_last <= 5:
+elif (
+    (strong_avg_first <= 4 and strong_avg_last <= 5)
+    or strong_front_count >= 2
+):
     kyakushoku_type = "先行"
 
 # ③差し
@@ -1417,52 +1420,45 @@ for horse in horses:
      # 軸馬タイプを大きく2系統で見る
     # 逃げ・先行・展開待ち
     # → 先行できて垂れない馬を相手にする
-    # 逃げ
+    # 逃げ軸は前残り狙い
     if kyakushoku_type == "逃げ":
 
-        # 1500m以上は、逃げ馬の後ろから差してくる馬を相手にする
-        if distance_num >= 1500:
+        score += front_score_map.get(horse_no, 0) * 0.9
 
-            # 中団〜後方から4角までに押し上げる馬
-            if avg_first >= 5 and avg_last < avg_first and avg_last <= 7:
-                score += 140
+        if avg_first <= 2:
+            score += 140
+        elif avg_first <= 4:
+            score += 100
 
-            # 後方からでも着に来れる地力を少し評価
-            long_score = long_score_map.get(horse_no, 0)
-            if long_score > 0:
-                score += long_score * 0.15
+        if avg_last <= 4:
+            score += 100
 
-            # 完全後方のままは減点
-            if avg_first >= 8 and avg_last >= 8:
-                score -= 80
+        # 前で粘れる馬を高評価
+        if abs(avg_last - avg_first) <= 2:
+            score += 80
 
-        # 1400m以下は今まで通り、番手・先行馬を相手にする
-        else:
-            score += front_score_map.get(horse_no, 0) * 0.7
-
-            if 2 <= avg_first <= 5:
-                score += 80
-
-            if 2 <= avg_last <= 5:
-                score += 70
-
-            if abs(avg_last - avg_first) <= 2:
-                score += 50
+        # 後方待機馬は評価しない
+        if avg_first >= 6:
+            score -= 120
 
     # 先行 → 先行＋持続
     elif kyakushoku_type == "先行":
 
-        score += front_score_map.get(horse_no, 0) * 0.5
+        score += front_score_map.get(horse_no, 0) * 0.8
 
         long_score = long_score_map.get(horse_no, 0)
         if long_score > 0:
-            score += long_score * 0.08
+            score += long_score * 0.04
 
-        if avg_first <= 5:
-            score += 60
+        if avg_first <= 3:
+            score += 120
+        elif avg_first <= 5:
+            score += 90
 
-        if avg_last <= 6:
-            score += 60
+        if avg_last <= 4:
+            score += 100
+        elif avg_last <= 6:
+            score += 70
 
     # 前圧が高い時だけ、差し・地力タイプを少し評価する
     if front_collapse_score >= 70:
@@ -1475,45 +1471,53 @@ for horse in horses:
         if long_score > 0:
             score += long_score * 0.07
 
-    # 持続 → 持続＋先行
+    # 持続 → 持続馬を展開馬にする
     elif kyakushoku_type == "持続":
 
         long_score = long_score_map.get(horse_no, 0)
         if long_score > 0:
-            score += long_score * 0.15
+            score += long_score * 0.25
 
-        # 持続軸では逃げ・先行を展開馬にし過ぎない
-        score += front_score_map.get(horse_no, 0) * 0.05
+        # 持続型：前〜中団で大きく動かず脚を使える馬
+        if 3 <= avg_first <= 6 and 3 <= avg_last <= 6:
+            score += 160
 
-        # 中団くらいから長く脚を使える馬を評価
-        if 3 <= avg_first <= 6:
-            score += 60
-
+        # 位置取りが安定している馬を評価
         if abs(avg_last - avg_first) <= 2:
-            score += 60
+            score += 120
+
+        # 前すぎる逃げ馬は少し下げる
+        if avg_first <= 2:
+            score -= 80
+
+        # 後方すぎる馬も下げる
+        if avg_first >= 8:
+            score -= 80
 
     # 差し
     elif kyakushoku_type == "差し":
 
-        # 1500m以上：差し馬の相手も差し・押し上げ型にする
-        if distance_num >= 1500:
+        # 1500m以上：差し軸は持続馬を相手にする
 
-            # 中団〜後方から4角までに押し上げる馬
-            if avg_first >= 5 and avg_last < avg_first and avg_last <= 6:
-                score += 140
+        long_score = long_score_map.get(horse_no, 0)
+        if long_score > 0:
+            score += long_score * 0.20
 
-            # 後方すぎず、4角で射程圏に来れる馬
-            if 5 <= avg_first <= 8 and avg_last <= 6:
-                score += 80
+        # 前〜中団で長く脚を使える馬
+        if 3 <= avg_first <= 6 and 3 <= avg_last <= 6:
+            score += 160
 
-            # 地力も少し評価
-            long_score = long_score_map.get(horse_no, 0)
-            if long_score > 0:
-                score += long_score * 0.15
+        # 位置取りが安定している馬
+        if abs(avg_last - avg_first) <= 2:
+            score += 120
 
-            # 完全後方のままは減点
-            if avg_first >= 8 and avg_last >= 8:
-                score -= 80
+        # 前すぎる逃げ馬は少し減点
+        if avg_first <= 2:
+            score -= 60
+
+        # 完全後方は減点
+        if avg_first >= 8:
+            score -= 80
 
         # 1400m以下：今まで通り、前の馬を相手にする
         else:
@@ -1525,19 +1529,24 @@ for horse in horses:
             if avg_last <= 5:
                 score += 50
 
-    # 展開待ち → 総合力1位寄り
+    # 展開待ち → 前で残れる先行馬を展開馬にする
     elif kyakushoku_type == "展開待ち":
 
-        total_rank = pre_total_rank_map.get(horse_no, 99)
+        score += front_score_map.get(horse_no, 0) * 0.8
 
-        if total_rank == 1:
+        if avg_first <= 3:
             score += 120
+        elif avg_first <= 5:
+            score += 90
 
-        elif total_rank == 2:
-            score += 80
+        if avg_last <= 4:
+            score += 100
+        elif avg_last <= 6:
+            score += 70
 
-        elif total_rank == 3:
-            score += 40
+        # 後方タイプは展開馬にしにくくする
+        if avg_first >= 7:
+            score -= 100
     # 前崩れ警戒時だけ、後ろから押し上げる馬を少し加点
         # 前崩れ山型理論
     # 完全後方馬ではなく、
@@ -2441,9 +2450,9 @@ else:
     if kyakushoku_type == "差し":
         axis_third = ana_third_horse
 
-    # 持続・展開待ちは 軸－展開－抑え
+    # 持続・展開待ちは 軸－持続(地力)－先行
     elif kyakushoku_type in ["持続", "展開待ち"]:
-        axis_third = ana_horse
+        axis_third = front_horse_for_trio
 
     # 総合と地力が同じ馬なら 軸－展開－地力
     elif total_best["馬番"] == long_best["馬番"]:
@@ -2465,12 +2474,30 @@ axis_fallbacks = [
     total_horse,
 ]
 
-axis_trio = make_unique_trio(
-    popular,
-    tenkai_horse_text,
-    axis_third,
-    axis_fallbacks
-)
+# 持続・展開待ち以外は軸－展開－○○
+if kyakushoku_type == "持続":
+    axis_trio = make_unique_trio(
+        popular,
+        long_horse,
+        front_horse_for_trio,
+        axis_fallbacks
+    )
+
+elif kyakushoku_type == "展開待ち":
+    axis_trio = make_unique_trio(
+        popular,
+        front_horse_for_trio,
+        ana_horse,
+        axis_fallbacks
+    )
+
+else:
+    axis_trio = make_unique_trio(
+        popular,
+        tenkai_horse_text,
+        axis_third,
+        axis_fallbacks
+    )
 
 if axis_trio:
     trio_bets = add_unique_bet(
@@ -2479,38 +2506,20 @@ if axis_trio:
         max_count=2
     )
 # 2点目：総合から
+# 総合－地力－穴3 を基本にする
+# ※展開馬は1点目専用なので、2点目では使わない
 
-# 通常：総合－先行－穴3
-if total_best["馬番"] != popular_horse_num:
-
-    total_trio = make_unique_trio(
-        total_horse,
+total_trio = make_unique_trio(
+    total_horse,
+    long_horse,
+    ana_third_horse,
+    [
+        ana_horse,
+        ana_second_horse,
         front_horse_for_trio,
-        ana_third_horse,
-        [
-            long_horse,
-            ana_second_horse,
-            tenkai_horse_text,
-            popular,
-            ana_horse,
-        ]
-    )
-
-# 総合＝軸：総合－先行－穴3
-else:
-
-    total_trio = make_unique_trio(
-        total_horse,
-        front_horse_for_trio,
-        ana_third_horse,
-        [
-            long_horse,
-            ana_second_horse,
-            tenkai_horse_text,
-            popular,
-            ana_horse,
-        ]
-    )
+        popular,
+    ]
+)
 
 if total_trio:
     trio_bets = add_unique_bet(
@@ -2521,10 +2530,10 @@ if total_trio:
 
 # 念のため2点未満なら保険候補で補充
 backup_patterns = [
-    [popular, tenkai_horse_text, ana_horse],
-    [total_horse, tenkai_horse_text, ana_third_horse],
-    [popular, tenkai_horse_text, front_horse_for_trio],
-    [total_horse, ana_horse, ana_second_horse],
+    [total_horse, long_horse, ana_horse],
+    [total_horse, long_horse, ana_second_horse],
+    [total_horse, ana_horse, ana_third_horse],
+    [popular, ana_horse, ana_second_horse],
 ]
 
 for pattern in backup_patterns:
@@ -2604,36 +2613,8 @@ st.markdown("### 🛟 カッパの浮き輪保険")
 float_bets = []
 # 三連複2点が A-B-C / A-B-D の形なら、
 # C－地力を浮き輪保険の最優先にする
-if len(trio_bets) == 2:
-
-    common = set(trio_bets[0]) & set(trio_bets[1])
-
-    if len(common) == 2:
-
-        # 1点目だけにいる馬をC扱い
-        c_candidates = [
-            h for h in trio_bets[0]
-            if h not in common
-        ]
-
-        if c_candidates:
-            c_horse = c_candidates[0]
-
-            candidate_bet = [c_horse, long_horse]
-
-            wide_existing_keys = [
-                tuple(sorted(get_num(h) for h in bet))
-                for bet in wide_bets
-            ]
-
-            candidate_key = tuple(sorted(get_num(h) for h in candidate_bet))
-
-            if candidate_key not in wide_existing_keys:
-                float_bets = add_unique_bet(
-                    float_bets,
-                    candidate_bet,
-                    max_count=1
-                )
+# 浮き輪は「本線・対抗が沈んだ時の別世界線」にするため、
+# ここでは先に決めない
 
 # 軸・総合・展開が被った時は
 # 人気馬シナリオを捨てて、
@@ -2652,9 +2633,11 @@ if (
 ):
 
     float_patterns = [
-        [ana_second_horse, ana_third_horse],
+        # 浮き輪は必ず抑え馬を1頭入れる
         [ana_horse, ana_third_horse],
-        [long_horse, ana_third_horse],
+        [ana_horse, ana_second_horse],
+        [ana_horse, long_horse],
+        [ana_horse, total_horse],
     ]
 
 # 総合と展開だけが被った時は、総合－穴2
@@ -2678,26 +2661,67 @@ else:
 
 if not float_bets:
 
-    # すでに出ている通常ワイドと同じ組み合わせは避ける
+    from collections import Counter
+
+    # 本線（三連複＋ワイド）の使用回数を集計
+    use_count = Counter()
+
+    for bet in trio_bets:
+        for horse in bet:
+            use_count[horse] += 1
+
+    for bet in wide_bets:
+        for horse in bet:
+            use_count[horse] += 1
+
+    max_count = max(use_count.values()) if use_count else 0
+    banned = {
+        horse
+        for horse, cnt in use_count.items()
+        if cnt == max_count
+    }
+
     wide_existing_keys = [
         tuple(sorted(get_num(h) for h in bet))
         for bet in wide_bets
     ]
 
+    # 浮き輪は必ず抑え馬を1頭入れる
+    float_patterns = [
+        [ana_horse, ana_third_horse],
+        [ana_horse, ana_second_horse],
+        [ana_horse, long_horse],
+        [ana_horse, total_horse],
+        [ana_horse, tenkai_horse_text],
+    ]
+
+    # まずは本線の中心馬を避ける
     for pattern in float_patterns:
         pattern_key = tuple(sorted(get_num(h) for h in pattern))
+
+        if any(horse in banned for horse in pattern):
+            continue
 
         if pattern_key in wide_existing_keys:
             continue
 
-        float_bets = add_unique_bet(
-            float_bets,
-            pattern,
-            max_count=1
-        )
+        float_bets = add_unique_bet(float_bets, pattern, max_count=1)
 
         if len(float_bets) >= 1:
             break
+
+    # それでも出ない時は、bannedを少し緩めて必ず出す
+    if not float_bets:
+        for pattern in float_patterns:
+            pattern_key = tuple(sorted(get_num(h) for h in pattern))
+
+            if pattern_key in wide_existing_keys:
+                continue
+
+            float_bets = add_unique_bet(float_bets, pattern, max_count=1)
+
+            if len(float_bets) >= 1:
+                break
 
 for bet in float_bets:
     st.write(f"{bet[0]} - {bet[1]}")
