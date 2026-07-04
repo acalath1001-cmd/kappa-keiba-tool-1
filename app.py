@@ -1497,8 +1497,7 @@ for horse in horses:
     # 差し
     elif kyakushoku_type == "差し":
 
-        # 1500m以上：差し軸は持続馬を相手にする
-
+        # 差し軸なら距離に関係なく差し・持続タイプを相手にする
         long_score = long_score_map.get(horse_no, 0)
         if long_score > 0:
             score += long_score * 0.20
@@ -1507,27 +1506,19 @@ for horse in horses:
         if 3 <= avg_first <= 6 and 3 <= avg_last <= 6:
             score += 160
 
+        # 中団〜後方から差して来る馬も評価
+        if avg_first >= 5 and avg_last < avg_first:
+            score += 140
+
         # 位置取りが安定している馬
         if abs(avg_last - avg_first) <= 2:
             score += 120
 
-        # 前すぎる逃げ馬は少し減点
+        # 逃げ・先行タイプは少し減点
         if avg_first <= 2:
-            score -= 60
-
-        # 完全後方は減点
-        if avg_first >= 8:
             score -= 80
-
-        # 1400m以下：今まで通り、前の馬を相手にする
-        else:
-            score += front_score_map.get(horse_no, 0) * 0.8
-
-            if avg_first <= 3:
-                score += 80
-
-            if avg_last <= 5:
-                score += 50
+        elif avg_first <= 4:
+            score -= 40
 
     # 展開待ち → 前で残れる先行馬を展開馬にする
     elif kyakushoku_type == "展開待ち":
@@ -1757,12 +1748,16 @@ if not tenkai_candidates:
     st.error("展開馬候補が0頭になりました")
     st.stop()
 # 850m以下で軸が逃げなら、展開馬も逃げ・先行寄りにする
-if distance_num <= 850 and kyakushoku_type == "逃げ":
-    tenkai_best = front_best
-    tenkai_horse = front_horse
-else:
-    tenkai_best = tenkai_candidates[0]
-    tenkai_horse = f"{tenkai_best['馬番']}番 {tenkai_best['馬名']}"
+tenkai_best = tenkai_candidates[0]
+tenkai_horse = f"{tenkai_best['馬番']}番 {tenkai_best['馬名']}"
+
+# 念のため、軸馬と展開馬が被ったら展開2位へずらす
+if tenkai_best["馬番"] == popular_horse_num:
+    for h in tenkai_candidates:
+        if h["馬番"] != popular_horse_num:
+            tenkai_best = h
+            tenkai_horse = f"{h['馬番']}番 {h['馬名']}"
+            break
 # JRA転入馬が多いレースは警告表示
 
 if jra_rate >= 0.7:
@@ -1845,7 +1840,7 @@ for horse in horses:
         ]
     )
     # 前進気勢も少しだけ
-    front_part = front_score_map.get(horse_no, 0) * 0.06
+    front_part = front_score_map.get(horse_no, 0) * 0.12
     total_score += front_part
     debug_total_parts["前進気勢"] += front_part
     # 走破タイムが速い馬を総合力に加点
@@ -2281,7 +2276,7 @@ show_card(
 show_card(
     "🌊",
     "展開の向く馬",
-    "軸馬と脚色が合うタイプ",
+    "相手候補",
     tenkai_horse,
     "#e0f2fe",
     "#7dd3fc",
@@ -2544,7 +2539,14 @@ st.subheader("おすすめのワイド２点")
 wide_bets = []
 
 popular = f"{popular_horse_num}番 {real_horses[popular_horse_num - 1]}"
-tenkai_horse_text = tenkai_horse
+tenkai_horse_text = f"{tenkai_best['馬番']}番 {tenkai_best['馬名']}"
+
+if get_num(tenkai_horse_text) == popular_horse_num:
+    for h in tenkai_candidates:
+        candidate = f"{h['馬番']}番 {h['馬名']}"
+        if get_num(candidate) != popular_horse_num:
+            tenkai_horse_text = candidate
+            break
 
 # 本線2点
 # 総合力1位と地力馬が同じなら、
