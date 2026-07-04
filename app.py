@@ -206,68 +206,8 @@ elif distance == "1800":
 else:
     print("データ不足")
 st.write("出走馬一覧")
-horse_list = []
 
 rows = soup.find_all("tr")
-for row in rows:
-        texts = row.get_text("\n").split("\n")
-
-for t in texts:
-        t = t.strip()
-
-        if 3 <= len(t) <= 9:
-            if "牡" in t or "牝" in t:
-                continue
-
-            if "名" in t:
-                continue
-
-            if "（" in t or "(" in t:
-                continue
-
-            ng = [
-                "グランド牧場",
-                "シンボリ牧場",
-                "オルフェーヴル",
-                "ロードカロア",
-                "ロードカナロア",
-                "社台ファーム",
-                "オッズ",
-                "最高タイム",
-                "ダート左回り成績",
-                "ダート右回り成績",
-                "騎乗成績",
-                "誕生日",
-                "負担重量",
-                "変更情報",
-                "生産牧場",
-                "馬体重"
-                "ベルシャザール",
-                "プリマフェーヴル",
-                "ロードモーダル",
-            ]
-
-            if t in ng:
-                continue
-
-            if not any(char.isdigit() for char in t):
-
-                if " " not in t: 
-                    if not any(char in t for char in "アイウエオカキクケコサシスセソタチツテトナニヌネノハヒフヘホマミムメモヤユヨラリルレロワン"):
-                        continue
-                    horse_list.append(t)
-
-                    unique_horses = list(dict.fromkeys(horse_list))
-
-                    real_horses = [
-    "ノースザワールド",
-    "ティープインパクト",
-    "バスオブドリームズ",
-    "トーホウランボ",
-    "ダンカーグ"
-]
-
-import re
 
 page_text = soup.get_text(" ", strip=True)
 pattern = r"(?:^|\s)(?:[1-8]\s+)?([1-9][0-9]?)\s+([ァ-ヴー]{2,})\s+"
@@ -277,8 +217,9 @@ matches = re.findall(pattern, page_text)
 real_horses = []
 
 for num, name in matches:
-        if name not in real_horses:
-            real_horses.append(name)
+    if name not in real_horses:
+        real_horses.append(name)
+
 numbered_horses = []
 
 for i, horse in enumerate(real_horses, start=1):
@@ -286,9 +227,6 @@ for i, horse in enumerate(real_horses, start=1):
 horses = []
 
 for i, horse in enumerate(real_horses, start=1):
-    horse_text = ""
-
-    horse_texts = []
 
     horse_text = ""
     horse_row = None
