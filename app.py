@@ -1106,14 +1106,23 @@ else:
         st.write(f"後方カウント：{strong_back_count}")
 
         st.write(f"最終判定：{kyakushoku_type}")
-# 地力上位なのに展開待ちなら持続へ昇格
-popular_long_rank = long_rank_map.get(popular_horse_num, 99)
+# 軸馬が展開待ちになった時だけ、近いタイプへ逃がす
+if kyakushoku_type == "展開待ち":
 
-if (
-    kyakushoku_type == "展開待ち"
-    and popular_long_rank <= 2
-):
-    kyakushoku_type = "持続"
+    if strong_avg_first <= 4:
+        kyakushoku_type = "先行"
+
+    elif strong_push_count >= 1:
+        kyakushoku_type = "差し"
+
+    elif strong_stable_count >= 1:
+        kyakushoku_type = "持続"
+
+    elif strong_avg_first <= 6:
+        kyakushoku_type = "持続"
+
+    else:
+        kyakushoku_type = "差し"
 # 人気馬が差してくるタイプなのに先行気勢1位にも出る場合は、
 # 先行気勢の馬を次点候補にずらす
 if kyakushoku_type == "差し" and front_best["馬番"] == popular_horse_num:
@@ -1338,8 +1347,16 @@ for horse in horses:
         if len(flow) < 2:
             continue
 
+        first = flow[0]
         last = flow[-1]
         finish = finishes[idx] if idx < len(finishes) else None
+
+        # 前に行けるけど大きく順位を落とす馬は展開馬から下げる
+        if first <= 3 and last - first >= 3:
+            score -= 180
+
+        elif first <= 5 and last - first >= 4:
+            score -= 140
 
         if finish is None:
             continue
@@ -1444,9 +1461,9 @@ for horse in horses:
         if 3 <= avg_first <= 6 and 3 <= avg_last <= 6:
             score += 160
 
-        # 中団〜後方から差して来る馬も評価
+        # 中団〜後方から差して来る馬も少し評価
         if avg_first >= 5 and avg_last < avg_first:
-            score += 140
+            score += 90
 
         # 位置取りが安定している馬
         if abs(avg_last - avg_first) <= 2:
