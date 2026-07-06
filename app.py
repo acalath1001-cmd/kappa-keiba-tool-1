@@ -2429,19 +2429,32 @@ if axis_trio:
         axis_trio,
         max_count=2
     )
-# 2点目：軸－地力－抑え
+# 2点目
 
-second_trio = make_unique_trio(
-    popular,
-    long_horse,
-    ana_horse,
-    [
-        ana_second_horse,
-        ana_third_horse,
+if kyakushoku_type == "先行":
+    second_trio = make_unique_trio(
+        popular,
         front_horse_for_trio,
-        tenkai_horse_text,
-    ]
-)
+        ana_horse,
+        [
+            ana_second_horse,
+            ana_third_horse,
+            long_horse,
+            tenkai_horse_text,
+        ]
+    )
+else:
+    second_trio = make_unique_trio(
+        popular,
+        long_horse,
+        ana_horse,
+        [
+            ana_second_horse,
+            ana_third_horse,
+            front_horse_for_trio,
+            tenkai_horse_text,
+        ]
+    )
 
 if second_trio:
     trio_bets = add_unique_bet(
