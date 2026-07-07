@@ -2147,7 +2147,7 @@ if len(ana_candidates) < 3:
     )
 
     for h in extra_ana_pool:
-        if len(ana_candidates) >= 3:
+        if len(ana_candidates) >= 5:
             break
         ana_candidates.append(h)
 if debug_mode:
@@ -2179,7 +2179,21 @@ else:
     ana_third = ana_candidates[-1]
 
 ana_third_horse = f"{ana_third['馬番']}番 {ana_third['馬名']}"
+# 穴馬候補4位
+if len(ana_candidates) >= 4:
+    ana_fourth = ana_candidates[3]
+else:
+    ana_fourth = ana_candidates[-1]
 
+ana_fourth_horse = f"{ana_fourth['馬番']}番 {ana_fourth['馬名']}"
+
+# 穴馬候補5位
+if len(ana_candidates) >= 5:
+    ana_fifth = ana_candidates[4]
+else:
+    ana_fifth = ana_candidates[-1]
+
+ana_fifth_horse = f"{ana_fifth['馬番']}番 {ana_fifth['馬名']}"
 
 def show_card(icon, title, subtitle, horse_text, bg_color, border_color, title_color):
     st.markdown(
@@ -2387,9 +2401,14 @@ if total_best["馬番"] == tenkai_best["馬番"]:
 else:
 
     # 三連複1点目：軸馬から
-    # 差し軸なら 軸－展開－穴3
+
+    # 差し軸なら 軸－展開－穴4
     if kyakushoku_type == "差し":
-        axis_third = ana_third_horse
+        axis_third = ana_fourth_horse
+
+    # 逃げ軸なら 軸－展開－穴5
+    elif kyakushoku_type == "逃げ":
+        axis_third = ana_fifth_horse
 
     # 持続・展開待ちは 軸－持続(地力)－先行
     elif kyakushoku_type in ["持続", "展開待ち"]:
@@ -2419,7 +2438,7 @@ axis_fallbacks = [
 if kyakushoku_type == "持続":
     axis_trio = make_unique_trio(
         popular,
-        long_horse,
+        tenkai_horse_text,
         front_horse_for_trio,
         axis_fallbacks
     )
