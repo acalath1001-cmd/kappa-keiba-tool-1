@@ -2439,8 +2439,14 @@ if kyakushoku_type == "持続":
     axis_trio = make_unique_trio(
         popular,
         tenkai_horse_text,
-        front_horse_for_trio,
-        axis_fallbacks
+        long_horse,
+        [
+            front_horse_for_trio,
+            ana_horse,
+            ana_second_horse,
+            ana_third_horse,
+            total_horse,
+        ]
     )
 
 elif kyakushoku_type == "展開待ち":
@@ -2479,6 +2485,20 @@ if kyakushoku_type == "先行":
             tenkai_horse_text,
         ]
     )
+
+elif kyakushoku_type == "差し":
+    second_trio = make_unique_trio(
+        popular,
+        long_horse,
+        ana_third_horse,
+        [
+            ana_horse,
+            ana_second_horse,
+            front_horse_for_trio,
+            tenkai_horse_text,
+        ]
+    )
+
 else:
     second_trio = make_unique_trio(
         popular,
