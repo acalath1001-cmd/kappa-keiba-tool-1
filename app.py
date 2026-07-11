@@ -1275,17 +1275,22 @@ for horse in horses:
         if finish is None:
             continue
 
-        # 4角5番手以内から6着以下
-        if last <= 5 and finish >= 6:
-            score -= tare_penalty_1
+        # 4角からゴールまでに何頭に抜かれたかを評価
+        drop = finish - last
 
-        # 4角4番手以内から8着以下
-        if last <= 4 and finish >= 8:
-            score -= tare_penalty_2
+        # 地方競馬では、4角から大きく順位を落とす馬は
+        # 踏ん張れない・走るのを止める可能性があるため強く減点
+        if drop >= 5:
+            score -= 260
 
-        # 4角3番手以内から10着以下
-        if last <= 3 and finish >= 10:
-            score -= tare_penalty_3
+        elif drop >= 4:
+            score -= 180
+
+        elif drop >= 3:
+            score -= 110
+
+        elif drop >= 2:
+            score -= 40
      # 軸馬タイプを大きく2系統で見る
     # 逃げ・先行・展開待ち
     # → 先行できて垂れない馬を相手にする
@@ -1891,10 +1896,25 @@ for horse in horses:
             if first <= 3 and last - first >= 4:
                 total_score -= 60
 
-            # 4角前にいたのに着順が悪い
-            if last <= 4 and finish is not None and finish >= 7:
-                total_score -= 70
+            # 4角からゴールまでの順位落下を総合力にも反映
+            if finish is not None:
+                drop = finish - last
+                drop_penalty = 0
 
+                if drop >= 5:
+                    drop_penalty = 180
+
+                elif drop >= 4:
+                    drop_penalty = 120
+
+                elif drop >= 3:
+                    drop_penalty = 70
+
+                elif drop >= 2:
+                    drop_penalty = 25
+
+                total_score -= drop_penalty
+                debug_total_parts["減点"] -= drop_penalty
     total_candidates.append({
         "馬番": horse_no,
         "馬名": horse_name,
@@ -2261,15 +2281,11 @@ popular = f"{popular_horse_num}番 {real_horses[popular_horse_num - 1]}"
 st.subheader("おすすめの三連複 2点")
 
 trio_bets = []
-# 三連複1点目用：先行馬が軸馬と被ったら先行2位を使う
+# 三連複用：先行馬が軸馬と被ったら地力馬を使う
 front_horse_for_trio = front_horse
 
 if get_num(front_horse_for_trio) == popular_horse_num:
-    for h in front_candidates:
-        candidate = f"{h['馬番']}番 {h['馬名']}"
-        if get_num(candidate) != popular_horse_num:
-            front_horse_for_trio = candidate
-            break
+    front_horse_for_trio = long_spurt_horse
 popular = f"{popular_horse_num}番 {real_horses[popular_horse_num - 1]}"
 total_horse = total_best_horse
 long_horse = long_spurt_horse
@@ -2328,9 +2344,9 @@ else:
     if kyakushoku_type == "差し":
         axis_third = ana_fourth_horse
 
-    # 逃げ軸なら 軸－展開－穴5
+    # 逃げ軸なら 軸－展開－穴2
     elif kyakushoku_type == "逃げ":
-        axis_third = ana_fifth_horse
+        axis_third = ana_second_horse
 
     # 持続・展開待ちは 軸－持続(地力)－先行
     elif kyakushoku_type in ["持続", "展開待ち"]:
