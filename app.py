@@ -2281,11 +2281,24 @@ popular = f"{popular_horse_num}番 {real_horses[popular_horse_num - 1]}"
 st.subheader("おすすめの三連複 2点")
 
 trio_bets = []
-# 三連複用：先行馬が軸馬と被ったら地力馬を使う
+# 三連複用：通常の先行馬
 front_horse_for_trio = front_horse
 
 if get_num(front_horse_for_trio) == popular_horse_num:
     front_horse_for_trio = long_spurt_horse
+
+
+# 逃げ軸の三連複2点目用：
+# 前進気勢ランキング2位を取得する
+if len(front_candidates) >= 2:
+    front_second = front_candidates[1]
+else:
+    # 候補が1頭しかいない場合は1位を使う
+    front_second = front_candidates[0]
+
+front_second_horse = (
+    f"{front_second['馬番']}番 {front_second['馬名']}"
+)
 popular = f"{popular_horse_num}番 {real_horses[popular_horse_num - 1]}"
 total_horse = total_best_horse
 long_horse = long_spurt_horse
@@ -2452,6 +2465,21 @@ elif kyakushoku_type == "差し":
         ]
     )
 
+elif kyakushoku_type == "逃げ":
+    second_trio = make_unique_trio(
+        popular,
+        long_horse,
+        front_second_horse,
+        [
+            front_horse_for_trio,
+            tenkai_horse_text,
+            ana_horse,
+            ana_second_horse,
+            ana_third_horse,
+            total_horse,
+        ]
+    )
+
 else:
     second_trio = make_unique_trio(
         popular,
@@ -2514,20 +2542,25 @@ if get_num(tenkai_horse_text) == popular_horse_num:
 # ワイド1点目を明確に決める
 wide_patterns = []
 
-# 1点目：軸－展開
-first_target = tenkai_horse_text
+# ワイド1点目
+# 持続軸は三連複との重複を避けて、軸－穴3
+if kyakushoku_type == "持続":
+    first_target = ana_third_horse
+else:
+    first_target = tenkai_horse_text
 
-# 軸＝展開なら軸－地力
+# 軸と相手が被った場合の予備候補
 if get_num(popular) == get_num(first_target):
     first_target = long_horse
 
-# 軸＝地力なら抑え1
 if get_num(popular) == get_num(first_target):
     first_target = ana_horse
 
-# それでも被るなら抑え2
 if get_num(popular) == get_num(first_target):
     first_target = ana_second_horse
+
+if get_num(popular) == get_num(first_target):
+    first_target = front_horse_for_trio
 
 wide_patterns.append([popular, first_target])
 
