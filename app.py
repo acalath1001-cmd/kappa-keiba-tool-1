@@ -404,6 +404,13 @@ if low_data_horses:
 
 st.markdown("### 🎯 最初に軸馬を番号で選んでください")
 
+st.info(
+    "※オッズは変動するため、現在の1番人気や\n"
+    "自分が来ると思う馬を選択してください。\n\n"
+    "※選択した馬を軸に展開分析と\n"
+    "買い目を表示します。"
+)
+
 popular_horse_num = st.number_input(
     "軸馬の馬番",
     min_value=1,
@@ -415,13 +422,6 @@ popular_horse_num = st.number_input(
 if popular_horse_num > len(real_horses):
     st.error(f"軸馬は1〜{len(real_horses)}番を選択してください")
     st.stop()
-
-st.info(
-    "※オッズは変動するため、現在の1番人気や\n"
-    "自分が来ると思う馬を選択してください。\n\n"
-    "※選択した馬を軸に展開分析と\n"
-    "買い目を表示します。"
-)
 popular_horse_label = f"{popular_horse_num}番 {real_horses[popular_horse_num - 1]}"
 
 # 4角位置が取れていない馬も含めてスコア確認できるようにする
@@ -2211,7 +2211,16 @@ show_card(
     "#f5b5c0",
     "#e11d48"
 )
-
+# 軸馬と総合評価1位が異なる時だけ、後詰めの馬を小さく表示
+if total_best["馬番"] != popular_horse_num:
+    st.markdown(
+        f'<div style="font-size:14px; line-height:1.8; color:#111111; margin:8px 2px 12px 2px;">'
+        f'<div style="font-weight:600;">⚔️ 後詰めの馬（軸飛び対策）</div>'
+        f'<div style="font-weight:600;">{total_best_horse}</div>'
+        f'<div style="margin-top:5px;">⚠️ 軸馬が崩れた場合は、この馬を中心にした買い目も検討してください。</div>'
+        f'</div>',
+        unsafe_allow_html=True
+    )
 
 show_card(
     "🌊",
@@ -2471,10 +2480,9 @@ elif kyakushoku_type == "逃げ":
         long_horse,
         front_second_horse,
         [
-            front_horse_for_trio,
+            ana_second_horse,
             tenkai_horse_text,
             ana_horse,
-            ana_second_horse,
             ana_third_horse,
             total_horse,
         ]
@@ -2543,9 +2551,9 @@ if get_num(tenkai_horse_text) == popular_horse_num:
 wide_patterns = []
 
 # ワイド1点目
-# 持続軸は三連複との重複を避けて、軸－穴3
+# 持続軸は地力同士の相性を重視して、軸－地力
 if kyakushoku_type == "持続":
-    first_target = ana_third_horse
+    first_target = long_horse
 else:
     first_target = tenkai_horse_text
 
