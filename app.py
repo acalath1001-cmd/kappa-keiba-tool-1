@@ -2448,18 +2448,48 @@ if axis_trio:
     )
 # 2点目
 if kyakushoku_type == "先行":
-    second_trio = make_unique_trio(
-        popular,
-        front_horse_for_trio,
-        ana_fourth_horse,
-        [
-            ana_horse,
-            ana_second_horse,
-            ana_third_horse,
+
+    # 先行軸の2点目は
+    # 軸－地力－前進気勢2位を最優先にする
+    third_priority = [
+        front_second_horse,     # 前進気勢2位
+        ana_fourth_horse,       # 穴4
+        ana_second_horse,       # 穴2
+        tenkai_horse_text,      # 展開馬
+        ana_horse,              # 穴1
+        ana_third_horse,        # 穴3
+        total_horse,            # 総合馬
+        front_horse_for_trio,   # 最終保険
+    ]
+
+    # 1点目と同じ組み合わせにならないように確認
+    existing_keys = {
+        tuple(sorted(get_num(h) for h in bet))
+        for bet in trio_bets
+    }
+
+    second_trio = None
+
+    for idx, third_horse in enumerate(third_priority):
+
+        candidate_trio = make_unique_trio(
+            popular,
             long_horse,
-            tenkai_horse_text,
-        ]
-    )
+            third_horse,
+            third_priority[idx + 1:]
+        )
+
+        if not candidate_trio:
+            continue
+
+        candidate_key = tuple(
+            sorted(get_num(h) for h in candidate_trio)
+        )
+
+        # 1点目と違う組み合わせなら採用
+        if candidate_key not in existing_keys:
+            second_trio = candidate_trio
+            break
 
 elif kyakushoku_type == "差し":
     second_trio = make_unique_trio(
