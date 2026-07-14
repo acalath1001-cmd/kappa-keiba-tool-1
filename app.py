@@ -79,6 +79,43 @@ def calc_front_score(horse_no, race_flows, finish_positions=None):
                 score += 25
 
     return score
+
+
+def calc_recent_form_bonus(finish_positions):
+    """
+    直近3走の着順を評価する。
+    finish_positionsは最新走から順に並んでいる前提。
+    """
+    recent_results = (finish_positions or [])[:3]
+
+    point_tables = [
+        {1: 30, 2: 24, 3: 18, 4: 12, 5: 8},
+        {1: 21, 2: 17, 3: 13, 4: 8, 5: 6},
+        {1: 12, 2: 10, 3: 7, 4: 5, 5: 3},
+    ]
+
+    bonus = 0
+
+    for idx, finish in enumerate(recent_results):
+        bonus += point_tables[idx].get(finish, 0)
+
+    top5_count = sum(
+        1
+        for finish in recent_results
+        if finish <= 5
+    )
+
+    # 直近3走すべて5着以内
+    if len(recent_results) == 3 and top5_count == 3:
+        bonus += 15
+
+    # 直近3走のうち2走が5着以内
+    elif top5_count >= 2:
+        bonus += 8
+
+    return bonus, recent_results
+
+
 st.set_page_config(
     page_title="地方競馬予想ツール",
     page_icon="favicon.png",
@@ -430,6 +467,71 @@ for i, horse in enumerate(real_horses, start=1):
                 finish_positions.append(int(m.group(1)))
 
     finish_positions = finish_positions[-5:]
+
+    # ==================================================
+    # 踏ん張り不足判定
+    # 4角5番手以内から、着順が3つ以上落ちたレースを数える
+    # 過去5走で2回以上なら踏ん張り不足
+    # ==================================================
+
+    fumbaribuso_count = 0
+    fumbaribuso_details = []
+
+    check_count = min(
+        len(race_flows),
+        len(finish_positions)
+    )
+
+    for idx in range(check_count):
+        flow = race_flows[idx]
+        finish = finish_positions[idx]
+
+        if len(flow) < 2:
+            continue
+
+        first = flow[0]
+        third = (
+            flow[2]
+            if len(flow) >= 3
+            else flow[-1]
+        )
+        last = flow[-1]
+
+        goal_drop = finish - last
+        corner_drop = last - first
+        late_corner_drop = last - third
+
+        reasons = []
+
+        # ① 4角では5番手以内だったのに、
+        # ゴールまでに3つ以上順位を落とした
+        if last <= 5 and goal_drop >= 3:
+            reasons.append("4角→着順で失速")
+
+        # ② 1角では4番手以内だったのに、
+        # 4角までに4つ以上順位を落とした
+        if first <= 4 and corner_drop >= 4:
+            reasons.append("1角→4角で失速")
+
+        # ③ 3角では4番手以内だったのに、
+        # 4角で3つ以上順位を落とした
+        if third <= 4 and late_corner_drop >= 3:
+            reasons.append("3角→4角で失速")
+
+        # 同じレースで複数条件に該当しても1回として数える
+        if reasons:
+            fumbaribuso_count += 1
+
+            fumbaribuso_details.append({
+                "通過順": flow,
+                "着順": finish,
+                "理由": reasons,
+            })
+
+    is_fumbaribuso = (
+        fumbaribuso_count >= 2
+    )
+
     # 出走取消・競走除外判定
     is_scratched = any(
         word in horse_text
@@ -463,6 +565,12 @@ for i, horse in enumerate(real_horses, start=1):
         "走破タイム": race_times,
         "距離付きタイム": distance_time_pairs,
         "着順": finish_positions,
+
+        # 総合馬・展開馬の最終選出に使う
+        "踏ん張り不足": is_fumbaribuso,
+        "踏ん張り不足回数": fumbaribuso_count,
+        "踏ん張り不足詳細": fumbaribuso_details,
+
         "取得テキスト": horse_text,
     })
 
@@ -478,6 +586,27 @@ horses = [
     h for h in horses
     if not h.get("取消除外", False)
 ]
+
+# 総合馬・展開馬の最終選出から外す馬
+fumbaribuso_horse_numbers = {
+    h["馬番"]
+    for h in horses
+    if h.get("踏ん張り不足", False)
+}
+
+if debug_mode and fumbaribuso_horse_numbers:
+    st.subheader("踏ん張り不足判定")
+
+    for h in horses:
+        if not h.get("踏ん張り不足", False):
+            continue
+
+        st.write(
+            f"{h['馬番']}番 {h['馬名']} "
+            f"｜該当 {h.get('踏ん張り不足回数', 0)}回 "
+            f"｜詳細 {h.get('踏ん張り不足詳細', [])}"
+        )
+
 # データ不足注意
 low_data_horses = []
 
@@ -800,17 +929,31 @@ long_spurt_candidates = [
     h for h in long_spurt_candidates
     if h["通過順"]
 ]
-# 表示用の「長く脚」は、先行気勢1位と被らないようにする
+# 表示用の「長く脚」は、
+# 先行気勢1位と踏ん張り不足の馬を外す
 long_spurt_display_candidates = [
     h for h in long_spurt_candidates
-    if h["馬番"] != front_best["馬番"]
+    if (
+        h["馬番"] != front_best["馬番"]
+        and h["馬番"] not in fumbaribuso_horse_numbers
+    )
 ]
+
+# 先行気勢との重複より、
+# 踏ん張り不足の除外を優先する
+if not long_spurt_display_candidates:
+    long_spurt_display_candidates = [
+        h for h in long_spurt_candidates
+        if h["馬番"] not in fumbaribuso_horse_numbers
+    ]
+
+# 全馬が踏ん張り不足だった場合だけ元候補へ戻す
 if not long_spurt_display_candidates:
     long_spurt_display_candidates = long_spurt_candidates
 if debug_mode:
     st.subheader("長く脚を使える馬スコア")
 
-    for h in long_spurt_candidates:
+    for h in long_spurt_display_candidates:
 
         finishes = []
 
@@ -1285,6 +1428,18 @@ for horse in horses:
     # 着順が悪い馬は展開評価を少し下げる
     finishes = horse.get("着順", [])
 
+    # 直近3走の好調度を展開評価へ60％反映
+    recent_form_bonus, recent_results = calc_recent_form_bonus(
+        finishes
+    )
+
+    tenkai_recent_bonus = round(
+        recent_form_bonus * 0.60,
+        1
+    )
+
+    score += tenkai_recent_bonus
+
     if finishes:
         # 展開馬の足切り：近走で着順が悪すぎる馬は除外
         # 例：10,6,12,12,11 みたいな馬
@@ -1652,6 +1807,8 @@ for horse in horses:
         "平均前半": avg_first,
         "平均4角": avg_last,
         "通過順": race_flows,
+        "直近3走": recent_results,
+        "直近ボーナス": tenkai_recent_bonus,
         "展開タイム": tenkai_best_time,
         "タイム差": (
             tenkai_best_time - fastest_same_distance_time_for_tenkai
@@ -1678,6 +1835,8 @@ if debug_mode:
             f"｜展開スコア {h['スコア']} "
             f"｜平均前半 {h['平均前半']} "
             f"｜平均4角 {h['平均4角']} "
+            f"｜直近3走 {h.get('直近3走', [])} "
+            f"｜直近加点 {h.get('直近ボーナス', 0)} "
             f"｜展開タイム {h.get('展開タイム')} "
             f"｜最速差 {h.get('タイム差')}"
         )
@@ -1849,9 +2008,19 @@ for horse in horses:
         "地力": 0,
         "JRA": 0,
         "南関転入": 0,
+        "直近3走": 0,
         "騎手": 0,
         "減点": 0,
     }
+
+    # 直近3走の好調度を総合評価へ100％反映
+    recent_form_bonus, recent_results = calc_recent_form_bonus(
+        finishes
+    )
+
+    total_score += recent_form_bonus
+    debug_total_parts["直近3走"] += recent_form_bonus
+
     jra_transfer = any(
         word in horse_text
         for word in [
@@ -2078,6 +2247,7 @@ for horse in horses:
         "使用タイム": used_times,
         "タイム差": time_diff,
         "タイム係数": time_weight,
+        "直近3走": recent_results,
         "内訳": debug_total_parts
     })
 
@@ -2121,16 +2291,43 @@ tenkai_candidates = sorted(
     reverse=True
 )
 
-# 展開馬を最終決定し直す
-tenkai_best = tenkai_candidates[0]
+# ==================================================
+# 踏ん張り不足の馬は、
+# 総合馬・展開馬の最終代表には選ばない
+#
+# 元のランキングには残すので、
+# 前進気勢・地力・穴候補では使用できる
+# ==================================================
+
+tenkai_final_candidates = [
+    h for h in tenkai_candidates
+    if h["馬番"] not in fumbaribuso_horse_numbers
+]
+
+# 全馬が対象になった場合のエラー回避
+if not tenkai_final_candidates:
+    tenkai_final_candidates = tenkai_candidates
+
+# 展開馬を最終決定
+tenkai_best = tenkai_final_candidates[0]
 
 tenkai_horse = (
     f"{tenkai_best['馬番']}番 "
     f"{tenkai_best['馬名']}"
 )
 
-# 総合馬を決定
-total_best = total_candidates[0]
+
+total_final_candidates = [
+    h for h in total_candidates
+    if h["馬番"] not in fumbaribuso_horse_numbers
+]
+
+# 全馬が対象になった場合のエラー回避
+if not total_final_candidates:
+    total_final_candidates = total_candidates
+
+# 総合馬を最終決定
+total_best = total_final_candidates[0]
 
 total_best_horse = (
     f"{total_best['馬番']}番 "
@@ -2138,9 +2335,9 @@ total_best_horse = (
 )
 
 if debug_mode:
-    st.subheader("展開ランキング（最終総合反映後）")
+    st.subheader("展開ランキング（踏ん張り不足除外後）")
 
-    for h in tenkai_candidates:
+    for h in tenkai_final_candidates:
         st.write(
             f"{h['馬番']}番 {h['馬名']} "
             f"｜展開 {round(h['スコア'], 1)} "
@@ -2165,6 +2362,8 @@ if debug_mode:
             f"{round(h['タイム差'], 2) if h.get('タイム差') is not None else 'なし'} "
             f"｜地力 {round(h['内訳']['地力'], 1)} "
             f"｜南関転入 {round(h['内訳']['南関転入'], 1)} "
+            f"｜直近3走 {h.get('直近3走', [])} "
+            f"｜直近加点 {round(h['内訳']['直近3走'], 1)} "
             f"｜着順 {round(h['内訳']['着順'], 1)} "
             f"｜平均 {round(h['内訳']['平均着順'], 1)} "
             f"｜減点 {round(h['内訳']['減点'], 1)}"
@@ -2668,7 +2867,26 @@ if axis_trio:
         max_count=2
     )
 # 2点目
-if kyakushoku_type == "先行":
+
+# 展開馬と先行馬が同じ場合は信頼度を重視
+# 軸－地力－先行を2点目にする
+if tenkai_best["馬番"] == front_best["馬番"]:
+
+    second_trio = make_unique_trio(
+        popular,
+        long_horse,
+        front_horse,
+        [
+            ana_second_horse,
+            ana_fourth_horse,
+            ana_horse,
+            ana_third_horse,
+            total_horse,
+            front_second_horse,
+        ]
+    )
+
+elif kyakushoku_type == "先行":
 
     # 先行軸の2点目は
     # 軸－地力－前進気勢2位を最優先にする
@@ -2711,6 +2929,24 @@ if kyakushoku_type == "先行":
         if candidate_key not in existing_keys:
             second_trio = candidate_trio
             break
+
+elif kyakushoku_type == "持続":
+
+    # 持続軸の2点目は
+    # 軸－持続（地力）－穴3を最優先
+    second_trio = make_unique_trio(
+        popular,
+        long_horse,
+        ana_third_horse,
+        [
+            ana_horse,              # 穴1
+            ana_second_horse,       # 穴2
+            ana_fourth_horse,       # 穴4
+            front_horse_for_trio,   # 先行馬
+            tenkai_horse_text,      # 展開馬
+            total_horse,            # 総合馬
+        ]
+    )
 
 elif kyakushoku_type == "差し":
     second_trio = make_unique_trio(
