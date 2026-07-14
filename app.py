@@ -1807,6 +1807,8 @@ for horse in horses:
         "平均前半": avg_first,
         "平均4角": avg_last,
         "通過順": race_flows,
+        # 最終的な展開馬選出で使用する
+        "候補脚質": target_type,
         "直近3走": recent_results,
         "直近ボーナス": tenkai_recent_bonus,
         "展開タイム": tenkai_best_time,
@@ -2299,14 +2301,58 @@ tenkai_candidates = sorted(
 # 前進気勢・地力・穴候補では使用できる
 # ==================================================
 
-tenkai_final_candidates = [
+# 踏ん張り不足を除いた候補を土台にする
+tenkai_base_candidates = [
     h for h in tenkai_candidates
     if h["馬番"] not in fumbaribuso_horse_numbers
 ]
 
-# 全馬が対象になった場合のエラー回避
+# 全馬が踏ん張り不足だった場合だけ元候補へ戻す
+if not tenkai_base_candidates:
+    tenkai_base_candidates = tenkai_candidates
+
+
+# ==================================================
+# 軸タイプに合う脚質から展開馬を選ぶ
+#
+# 第一候補の脚質がいなければ第二候補、
+# それもいなければ全候補へ戻す
+# ==================================================
+
+tenkai_type_priority = {
+    "逃げ": ["逃げ", "先行"],
+    "先行": ["先行", "持続"],
+    "差し": ["差し", "持続"],
+    "持続": ["持続", "差し"],
+    "展開待ち": ["先行", "持続"],
+}
+
+preferred_types = tenkai_type_priority.get(
+    kyakushoku_type,
+    []
+)
+
+tenkai_final_candidates = []
+selected_target_type = "全候補"
+
+for preferred_type in preferred_types:
+
+    same_type_candidates = [
+        h for h in tenkai_base_candidates
+        if h.get("候補脚質") == preferred_type
+    ]
+
+    # 第一候補の脚質が見つかった時点で採用
+    if same_type_candidates:
+        tenkai_final_candidates = same_type_candidates
+        selected_target_type = preferred_type
+        break
+
+
+# 合う候補脚質がいない場合だけ全候補へ戻す
 if not tenkai_final_candidates:
-    tenkai_final_candidates = tenkai_candidates
+    tenkai_final_candidates = tenkai_base_candidates
+
 
 # 展開馬を最終決定
 tenkai_best = tenkai_final_candidates[0]
@@ -2335,11 +2381,17 @@ total_best_horse = (
 )
 
 if debug_mode:
-    st.subheader("展開ランキング（踏ん張り不足除外後）")
+    st.subheader("展開ランキング（軸タイプ相性反映後）")
+
+    st.write(
+        f"軸タイプ：{kyakushoku_type} "
+        f"｜今回の採用候補脚質：{selected_target_type}"
+    )
 
     for h in tenkai_final_candidates:
         st.write(
             f"{h['馬番']}番 {h['馬名']} "
+            f"｜候補脚質 {h.get('候補脚質', '不明')} "
             f"｜展開 {round(h['スコア'], 1)} "
             f"｜最終総合順位 "
             f"{h.get('最終総合順位', 99)}位 "
