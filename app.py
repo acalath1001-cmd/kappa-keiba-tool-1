@@ -847,7 +847,13 @@ for horse in horses:
         third = flow[2] if len(flow) > 2 else flow[-1]
         last = flow[-1]
 
-        recent_bonus = idx + 1
+        # 通過順は最新走から並んでいるため、
+        # 最新走ほど強く、古い走ほど弱く評価する
+        recent_bonus = (
+            [5, 4, 3, 2, 1][idx]
+            if idx < 5
+            else 1
+        )
 
         # 1番グラファス型：前〜中団で流れに乗って大きく崩れない
         if 2 <= first <= 6 and last <= 7 and max(flow) <= 7:
@@ -1068,6 +1074,12 @@ strong_push_count = 0
 strong_back_count = 0
 strong_front_count = 0
 
+# 持続判定用：4角からゴールで垂れた回数
+strong_tare_count = 0
+
+# 持続失格に近い、大きな失速回数
+strong_heavy_tare_count = 0
+
 for idx, flow in enumerate(strong_flows):
     if len(flow) < 2:
         continue
@@ -1080,11 +1092,49 @@ for idx, flow in enumerate(strong_flows):
     if first <= 2:
         strong_front_count += 1
 
-    # 前〜中団で大きく崩れず長く脚を使う
-    if 3 <= first <= 6 and 3 <= last <= 6 and abs(last - first) <= 2:
+    # ==================================================
+    # 持続判定
+    # 前〜中団で位置を保ち、ゴールまで踏ん張れる馬を評価
+    # ==================================================
+
+    if finish is not None and last <= 6:
+
+        goal_drop = finish - last
+
+        # 軽い垂れも含めた通常カウント
+        if goal_drop >= 2 or finish >= 7:
+            strong_tare_count += 1
+
+        # 持続判定から強く外したい大失速
+        if (
+            goal_drop >= 4
+            or finish >= 9
+            or (
+                last <= 3
+                and finish >= 8
+            )
+        ):
+            strong_heavy_tare_count += 1
+
+    # 持続カウントは、通過順だけでなく着順も必須
+    if (
+        finish is not None
+        and 3 <= first <= 6
+        and 3 <= last <= 6
+        and abs(last - first) <= 2
+        and finish <= 6
+        and finish - last <= 1
+    ):
         strong_stable_count += 1
-    # 中団〜後方から脚を使える馬を差し候補にする
+    # ==================================================
+    # 差し判定
+    # 複数条件に当てはまっても、1レースにつき最大1回
+    # ==================================================
+
+    push_this_race = False
+
     if distance_num >= 1500:
+
         if (
             first >= 6
             and finish is not None
@@ -1101,12 +1151,19 @@ for idx, flow in enumerate(strong_flows):
                 )
             )
         ):
-            strong_push_count += 1
-    else:
-        if first >= 6 and last <= 5 and last < first:
-            strong_push_count += 1
+            push_this_race = True
 
-        # ジワ差し救済：後方から4角7番手以内まで押し上げて、着順も悪くない馬
+    else:
+
+        # 後方から4角5番手以内まで押し上げた
+        if (
+            first >= 6
+            and last <= 5
+            and last < first
+        ):
+            push_this_race = True
+
+        # ジワ差し救済
         if (
             first >= 6
             and last < first
@@ -1114,11 +1171,9 @@ for idx, flow in enumerate(strong_flows):
             and finish is not None
             and finish <= 4
         ):
-            strong_push_count += 1
+            push_this_race = True
 
-    # 押し上げ差し型の救済
-    # 押し上げ差し型の救済
-    # 1400m以上なら、後方〜中団から4角で射程圏に来る馬を差しで拾う
+    # 1400m以上の押し上げ差し型
     if (
         distance_num >= 1400
         and finish is not None
@@ -1127,8 +1182,19 @@ for idx, flow in enumerate(strong_flows):
         and last < first
         and finish <= 5
     ):
-        strong_push_count += 1
-    if first >= 7 and last >= 7 and finish is not None and finish <= 2:
+        push_this_race = True
+
+    # 後方のままでも着に来た馬
+    if (
+        first >= 7
+        and last >= 7
+        and finish is not None
+        and finish <= 2
+    ):
+        push_this_race = True
+
+    # どれだけ条件に該当しても1回だけ加算
+    if push_this_race:
         strong_push_count += 1
 
     # 後方のまま
@@ -1184,14 +1250,40 @@ elif (
 ):
     kyakushoku_type = "先行"
 
-# ③差し
+# ③持続
+# 軽い垂れは2回まで許すが、大失速がある馬は外す
+elif (
+    strong_heavy_tare_count == 0
+    and strong_tare_count <= 2
+    and (
+        strong_stable_count >= 2
+
+        or (
+            strong_stable_count >= 1
+            and 3 <= strong_avg_first <= 6
+            and 3 <= strong_avg_last <= 6
+            and abs(strong_avg_last - strong_avg_first) <= 2
+        )
+
+        # 持続しながら押し上げるタイプ
+        or (
+            strong_stable_count >= 1
+            and strong_push_count >= 1
+            and strong_avg_last <= 3
+        )
+    )
+):
+    kyakushoku_type = "持続"
+
+# ④差し
 elif (
     push_rate >= 0.4
+
     or (
         distance_num >= 1500
         and push_rate >= 0.3
     )
-    # ジワ差し昇格：差し回数は少なくても、後方のままではなく4角で射程圏に来る馬
+
     or (
         strong_push_count >= 1
         and strong_back_count <= 2
@@ -1200,24 +1292,6 @@ elif (
     )
 ):
     kyakushoku_type = "差し"
-
-# ④持続
-elif (
-    strong_stable_count >= 2
-    or (
-        3 <= strong_avg_first <= 6
-        and 3 <= strong_avg_last <= 6
-        and abs(strong_avg_last - strong_avg_first) <= 2
-    )
-    # 強い持続差し型の救済
-    # 例：平均前半4〜5番手 → 4角1〜2番手、着順も安定
-    or (
-        strong_stable_count >= 1
-        and strong_push_count >= 1
-        and strong_avg_last <= 3
-    )
-):
-    kyakushoku_type = "持続"
 
 # ⑤展開待ち
 else:
@@ -1234,6 +1308,7 @@ else:
         st.write(f"逃げカウント：{strong_escape_count}")
         st.write(f"先行カウント：{strong_front_count}")
         st.write(f"持続カウント：{strong_stable_count}")
+        st.write(f"持続垂れカウント：{strong_tare_count}")
         st.write(f"差しカウント：{strong_push_count}")
         st.write(f"後方カウント：{strong_back_count}")
 
@@ -1244,14 +1319,16 @@ if kyakushoku_type == "展開待ち":
     if strong_avg_first <= 4:
         kyakushoku_type = "先行"
 
+    # 安定した走りがあり、大失速がなければ持続を優先
+    elif (
+        strong_stable_count >= 1
+        and strong_heavy_tare_count == 0
+        and strong_tare_count <= 2
+    ):
+        kyakushoku_type = "持続"
+
     elif strong_push_count >= 1:
         kyakushoku_type = "差し"
-
-    elif strong_stable_count >= 1:
-        kyakushoku_type = "持続"
-
-    elif strong_avg_first <= 6:
-        kyakushoku_type = "持続"
 
     else:
         kyakushoku_type = "差し"
@@ -1705,8 +1782,15 @@ for horse in horses:
         if 3 <= first2 <= 6 and 3 <= last2 <= 6 and abs(last2 - first2) <= 2:
             target_stable_count += 1
 
+        # ==================================================
         # 差し判定
+        # 複数条件に当てはまっても、1レースにつき最大1回
+        # ==================================================
+
+        target_push_this_race = False
+
         if distance_num >= 1500:
+
             if (
                 first2 >= 6
                 and finish2 is not None
@@ -1723,12 +1807,18 @@ for horse in horses:
                     )
                 )
             ):
-                target_push_count += 1
-        else:
-            if first2 >= 6 and last2 <= 5 and last2 < first2:
-                target_push_count += 1
+                target_push_this_race = True
 
-            # ジワ差し救済：後方から4角7番手以内まで押し上げて、着順も悪くない馬
+        else:
+
+            if (
+                first2 >= 6
+                and last2 <= 5
+                and last2 < first2
+            ):
+                target_push_this_race = True
+
+            # ジワ差し救済
             if (
                 first2 >= 6
                 and last2 < first2
@@ -1736,9 +1826,9 @@ for horse in horses:
                 and finish2 is not None
                 and finish2 <= 4
             ):
-                target_push_count += 1
+                target_push_this_race = True
 
-        # 押し上げ差し型の救済
+        # 1400m以上の押し上げ差し型
         if (
             distance_num >= 1400
             and finish2 is not None
@@ -1747,10 +1837,18 @@ for horse in horses:
             and last2 < first2
             and finish2 <= 5
         ):
-            target_push_count += 1
+            target_push_this_race = True
 
-        # 後方から着に来た馬
-        if first2 >= 7 and last2 >= 7 and finish2 is not None and finish2 <= 2:
+        # 後方のままでも着に来た馬
+        if (
+            first2 >= 7
+            and last2 >= 7
+            and finish2 is not None
+            and finish2 <= 2
+        ):
+            target_push_this_race = True
+
+        if target_push_this_race:
             target_push_count += 1
 
     target_escape_rate = (
@@ -2086,62 +2184,193 @@ for horse in horses:
 
         total_score += time_score
         debug_total_parts["持ちタイム"] += time_score
+    
+    # ==================================================
+    # 総合評価に使う地方実績を決める
+    #
+    # JRA転入馬でも、地方で2走以上していれば
+    # 地方の着順・通過順を総合評価へ反映する
+    # ==================================================
+
+    local_tracks = {
+        "盛岡", "水沢", "浦和", "船橋",
+        "大井", "川崎", "金沢", "笠松",
+        "名古屋", "園田", "姫路",
+        "高知", "佐賀", "門別",
+    }
+
+    race_items = horse.get("距離付きタイム", [])
+
+    # 地方競馬で走ったレースだけ、
+    # 通過順と着順をセットで残す
+    local_flow_finish_pairs = [
+        (
+            item.get("通過順", []),
+            finish
+        )
+        for item, finish in zip(
+            race_items,
+            finishes
+        )
+        if item.get("競馬場", "") in local_tracks
+    ]
+
+    local_result_count = len(
+        local_flow_finish_pairs
+    )
+
+    if jra_transfer:
+
+        # JRA転入馬は地方実績2走以上で評価を解禁
+        use_local_evaluation = (
+            local_result_count >= 2
+        )
+
+        evaluation_flow_finish_pairs = (
+            local_flow_finish_pairs
+            if use_local_evaluation
+            else []
+        )
+
+        evaluation_finishes = [
+            finish
+            for _, finish
+            in evaluation_flow_finish_pairs
+        ][:5]
+
+    else:
+
+        use_local_evaluation = True
+
+        evaluation_flow_finish_pairs = list(
+            zip(flows, finishes)
+        )
+
+        evaluation_finishes = finishes[:5]
+
+    # ==================================================
     # 過去5走の着順スコア
-    # 距離は関係なく、実際に着に残れている馬を評価する
-    if not jra_transfer:
+    # 最新走ほど重く、古い実績は少しずつ弱める
+    # ==================================================
+
+    if use_local_evaluation:
+
+        finish_weights = [
+            1.00,
+            0.80,
+            0.60,
+            0.30,
+            0.15,
+        ]
 
         finish_part = 0
 
-        for finish in finishes[-5:]:
+        for idx, finish in enumerate(
+            evaluation_finishes
+        ):
 
             if finish == 1:
-                finish_part += 80
+                base_finish_point = 80
 
             elif finish == 2:
-                finish_part += 60
+                base_finish_point = 60
 
             elif finish == 3:
-                finish_part += 45
+                base_finish_point = 45
 
             elif finish <= 5:
-                finish_part += 20
+                base_finish_point = 20
 
             elif finish >= 10:
-                finish_part -= 60
+                base_finish_point = -60
 
             elif finish >= 8:
-                finish_part -= 35
+                base_finish_point = -35
+
+            else:
+                base_finish_point = 0
+
+            weight = (
+                finish_weights[idx]
+                if idx < len(finish_weights)
+                else 0.15
+            )
+
+            finish_part += (
+                base_finish_point * weight
+            )
+
+        finish_part = round(
+            finish_part,
+            1
+        )
 
         total_score += finish_part
         debug_total_parts["着順"] += finish_part
 
-    # 平均着順（JRA馬はスキップ）
-    if finishes and not jra_transfer:
+    # ==================================================
+    # 平均着順
+    # JRA転入馬は地方での着順だけを使用する
+    # ==================================================
 
-        avg_finish = sum(finishes) / len(finishes)
+    if evaluation_finishes:
+
+        avg_finish = (
+            sum(evaluation_finishes)
+            / len(evaluation_finishes)
+        )
+
+        average_finish_part = 0
 
         if avg_finish <= 3:
-            total_score += 100
+            average_finish_part = 100
 
         elif avg_finish <= 5:
-            total_score += 60
+            average_finish_part = 60
 
         elif avg_finish <= 7:
-            total_score += 20
+            average_finish_part = 20
 
         elif avg_finish >= 8:
-            total_score -= 50
-    horse_text = horse.get("取得テキスト", "")
+            average_finish_part = -50
 
-    
-    # 地力（通過順）はJRA馬だけ無視
-    if not jra_transfer:
-        long_part = long_score_map.get(horse_no, 0) * 0.12
+        total_score += average_finish_part
+
+        debug_total_parts[
+            "平均着順"
+        ] += average_finish_part
+
+    # ==================================================
+    # 地力評価
+    #
+    # 通常馬は12％
+    # 地方実績があるJRA転入馬は70％相当の8.4％
+    # ==================================================
+
+    if use_local_evaluation:
+
+        if jra_transfer:
+            long_weight = 0.084
+        else:
+            long_weight = 0.12
+
+        long_part = (
+            long_score_map.get(
+                horse_no,
+                0
+            )
+            * long_weight
+        )
+
         total_score += long_part
         debug_total_parts["地力"] += long_part
-    if jra_transfer:
-        # 実験用：JRA転入馬は加点だけ残して減点なし
+
+    else:
+
+        # 地方実績が1走以下のJRA転入馬だけ、
+        # 従来どおり未知数として30点を加える
         total_score += 30
+        debug_total_parts["JRA"] += 30
     # ==================================================
     # 南関転入成功ボーナス
     # 南関経験があり、今回の競馬場でも好走している馬を評価
@@ -2196,29 +2425,40 @@ for horse in horses:
     # 望月洵輝騎手補正
     if "望月" in horse_text:
         total_score += 35
-    if not jra_transfer:
+    # 地方実績を評価できる馬は、
+    # JRA転入馬でも地方での垂れを減点する
+    if use_local_evaluation:
 
-        flows = horse.get("通過順", [])
-        finishes = horse.get("着順", [])
+        for flow, finish in (
+            evaluation_flow_finish_pairs
+        ):
 
-        for idx, flow in enumerate(flows):
             if len(flow) < 2:
                 continue
 
             first = flow[0]
             last = flow[-1]
-            finish = finishes[idx] if idx < len(finishes) else None
 
             # 逃げたのに大敗
-            if first <= 2 and finish is not None and finish >= 7:
+            if (
+                first <= 2
+                and finish is not None
+                and finish >= 7
+            ):
                 total_score -= 80
+                debug_total_parts["減点"] -= 80
 
             # 前半から4角で大きく後退
-            if first <= 3 and last - first >= 4:
+            if (
+                first <= 3
+                and last - first >= 4
+            ):
                 total_score -= 60
+                debug_total_parts["減点"] -= 60
 
-            # 4角からゴールまでの順位落下を総合力にも反映
+            # 4角からゴールまでの順位落下
             if finish is not None:
+
                 drop = finish - last
                 drop_penalty = 0
 
@@ -2235,7 +2475,10 @@ for horse in horses:
                     drop_penalty = 25
 
                 total_score -= drop_penalty
-                debug_total_parts["減点"] -= drop_penalty
+
+                debug_total_parts[
+                    "減点"
+                ] -= drop_penalty
     total_candidates.append({
         "馬番": horse_no,
         "馬名": horse_name,
@@ -2834,9 +3077,9 @@ else:
 
     # 三連複1点目：軸馬から
 
-    # 差し軸なら 軸－展開－穴4
+    # 差し軸なら 軸－展開－穴3
     if kyakushoku_type == "差し":
-        axis_third = ana_fourth_horse
+        axis_third = ana_third_horse
 
     # 逃げ軸なら 軸－展開－穴2
     elif kyakushoku_type == "逃げ":
@@ -3112,20 +3355,43 @@ if get_num(popular) == get_num(first_target):
 wide_patterns.append([popular, first_target])
 
 # 2点目候補
-wide_patterns += [
 
-    # 2点目は軸－抑え1を最優先
-    [popular, ana_horse],
+# 差し軸で、展開馬と地力馬が同じ場合
+# 本線がその1頭へ集中するため、
+# ワイド2点目は「先行馬－抑え馬」の別世界線にする
+if (
+    kyakushoku_type == "差し"
+    and tenkai_best["馬番"] == long_best["馬番"]
+):
+    wide_patterns += [
 
-    # 被った時は穴3
-    [popular, ana_third_horse],
+        # 最優先：先行－抑え
+        [front_horse, ana_horse],
 
-    # さらに被った時は穴2
-    [popular, ana_second_horse],
+        # 先行と抑えが被った場合
+        [front_horse, ana_third_horse],
 
-    [total_horse, ana_third_horse],
-    [tenkai_horse_text, ana_third_horse],
-]
+        # さらに被った場合の保険
+        [popular, ana_horse],
+        [popular, ana_third_horse],
+    ]
+
+# それ以外は現在の構成を維持
+else:
+    wide_patterns += [
+
+        # 2点目は軸－抑え1を最優先
+        [popular, ana_horse],
+
+        # 被った時は穴3
+        [popular, ana_third_horse],
+
+        # さらに被った時は穴2
+        [popular, ana_second_horse],
+
+        [total_horse, ana_third_horse],
+        [tenkai_horse_text, ana_third_horse],
+    ]
 
 for pattern in wide_patterns:
     wide_bets = add_unique_bet(
