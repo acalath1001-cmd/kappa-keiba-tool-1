@@ -1059,7 +1059,109 @@ def avg_nonzero(values):
     if not values:
         return 99
     return sum(values) / len(values)
+def analyze_flow_style(race_flows):
+    """
+    通過順だけで大まかな脚質傾向を判定する。
 
+    着順・タイムは使わない。
+    強いか弱いかではなく、普段どの位置で走るかを見る。
+    """
+
+    valid_count = 0
+    escape_count = 0
+    front_count = 0
+    front_sustain_count = 0
+    middle_sustain_count = 0
+    push_count = 0
+    back_count = 0
+
+    for flow in race_flows:
+        if len(flow) < 2:
+            continue
+
+        valid_count += 1
+
+        first = flow[0]
+        last = flow[-1]
+
+        # 逃げ経験
+        if len(flow) >= 4:
+            second = flow[1]
+            third = flow[2]
+
+            if second == 1 or third == 1:
+                escape_count += 1
+
+        else:
+            if first == 1 or last == 1:
+                escape_count += 1
+
+        # 前団に取り付けた経験
+        if first <= 4:
+            front_count += 1
+
+        position_width = max(flow) - min(flow)
+
+        # 前団持続
+        # 2-2-2-2、3-2-3-3、3-4-4-4など
+        is_front_sustain = (
+            2 <= first <= 4
+            and 2 <= last <= 5
+            and position_width <= 2
+        )
+
+        # 中団持続
+        # 5-5-6-6、6-6-7-7、4-5-6-6など
+        is_middle_sustain = (
+            4 <= first <= 7
+            and 4 <= last <= 7
+            and position_width <= 2
+        )
+
+        if is_front_sustain:
+            front_sustain_count += 1
+
+        elif is_middle_sustain:
+            middle_sustain_count += 1
+
+        # 差し・押し上げ
+        # 後方から2つ以上位置を上げたレース
+        if first >= 6 and last <= first - 2:
+            push_count += 1
+
+        # 後方のまま
+        if first >= 7 and last >= 7:
+            back_count += 1
+
+    stable_count = (
+        front_sustain_count
+        + middle_sustain_count
+    )
+
+    escape_rate = (
+        escape_count / valid_count
+        if valid_count > 0
+        else 0
+    )
+
+    push_rate = (
+        push_count / valid_count
+        if valid_count > 0
+        else 0
+    )
+
+    return {
+        "有効数": valid_count,
+        "逃げ回数": escape_count,
+        "逃げ率": escape_rate,
+        "前団回数": front_count,
+        "前団持続回数": front_sustain_count,
+        "中団持続回数": middle_sustain_count,
+        "持続回数": stable_count,
+        "押し上げ回数": push_count,
+        "押し上げ率": push_rate,
+        "後方回数": back_count,
+    }
 strong_firsts = [flow[0] for flow in strong_flows if len(flow) >= 2]
 strong_lasts = [flow[-1] for flow in strong_flows if len(flow) >= 2]
 
@@ -1201,137 +1303,126 @@ for idx, flow in enumerate(strong_flows):
     if first >= 7 and last >= 7:
         strong_back_count += 1
 
+# ==================================================
+# 軸馬の脚質傾向
+# 通過順だけで判定し、着順やタイムは混ぜない
+# ==================================================
 
-# 逃げ判定：2角・3角に1が多い馬を逃げにする
-# 通過順が2個しかない場合は、1-1 / 1-2 / 2-1 を逃げ扱いにする
-
-strong_escape_count = 0
-
-for flow in strong_flows:
-    if len(flow) >= 4:
-        second = flow[1]
-        third = flow[2]
-
-        if second == 1 or third == 1:
-            strong_escape_count += 1
-
-    elif len(flow) == 2:
-        first = flow[0]
-        second = flow[1]
-
-        if first == 1 or second == 1:
-            strong_escape_count += 1
-
-# 逃げ率を計算
-valid_flow_count = len(
-    [flow for flow in strong_flows if len(flow) >= 2]
+strong_style = analyze_flow_style(
+    strong_flows
 )
 
-escape_rate = (
-    strong_escape_count / valid_flow_count
-    if valid_flow_count > 0
-    else 0
+valid_flow_count = strong_style["有効数"]
+
+strong_escape_count = strong_style["逃げ回数"]
+strong_front_count = strong_style["前団回数"]
+
+strong_front_sustain_count = (
+    strong_style["前団持続回数"]
 )
 
-push_rate = (
-    strong_push_count / valid_flow_count
-    if valid_flow_count > 0
-    else 0
+strong_middle_sustain_count = (
+    strong_style["中団持続回数"]
 )
 
-# ①逃げ：過去走の50%以上で逃げっぽい競馬
+strong_stable_count = strong_style["持続回数"]
+strong_push_count = strong_style["押し上げ回数"]
+strong_back_count = strong_style["後方回数"]
+
+escape_rate = strong_style["逃げ率"]
+push_rate = strong_style["押し上げ率"]
+
+# ==================================================
+# 軸馬の大まかな脚色判定
+#
+# 表示は従来どおり、
+# 逃げ・先行・持続・差し・展開待ちの5種類
+#
+# 強いか弱いかではなく、
+# 過去5走で大体どこを走る馬かだけを見る
+# ==================================================
+
+# ① 逃げ
 if escape_rate >= 0.5:
     kyakushoku_type = "逃げ"
 
-# ②先行
+# ② 先行
+# 前団に付けたレースが複数ある馬
 elif (
-    (strong_avg_first <= 4 and strong_avg_last <= 5)
-    or strong_front_count >= 2
+    strong_front_count >= 2
+    and strong_avg_first <= 5
+    and strong_front_count >= strong_push_count
 ):
     kyakushoku_type = "先行"
 
-# ③持続
-# 軽い垂れは2回まで許すが、大失速がある馬は外す
+# ③ 持続
+# 前団持続と中団持続をまとめて「持続」と表示
 elif (
-    strong_heavy_tare_count == 0
-    and strong_tare_count <= 2
-    and (
-        strong_stable_count >= 2
-
-        or (
-            strong_stable_count >= 1
-            and 3 <= strong_avg_first <= 6
-            and 3 <= strong_avg_last <= 6
-            and abs(strong_avg_last - strong_avg_first) <= 2
-        )
-
-        # 持続しながら押し上げるタイプ
-        or (
-            strong_stable_count >= 1
-            and strong_push_count >= 1
-            and strong_avg_last <= 3
-        )
-    )
+    strong_stable_count >= 2
+    and strong_stable_count >= strong_push_count
 ):
     kyakushoku_type = "持続"
 
-# ④差し
-elif (
-    push_rate >= 0.4
-
-    or (
-        distance_num >= 1500
-        and push_rate >= 0.3
-    )
-
-    or (
-        strong_push_count >= 1
-        and strong_back_count <= 2
-        and strong_avg_last <= 7
-        and strong_avg_first >= 6
-    )
-):
+# ④ 差し
+# 後方から押し上げたレースが複数ある馬だけ
+elif strong_push_count >= 2:
     kyakushoku_type = "差し"
 
-# ⑤展開待ち
+# ⑤ どの傾向も定まらない
 else:
     kyakushoku_type = "展開待ち"
-    if debug_mode:
-        st.subheader("軸馬脚色デバッグ")
 
-        st.write(f"逃げ率：{round(escape_rate,2)}")
-        st.write(f"差し率：{round(push_rate,2)}")
 
-        st.write(f"平均前半：{round(strong_avg_first,2)}")
-        st.write(f"平均4角：{round(strong_avg_last,2)}")
+if debug_mode:
+    st.subheader("軸馬脚色デバッグ")
 
-        st.write(f"逃げカウント：{strong_escape_count}")
-        st.write(f"先行カウント：{strong_front_count}")
-        st.write(f"持続カウント：{strong_stable_count}")
-        st.write(f"持続垂れカウント：{strong_tare_count}")
-        st.write(f"差しカウント：{strong_push_count}")
-        st.write(f"後方カウント：{strong_back_count}")
+    st.write(
+        f"逃げ率：{round(escape_rate, 2)}"
+    )
 
-        st.write(f"最終判定：{kyakushoku_type}")
-# 軸馬が展開待ちになった時だけ、近いタイプへ逃がす
-if kyakushoku_type == "展開待ち":
+    st.write(
+        f"差し率：{round(push_rate, 2)}"
+    )
 
-    if strong_avg_first <= 4:
-        kyakushoku_type = "先行"
+    st.write(
+        f"平均前半：{round(strong_avg_first, 2)}"
+    )
 
-    # 安定した走りがあり、大失速がなければ持続を優先
-    elif (
-        strong_stable_count >= 1
-        and strong_heavy_tare_count == 0
-        and strong_tare_count <= 2
-    ):
-        kyakushoku_type = "持続"
+    st.write(
+        f"平均4角：{round(strong_avg_last, 2)}"
+    )
 
-    elif strong_push_count >= 1:
-        kyakushoku_type = "差し"
+    st.write(
+        f"逃げ回数：{strong_escape_count}"
+    )
 
-    else:
-        kyakushoku_type = "差し"
+    st.write(
+        f"前団回数：{strong_front_count}"
+    )
+
+    st.write(
+        f"前団持続：{strong_front_sustain_count}"
+    )
+
+    st.write(
+        f"中団持続：{strong_middle_sustain_count}"
+    )
+
+    st.write(
+        f"持続合計：{strong_stable_count}"
+    )
+
+    st.write(
+        f"押し上げ回数：{strong_push_count}"
+    )
+
+    st.write(
+        f"後方回数：{strong_back_count}"
+    )
+
+    st.write(
+        f"最終判定：{kyakushoku_type}"
+    )
 # 人気馬が差してくるタイプなのに先行気勢1位にも出る場合は、
 # 先行気勢の馬を次点候補にずらす
 if kyakushoku_type == "差し" and front_best["馬番"] == popular_horse_num:
@@ -1851,49 +1942,128 @@ for horse in horses:
         if target_push_this_race:
             target_push_count += 1
 
+    # 展開馬候補も、通過順だけで脚質傾向を判定する
+    target_style = analyze_flow_style(
+        race_flows
+    )
+
+    target_valid_count = target_style["有効数"]
+
+    target_escape_count = (
+        target_style["逃げ回数"]
+    )
+
+    target_front_count = (
+        target_style["前団回数"]
+    )
+
+    target_front_sustain_count = (
+        target_style["前団持続回数"]
+    )
+
+    target_middle_sustain_count = (
+        target_style["中団持続回数"]
+    )
+
+    target_stable_count = (
+        target_style["持続回数"]
+    )
+
+    target_push_count = (
+        target_style["押し上げ回数"]
+    )
+
     target_escape_rate = (
-        target_escape_count / target_valid_count
-        if target_valid_count > 0
-        else 0
+        target_style["逃げ率"]
     )
 
     target_push_rate = (
-        target_push_count / target_valid_count
-        if target_valid_count > 0
-        else 0
+        target_style["押し上げ率"]
     )
-
     target_type = "展開待ち"
 
+    # 逃げ
     if target_escape_rate >= 0.5:
         target_type = "逃げ"
 
-    elif avg_first <= 4 and avg_last <= 5:
+    # 先行
+    elif (
+        target_front_count >= 2
+        and avg_first <= 5
+        and target_front_count >= target_push_count
+    ):
         target_type = "先行"
 
-    elif (
-        target_push_rate >= 0.4
-        or (
-            distance_num >= 1500
-            and target_push_rate >= 0.3
-        )
-    ):
-        target_type = "差し"
-
+    # 前団持続・中団持続をまとめて持続
     elif (
         target_stable_count >= 2
-        or (
-            3 <= avg_first <= 6
-            and 3 <= avg_last <= 6
-            and abs(avg_last - avg_first) <= 2
-        )
-        or (
-            target_stable_count >= 1
-            and target_push_count >= 1
-            and avg_last <= 3
-        )
+        and target_stable_count >= target_push_count
     ):
         target_type = "持続"
+
+    # 差しは押し上げ経験が複数ある馬だけ
+    elif target_push_count >= 2:
+        target_type = "差し"
+
+    # ==================================================
+    # 裏側だけで持続の位置を使い分ける
+    #
+    # 点数は控えめにして、
+    # タイム・着順・失速評価を上回らないようにする
+    # ==================================================
+
+    if kyakushoku_type == "逃げ":
+
+        # 逃げ馬の後ろで流れに乗れる前団持続を優先
+        score += (
+            target_front_sustain_count * 45
+        )
+
+        score += (
+            target_middle_sustain_count * 10
+        )
+
+    elif kyakushoku_type == "先行":
+
+        score += (
+            target_front_sustain_count * 30
+        )
+
+        score += (
+            target_middle_sustain_count * 15
+        )
+
+    elif kyakushoku_type == "持続":
+
+        # 軸馬自身が前団持続寄り
+        if (
+            strong_front_sustain_count
+            >= strong_middle_sustain_count
+        ):
+            score += (
+                target_front_sustain_count * 35
+            )
+
+            score += (
+                target_middle_sustain_count * 15
+            )
+
+        # 軸馬自身が中団持続寄り
+        else:
+            score += (
+                target_middle_sustain_count * 35
+            )
+
+            score += (
+                target_front_sustain_count * 15
+            )
+
+    elif kyakushoku_type == "差し":
+
+        # 差し軸には中団で流れに乗れる馬を少し評価
+        score += (
+            target_middle_sustain_count * 25
+        )
 
     # 展開待ちタイプは除外せず、減点して候補には残す
     if target_type == "展開待ち":
@@ -1907,6 +2077,8 @@ for horse in horses:
         "通過順": race_flows,
         # 最終的な展開馬選出で使用する
         "候補脚質": target_type,
+        "前団持続回数": target_front_sustain_count,
+        "中団持続回数": target_middle_sustain_count,
         "直近3走": recent_results,
         "直近ボーナス": tenkai_recent_bonus,
         "展開タイム": tenkai_best_time,
@@ -1935,6 +2107,9 @@ if debug_mode:
             f"｜展開スコア {h['スコア']} "
             f"｜平均前半 {h['平均前半']} "
             f"｜平均4角 {h['平均4角']} "
+            f"｜候補脚質 {h.get('候補脚質')} "
+            f"｜前団持続 {h.get('前団持続回数', 0)} "
+            f"｜中団持続 {h.get('中団持続回数', 0)} "
             f"｜直近3走 {h.get('直近3走', [])} "
             f"｜直近加点 {h.get('直近ボーナス', 0)} "
             f"｜展開タイム {h.get('展開タイム')} "
@@ -3163,58 +3338,68 @@ if axis_trio:
     )
 # 2点目
 
-# 展開馬と先行馬が同じ場合は信頼度を重視
-# 軸－地力－先行を2点目にする
-if tenkai_best["馬番"] == front_best["馬番"]:
+# 1点目の3頭目と重複させず、
+# 2点目は「軸－地力－抑え馬」を最優先にする
+first_third_num = (
+    get_num(axis_trio[2])
+    if axis_trio and len(axis_trio) >= 3
+    else None
+)
 
-    second_trio = make_unique_trio(
-        popular,
-        long_horse,
-        front_horse,
-        [
-            ana_second_horse,
-            ana_fourth_horse,
-            ana_horse,
-            ana_third_horse,
-            total_horse,
-            front_second_horse,
-        ]
-    )
+existing_keys = {
+    tuple(sorted(get_num(h) for h in bet))
+    for bet in trio_bets
+}
 
-elif kyakushoku_type == "先行":
+# 2頭目は地力馬を最優先。
+# 軸と地力が同じ場合は、後詰め→展開→先行の順にずらす。
+second_middle_priority = [
+    long_horse,
+    total_horse,
+    tenkai_horse_text,
+    front_horse_for_trio,
+    front_second_horse,
+]
 
-    # 先行軸の2点目は
-    # 軸－地力－前進気勢2位を最優先にする
-    third_priority = [
-        front_second_horse,     # 前進気勢2位
-        ana_second_horse,       # 穴2
-        ana_fourth_horse,       # 穴4
-        tenkai_horse_text,      # 展開馬
-        ana_horse,              # 穴1
-        ana_third_horse,        # 穴3
-        total_horse,            # 総合馬
-        front_horse_for_trio,   # 最終保険
-    ]
+# 3頭目は表示中の抑え馬を最優先。
+# 被った場合だけ次の穴候補へずらす。
+osae_priority = [
+    ana_horse,
+    ana_second_horse,
+    ana_fourth_horse,
+    ana_fifth_horse,
+    ana_third_horse,
+]
 
-    # 1点目と同じ組み合わせにならないように確認
-    existing_keys = {
-        tuple(sorted(get_num(h) for h in bet))
-        for bet in trio_bets
-    }
+second_trio = None
 
-    second_trio = None
+for middle_horse in second_middle_priority:
+    middle_num = get_num(middle_horse)
 
-    for idx, third_horse in enumerate(third_priority):
+    # 軸との重複を防ぐ
+    if middle_num == get_num(popular):
+        continue
 
-        candidate_trio = make_unique_trio(
-            popular,
-            long_horse,
-            third_horse,
-            third_priority[idx + 1:]
-        )
+    # 1点目の3頭目との重複を防ぐ
+    if middle_num == first_third_num:
+        continue
 
-        if not candidate_trio:
+    for osae_candidate in osae_priority:
+        osae_num = get_num(osae_candidate)
+
+        # 軸・2頭目・1点目の3頭目との重複を防ぐ
+        if osae_num in {
+            get_num(popular),
+            middle_num,
+            first_third_num,
+        }:
             continue
+
+        candidate_trio = [
+            popular,
+            middle_horse,
+            osae_candidate,
+        ]
 
         candidate_key = tuple(
             sorted(get_num(h) for h in candidate_trio)
@@ -3225,86 +3410,13 @@ elif kyakushoku_type == "先行":
             second_trio = candidate_trio
             break
 
-elif kyakushoku_type == "持続":
-
-    # 持続軸の2点目は
-    # 軸－持続（地力）－穴3を最優先
-    second_trio = make_unique_trio(
-        popular,
-        long_horse,
-        ana_third_horse,
-        [
-            ana_horse,              # 穴1
-            ana_second_horse,       # 穴2
-            ana_fourth_horse,       # 穴4
-            front_horse_for_trio,   # 先行馬
-            tenkai_horse_text,      # 展開馬
-            total_horse,            # 総合馬
-        ]
-    )
-
-elif kyakushoku_type == "差し":
-    second_trio = make_unique_trio(
-        popular,
-        long_horse,
-        ana_third_horse,
-        [
-            ana_horse,
-            ana_second_horse,
-            front_horse_for_trio,
-            tenkai_horse_text,
-        ]
-    )
-
-elif kyakushoku_type == "逃げ":
-    second_trio = make_unique_trio(
-        popular,
-        long_horse,
-        front_second_horse,
-        [
-            ana_second_horse,
-            tenkai_horse_text,
-            ana_horse,
-            ana_third_horse,
-            total_horse,
-        ]
-    )
-
-else:
-    second_trio = make_unique_trio(
-        popular,
-        long_horse,
-        ana_horse,
-        [
-            ana_second_horse,
-            ana_third_horse,
-            front_horse_for_trio,
-            tenkai_horse_text,
-        ]
-    )
+    if second_trio:
+        break
 
 if second_trio:
     trio_bets = add_unique_bet(
         trio_bets,
         second_trio,
-        max_count=2
-    )
-
-# 念のため2点未満なら保険候補で補充
-backup_patterns = [
-    [total_horse, long_horse, ana_horse],
-    [total_horse, long_horse, ana_second_horse],
-    [total_horse, ana_horse, ana_third_horse],
-    [popular, ana_horse, ana_second_horse],
-]
-
-for pattern in backup_patterns:
-    if len(trio_bets) >= 2:
-        break
-
-    trio_bets = add_unique_bet(
-        trio_bets,
-        pattern,
         max_count=2
     )
 
