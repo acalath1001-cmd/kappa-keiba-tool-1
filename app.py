@@ -366,6 +366,9 @@ for num, name in matches:
 
 horses = []
 
+# 出走馬データ取得状況のデバッグ保存用
+horse_parse_debug = []
+
 for i, horse in enumerate(real_horses, start=1):
 
     horse_text = ""
@@ -743,19 +746,22 @@ for i, horse in enumerate(real_horses, start=1):
         for word in ["出走取消", "競走除外", "出走除外"]
     )
     if debug_mode:
-        st.write(
-            f"{i}番 {horse}｜距離付きタイム数 {len(distance_time_pairs)} "
-            f"｜通過順数 {len(race_flows)} "
-            f"｜着順数 {len(finish_positions)}"
-        )
 
-        st.write(
-            f"元通過順：{original_race_flows}"
-        )
-
-        st.write(
-            f"評価通過順：{race_flows}"
-        )
+        horse_parse_debug.append({
+            "馬番": i,
+            "馬名": horse,
+            "距離付きタイム数": len(
+                distance_time_pairs
+            ),
+            "通過順数": len(
+                race_flows
+            ),
+            "着順数": len(
+                finish_positions
+            ),
+            "元通過順": original_race_flows,
+            "評価通過順": race_flows,
+        })
     horses.append({
         "馬番": i,
         "馬名": horse,
@@ -790,7 +796,37 @@ for i, horse in enumerate(real_horses, start=1):
 
         "取得テキスト": horse_text,
     })
+# ==================================================
+# 出走馬のデータ取得状況
+# デバッグ時だけ折りたたみ表示する
+# ==================================================
 
+if debug_mode:
+
+    with st.expander(
+        "📋 出走馬データ取得状況",
+        expanded=False
+    ):
+
+        for data in horse_parse_debug:
+
+            st.write(
+                f"**{data['馬番']}番 "
+                f"{data['馬名']}** "
+                f"｜タイム "
+                f"{data['距離付きタイム数']} "
+                f"｜通過順 "
+                f"{data['通過順数']} "
+                f"｜着順 "
+                f"{data['着順数']}"
+            )
+
+            st.caption(
+                f"元通過順："
+                f"{data['元通過順']}\n\n"
+                f"評価通過順："
+                f"{data['評価通過順']}"
+            )
 for h in horses:
     if h.get("取消除外", False):
         st.markdown(
@@ -894,32 +930,62 @@ jojo_tare_horse_numbers = {
 }
 
 
-if debug_mode and fumbaribuso_horse_numbers:
-    st.subheader("踏ん張り不足判定")
+if debug_mode:
 
-    for h in horses:
-        if not h.get("踏ん張り不足", False):
-            continue
+    with st.expander(
+        "⚠️ 踏ん張り・徐々垂れ判定",
+        expanded=False
+    ):
 
-        st.write(
-            f"{h['馬番']}番 {h['馬名']} "
-            f"｜該当 {h.get('踏ん張り不足回数', 0)}回 "
-            f"｜詳細 {h.get('踏ん張り不足詳細', [])}"
-        )
+        if fumbaribuso_horse_numbers:
 
+            st.markdown("#### 踏ん張り不足")
 
-if debug_mode and jojo_tare_horse_numbers:
-    st.subheader("徐々垂れ判定")
+            for h in horses:
 
-    for h in horses:
-        if not h.get("徐々垂れ", False):
-            continue
+                if not h.get(
+                    "踏ん張り不足",
+                    False
+                ):
+                    continue
 
-        st.write(
-            f"{h['馬番']}番 {h['馬名']} "
-            f"｜該当 {h.get('徐々垂れ回数', 0)}回 "
-            f"｜詳細 {h.get('徐々垂れ詳細', [])}"
-        )
+                st.write(
+                    f"{h['馬番']}番 {h['馬名']} "
+                    f"｜該当 "
+                    f"{h.get('踏ん張り不足回数', 0)}回"
+                )
+
+                st.caption(
+                    f"{h.get('踏ん張り不足詳細', [])}"
+                )
+
+        else:
+            st.write("踏ん張り不足馬なし")
+
+        if jojo_tare_horse_numbers:
+
+            st.markdown("#### 徐々垂れ")
+
+            for h in horses:
+
+                if not h.get(
+                    "徐々垂れ",
+                    False
+                ):
+                    continue
+
+                st.write(
+                    f"{h['馬番']}番 {h['馬名']} "
+                    f"｜該当 "
+                    f"{h.get('徐々垂れ回数', 0)}回"
+                )
+
+                st.caption(
+                    f"{h.get('徐々垂れ詳細', [])}"
+                )
+
+        else:
+            st.write("徐々垂れ馬なし")
 
 # データ不足注意
 low_data_horses = []
@@ -1031,14 +1097,23 @@ front_candidates = sorted(
 
 front_candidates = [h for h in front_candidates if h["スコア"] > 0]
 if debug_mode:
-    st.subheader("前進気勢スコア")
 
-    for h in front_candidates:
-        st.write(
-            f"{h['馬番']}番 {h['馬名']} "
-            f"｜スコア {h['スコア']} "
-            f"｜1角 {h['1角位置']}"
-        )
+    with st.expander(
+        "☄️ 前進気勢ランキング",
+        expanded=False
+    ):
+
+        for rank, h in enumerate(
+            front_candidates[:5],
+            start=1
+        ):
+
+            st.write(
+                f"{rank}位｜"
+                f"{h['馬番']}番 {h['馬名']} "
+                f"｜{round(h['スコア'], 1)}点 "
+                f"｜1角 {h['1角位置']}"
+            )
 
 if not front_candidates:
     st.info(
@@ -1062,10 +1137,16 @@ long_spurt_candidates = []
 for horse in horses:
     horse_no = horse["馬番"]
     horse_name = horse["馬名"]
-    race_flows = horse["通過順"]
     horse_text = horse.get("取得テキスト", "")
-    # 持続評価にも距離フィルターを入れる
-    filtered_flows = []
+
+    # ==================================================
+    # 地力評価に使う過去走
+    #
+    # 通過順と着順を別々に取得せず、
+    # 同じ過去走データからセットで使用する
+    # ==================================================
+
+    evaluation_pairs = []
 
     for item in horse.get("距離付きタイム", []):
         race_distance = item["距離"]
@@ -1075,20 +1156,51 @@ for horse in horses:
                 abs(race_distance - distance_num) <= 200
                 and race_distance >= 1200
             )
+
         elif distance_num >= 1500:
-            distance_ok = abs(race_distance - distance_num) <= 300
+            distance_ok = (
+                abs(race_distance - distance_num) <= 300
+            )
+
         else:
-            distance_ok = abs(race_distance - distance_num) <= 100
+            distance_ok = (
+                abs(race_distance - distance_num) <= 100
+            )
 
         if distance_ok:
-            filtered_flows.append(item["通過順"])
+            evaluation_pairs.append(item)
 
-    if filtered_flows:
-        race_flows = filtered_flows[-5:]
+    # 対象距離がない場合だけ、
+    # 取得済みの過去走全体へ戻す
+    if not evaluation_pairs:
+        evaluation_pairs = horse.get(
+            "距離付きタイム",
+            []
+        )
+
+    evaluation_pairs = evaluation_pairs[-5:]
+
+    race_flows = [
+        item.get("通過順", [])
+        for item in evaluation_pairs
+    ]
+
+    race_finishes = [
+        item.get("着順")
+        for item in evaluation_pairs
+    ]
 
     score = 0
+
+    # 前〜中団で位置を維持した回数
     front_keep_count = 0
-    tare_count = 0
+
+    # 前で運んで3着以内に入った実績
+    front_success_count = 0
+
+    # 失速は能力点と分離して管理する
+    risk_penalty = 0
+    risk_details = []
 
     # 過去5走すべてから、前に行った経験を数える
     # 距離フィルター前の通過順を使う
@@ -1146,6 +1258,7 @@ for horse in horses:
             score -= 500
 
     for idx, flow in enumerate(race_flows):
+
         if len(flow) < 2:
             continue
 
@@ -1153,64 +1266,207 @@ for horse in horses:
             continue
 
         first = flow[0]
-        third = flow[2] if len(flow) > 2 else flow[-1]
+
+        third = (
+            flow[2]
+            if len(flow) > 2
+            else flow[-1]
+        )
+
         last = flow[-1]
 
-        # 通過順は最新走から並んでいるため、
-        # 最新走ほど強く、古い走ほど弱く評価する
+        finish = (
+            race_finishes[idx]
+            if idx < len(race_finishes)
+            else None
+        )
+
+        # 能力加点は従来どおり、
+        # 新しいレースほど強く評価する
         recent_bonus = (
             [5, 4, 3, 2, 1][idx]
             if idx < 5
             else 1
         )
 
-        # 1番グラファス型：前〜中団で流れに乗って大きく崩れない
-        if 2 <= first <= 6 and last <= 7 and max(flow) <= 7:
+        # ==================================================
+        # 能力評価
+        # ==================================================
+
+        # 前〜中団で流れに乗り、大きく崩れない
+        if (
+            2 <= first <= 6
+            and last <= 7
+            and max(flow) <= 7
+        ):
             score += 45 * recent_bonus
             front_keep_count += 1
 
-        # 前で押し切る型：2-3-3-3 / 3-4-4-4 など
-        if first <= 5 and last <= 5 and max(flow) <= 6 and abs(last - first) <= 2:
+        # 前で位置を維持している
+        if (
+            first <= 5
+            and last <= 5
+            and max(flow) <= 6
+            and abs(last - first) <= 2
+        ):
             score += 35 * recent_bonus
             front_keep_count += 1
 
-        # 最後に垂れる馬を減点
-        if last - first >= 3:
-            score -= 80 * recent_bonus
-            tare_count += 1
-        # 4角では前にいたのに、着順で垂れた馬を地力評価から下げる
-        finishes = horse.get("着順", [])
-        finish = finishes[idx] if idx < len(finishes) else None
+        # 実際に前で運んで3着以内に入った経験
+        if (
+            finish is not None
+            and first <= 4
+            and last <= 4
+            and finish <= 3
+        ):
+            front_success_count += 1
 
-        if finish is not None:
-            drop = finish - last
-
-            if drop >= 5:
-                score -= 180 * recent_bonus
-                tare_count += 1
-
-            elif drop >= 3:
-                score -= 120 * recent_bonus
-                tare_count += 1
-
-            elif drop >= 2:
-                score -= 60 * recent_bonus
-                score -= 30 * recent_bonus
-        # 3角までは前、4角で急に下がる馬を強く減点
-        if third <= 4 and last - third >= 3:
-            score -= 120 * recent_bonus
-            tare_count += 1
-
-        # 後方維持だけは評価しない
-        if first >= 8 and last >= 8:
-            score -= 40 * recent_bonus
-
-        # 少し押し上げる馬は加点
+        # 少し押し上げた実績
         if last < first and last <= 6:
             score += 20 * recent_bonus
 
+        # 後方のままのレースは地力評価を下げる
+        if first >= 8 and last >= 8:
+            score -= 40 * recent_bonus
+
+        # ==================================================
+        # 不安・失速評価
+        #
+        # 同じレースで複数条件に該当しても、
+        # 最も大きい減点を1回だけ採用する
+        # ==================================================
+
+        race_risk = 0
+        race_risk_reasons = []
+
+        # レース中に大きく後退
+        if last - first >= 3:
+
+            position_drop_penalty = (
+                80
+                if idx == 0
+                else 50
+            )
+
+            race_risk = max(
+                race_risk,
+                position_drop_penalty
+            )
+
+            race_risk_reasons.append(
+                "道中で後退"
+            )
+
+        # 3角から4角で急に後退
+        if (
+            third <= 4
+            and last - third >= 3
+        ):
+
+            late_corner_penalty = (
+                100
+                if idx == 0
+                else 60
+            )
+
+            race_risk = max(
+                race_risk,
+                late_corner_penalty
+            )
+
+            race_risk_reasons.append(
+                "3角から4角で失速"
+            )
+
+        if finish is not None:
+
+            goal_drop = finish - last
+
+            # 最新走の失速は強めに見るが、
+            # 5倍にはしない
+            if idx == 0:
+
+                if (
+                    last <= 4
+                    and finish >= 8
+                ):
+                    goal_penalty = 180
+
+                elif goal_drop >= 5:
+                    goal_penalty = 160
+
+                elif goal_drop >= 3:
+                    goal_penalty = 100
+
+                elif goal_drop >= 2:
+                    goal_penalty = 50
+
+                else:
+                    goal_penalty = 0
+
+            # 古い失速は少し弱める
+            else:
+
+                if (
+                    last <= 4
+                    and finish >= 8
+                ):
+                    goal_penalty = 100
+
+                elif goal_drop >= 5:
+                    goal_penalty = 90
+
+                elif goal_drop >= 3:
+                    goal_penalty = 60
+
+                elif goal_drop >= 2:
+                    goal_penalty = 30
+
+                else:
+                    goal_penalty = 0
+
+            if goal_penalty > 0:
+
+                race_risk = max(
+                    race_risk,
+                    goal_penalty
+                )
+
+                race_risk_reasons.append(
+                    "4角から着順で失速"
+                )
+
+        # このレースの失速減点は1回だけ
+        if race_risk > 0:
+
+            risk_penalty += race_risk
+
+            risk_details.append({
+                "通過順": flow,
+                "着順": finish,
+                "減点": race_risk,
+                "理由": race_risk_reasons,
+            })
+
+
+    # ==================================================
+    # 能力点と不安点を最後に合成する
+    # ==================================================
+
+    # 前で安定して運べた回数
     score += front_keep_count * 60
-    score -= tare_count * 180
+
+    # 前で実際に結果を出した能力
+    score += front_success_count * 120
+
+    # 複数の失速があっても、
+    # 地力全体を破壊しないよう最大260点
+    applied_risk_penalty = min(
+        risk_penalty,
+        260
+    )
+
+    score -= applied_risk_penalty
 
     # 過去5走で一度も前に行っていない馬を強く減点
     front_experience_penalty = 0
@@ -1285,6 +1541,13 @@ for horse in horses:
         "通過順": race_flows,
         "前経験回数": front_experience_count,
         "前経験減点": front_experience_penalty,
+
+        # 前で実際に3着以内へ入った回数
+        "前成功回数": front_success_count,
+
+        # 能力とは別に管理した失速不安
+        "失速減点": applied_risk_penalty,
+        "失速詳細": risk_details,
 
         # 善戦止まり確認用
         "決め手不足減点": decisive_penalty,
@@ -1363,25 +1626,70 @@ if not long_spurt_display_candidates:
 if not long_spurt_display_candidates:
     long_spurt_display_candidates = long_spurt_candidates
 if debug_mode:
-    st.subheader("長く脚を使える馬スコア")
 
-    for h in long_spurt_display_candidates:
+    with st.expander(
+        "🌋 地力ランキング",
+        expanded=False
+    ):
 
-        finishes = []
+        for rank, h in enumerate(
+            long_spurt_candidates[:5],
+            start=1
+        ):
 
-        for horse in horses:
-            if horse["馬番"] == h["馬番"]:
-                finishes = horse.get("着順", [])
+            st.write(
+                f"{rank}位｜"
+                f"{h['馬番']}番 {h['馬名']} "
+                f"｜地力 {round(h['スコア'], 1)} "
+                f"｜前成功 "
+                f"{h.get('前成功回数', 0)}回 "
+                f"｜失速 "
+                f"-{h.get('失速減点', 0)} "
+                f"｜決め手不足 "
+                f"-{h.get('決め手不足減点', 0)}"
+            )
 
-        st.write(
-            f"{h['馬番']}番 {h['馬名']} "
-            f"｜スコア {h['スコア']} "
-            f"｜前経験 {h.get('前経験回数', 0)}回 "
-            f"｜前経験減点 -{h.get('前経験減点', 0)} "
-            f"｜決め手不足減点 -{h.get('決め手不足減点', 0)} "
-            f"｜通過順 {h['通過順']} "
-            f"｜着順 {finishes}"
-        )      
+
+    with st.expander(
+        "🔍 地力の詳細データ",
+        expanded=False
+    ):
+
+        for h in long_spurt_candidates:
+
+            finishes = []
+
+            for horse in horses:
+                if horse["馬番"] == h["馬番"]:
+                    finishes = horse.get(
+                        "着順",
+                        []
+                    )
+                    break
+
+            st.markdown(
+                f"**{h['馬番']}番 "
+                f"{h['馬名']}**"
+            )
+
+            st.write(
+                f"地力：{round(h['スコア'], 1)} "
+                f"｜前経験 "
+                f"{h.get('前経験回数', 0)}回 "
+                f"｜前成功 "
+                f"{h.get('前成功回数', 0)}回 "
+                f"｜前経験減点 "
+                f"-{h.get('前経験減点', 0)} "
+                f"｜失速減点 "
+                f"-{h.get('失速減点', 0)}"
+            )
+
+            st.caption(
+                f"通過順：{h['通過順']}\n\n"
+                f"着順：{finishes}\n\n"
+                f"失速詳細："
+                f"{h.get('失速詳細', [])}"
+            )
         
 if not long_spurt_candidates:
     st.error("長く脚の評価データが取れていません")
@@ -1781,55 +2089,39 @@ else:
 
 
 if debug_mode:
-    st.subheader("軸馬脚色デバッグ")
 
-    st.write(
-        f"逃げ率：{round(escape_rate, 2)}"
-    )
+    with st.expander(
+        "🎯 軸馬の脚色判定",
+        expanded=False
+    ):
 
-    st.write(
-        f"差し率：{round(push_rate, 2)}"
-    )
+        st.write(
+            f"最終判定：**{kyakushoku_type}**"
+        )
 
-    st.write(
-        f"平均前半：{round(strong_avg_first, 2)}"
-    )
+        st.write(
+            f"平均前半："
+            f"{round(strong_avg_first, 2)} "
+            f"｜平均4角："
+            f"{round(strong_avg_last, 2)}"
+        )
 
-    st.write(
-        f"平均4角：{round(strong_avg_last, 2)}"
-    )
+        st.write(
+            f"逃げ {strong_escape_count}回 "
+            f"｜前団 {strong_front_count}回 "
+            f"｜持続 {strong_stable_count}回 "
+            f"｜押し上げ {strong_push_count}回 "
+            f"｜後方 {strong_back_count}回"
+        )
 
-    st.write(
-        f"逃げ回数：{strong_escape_count}"
-    )
-
-    st.write(
-        f"前団回数：{strong_front_count}"
-    )
-
-    st.write(
-        f"前団持続：{strong_front_sustain_count}"
-    )
-
-    st.write(
-        f"中団持続：{strong_middle_sustain_count}"
-    )
-
-    st.write(
-        f"持続合計：{strong_stable_count}"
-    )
-
-    st.write(
-        f"押し上げ回数：{strong_push_count}"
-    )
-
-    st.write(
-        f"後方回数：{strong_back_count}"
-    )
-
-    st.write(
-        f"最終判定：{kyakushoku_type}"
-    )
+        st.caption(
+            f"逃げ率：{round(escape_rate, 2)} "
+            f"｜差し率：{round(push_rate, 2)} "
+            f"｜前団持続："
+            f"{strong_front_sustain_count} "
+            f"｜中団持続："
+            f"{strong_middle_sustain_count}"
+        )
 # 人気馬が差してくるタイプなのに先行気勢1位にも出る場合は、
 # 先行気勢の馬を次点候補にずらす
 if kyakushoku_type == "差し" and front_best["馬番"] == popular_horse_num:
@@ -1838,100 +2130,58 @@ if kyakushoku_type == "差し" and front_best["馬番"] == popular_horse_num:
             front_best = h
             front_horse = f"{front_best['馬番']}番 {front_best['馬名']}"
             break
-# ==================================================
-# 展開タイムで使用できる距離を判定する
-# ==================================================
-
-def is_tenkai_distance_ok(race_distance, same_distance_exists):
-
-    # 今回と同距離の実績がある馬は、
-    # 同距離だけを使用する
-    if same_distance_exists:
-        return race_distance == distance_num
-
-    if distance_num == 1400:
-        return (
-            abs(race_distance - distance_num) <= 200
-            and race_distance >= 1200
-        )
-
-    if distance_num in [1200, 1230, 1300]:
-        return (
-            abs(race_distance - distance_num) <= 200
-            and race_distance >= 1000
-        )
-
-    if distance_num >= 1900:
-        return race_distance in [
-            1600, 1700, 1800, 1870,
-            1900, 2000, 2100
-        ]
-
-    if distance_num >= 1500:
-        return (
-            abs(race_distance - distance_num) <= 300
-        )
-
-    return (
-        abs(race_distance - distance_num) <= 100
-    )
-
-
-# ==================================================
-# 展開馬用の最速タイム
-#
-# 1400m・1600m・1800mなど、
-# 過去走距離ごとに最速タイムを分けて保存する
-# ==================================================
-
-fastest_time_by_distance_for_tenkai = {}
+# 展開馬用：今回距離で使える最速タイムを先に探す
+# 1400m戦では820m・900mなどは使わない
+fastest_same_distance_time_for_tenkai = None
 
 for h in horses:
-
-    distance_times = h.get(
-        "距離付きタイム",
-        []
-    )
+    distance_times = h.get("距離付きタイム", [])
 
     same_distance_exists = any(
-        item["距離"] == distance_num
-        for item in distance_times
+        x["距離"] == distance_num
+        for x in distance_times
     )
 
     for item in distance_times:
-
         race_distance = item["距離"]
 
-        if not is_tenkai_distance_ok(
-            race_distance,
-            same_distance_exists
-        ):
+        if same_distance_exists:
+            distance_ok = (race_distance == distance_num)
+        else:
+            if distance_num == 1400:
+                distance_ok = (
+                    abs(race_distance - distance_num) <= 200
+                    and race_distance >= 1200
+                )
+            elif distance_num in [1200, 1230, 1300]:
+                distance_ok = (
+                    abs(race_distance - distance_num) <= 200
+                    and race_distance >= 1000
+                )
+            elif distance_num >= 1900:
+                distance_ok = race_distance in [
+                    1600, 1700, 1800, 1870, 1900, 2000, 2100
+                ]
+            elif distance_num >= 1500:
+                distance_ok = abs(race_distance - distance_num) <= 300
+            else:
+                distance_ok = abs(race_distance - distance_num) <= 100
+
+        if not distance_ok:
             continue
 
         try:
             minutes, seconds = item["タイム"].split(":")
+            t = int(minutes) * 60 + float(seconds)
 
-            time_seconds = (
-                int(minutes) * 60
-                + float(seconds)
-            )
+            if (
+                fastest_same_distance_time_for_tenkai is None
+                or t < fastest_same_distance_time_for_tenkai
+            ):
+                fastest_same_distance_time_for_tenkai = t
 
-        except (ValueError, TypeError):
-            continue
-
-        current_fastest = (
-            fastest_time_by_distance_for_tenkai.get(
-                race_distance
-            )
-        )
-
-        if (
-            current_fastest is None
-            or time_seconds < current_fastest
-        ):
-            fastest_time_by_distance_for_tenkai[
-                race_distance
-            ] = time_seconds
+        except:
+            pass
 
 tenkai_candidates = []
 
@@ -1951,95 +2201,74 @@ for horse in horses:
     
     score = 0
     long_score = long_score_map.get(horse_no, 0)
-    # ==================================================
-    # 展開馬のタイム評価
-    #
-    # 違う距離の生タイムを直接比較しない。
-    #
-    # 1400mは1400m同士、
-    # 1600mは1600m同士で最速差を計算する。
-    # ==================================================
-
+    # 展開馬の一次試験：今回距離で戦えるタイムがあるか
     tenkai_best_time = None
-    tenkai_best_distance = None
-    tenkai_reference_time = None
-    tenkai_time_diff = None
+    distance_times = horse.get("距離付きタイム", [])
 
-    distance_times = horse.get(
-        "距離付きタイム",
-        []
-    )
+    # 展開馬のタイム評価
+    # 距離一致を最優先。
+    # 1400m戦で800m・820m・900mのタイムを評価しない。
 
     same_distance_exists = any(
-        item["距離"] == distance_num
-        for item in distance_times
+        x["距離"] == distance_num
+        for x in distance_times
     )
 
     for item in distance_times:
-
         race_distance = item["距離"]
 
-        if not is_tenkai_distance_ok(
-            race_distance,
-            same_distance_exists
-        ):
-            continue
+        if same_distance_exists:
+            distance_ok = (race_distance == distance_num)
+        else:
+            if distance_num == 1400:
+                distance_ok = (
+                    abs(race_distance - distance_num) <= 200
+                    and race_distance >= 1200
+                )
+            elif distance_num in [1200, 1230, 1300]:
+                distance_ok = (
+                    abs(race_distance - distance_num) <= 200
+                    and race_distance >= 1000
+                )
+            elif distance_num >= 1900:
+                distance_ok = race_distance in [
+                    1600, 1700, 1800, 1870, 1900, 2000, 2100
+                ]
+            elif distance_num >= 1500:
+                distance_ok = abs(race_distance - distance_num) <= 300
+            else:
+                distance_ok = abs(race_distance - distance_num) <= 100
 
-        reference_time = (
-            fastest_time_by_distance_for_tenkai.get(
-                race_distance
-            )
-        )
-
-        if reference_time is None:
+        if not distance_ok:
             continue
 
         try:
             minutes, seconds = item["タイム"].split(":")
+            t = int(minutes) * 60 + float(seconds)
 
-            time_seconds = (
-                int(minutes) * 60
-                + float(seconds)
-            )
+            if tenkai_best_time is None or t < tenkai_best_time:
+                tenkai_best_time = t
 
-        except (ValueError, TypeError):
-            continue
+        except:
+            pass
 
-        # この過去走と、
-        # 同じ距離の全馬最速タイムとの差
-        distance_diff = (
-            time_seconds - reference_time
-        )
+    if (
+        tenkai_best_time is not None
+        and fastest_same_distance_time_for_tenkai is not None
+    ):
+        diff = tenkai_best_time - fastest_same_distance_time_for_tenkai
 
-        # 複数距離が使用可能なら、
-        # 最も評価の高い距離実績を使用する
-        if (
-            tenkai_time_diff is None
-            or distance_diff < tenkai_time_diff
-        ):
-            tenkai_best_time = time_seconds
-            tenkai_best_distance = race_distance
-            tenkai_reference_time = reference_time
-            tenkai_time_diff = distance_diff
-
-
-    if tenkai_time_diff is not None:
-
-        if tenkai_time_diff >= 3.0:
+        if diff >= 3.0:
             score -= 300
-
-        elif tenkai_time_diff >= 2.0:
+        elif diff >= 2.0:
             score -= 220
-
-        elif tenkai_time_diff >= 1.5:
+        elif diff >= 1.5:
             score -= 140
-
-        elif tenkai_time_diff >= 1.0:
+        elif diff >= 1.0:
             score -= 80
 
     else:
-
-        # 使用可能な距離タイムがない馬は未知数として減点
+        # 今回距離で使える展開タイムがない馬は未知数として強めに減点
         score -= 180
     # 着順が悪い馬は展開評価を少し下げる
     finishes = horse.get("着順", [])
@@ -2530,15 +2759,12 @@ for horse in horses:
         "直近3走": recent_results,
         "直近ボーナス": tenkai_recent_bonus,
         "展開タイム": tenkai_best_time,
-
-        # 何mのタイムを使ったか
-        "比較距離": tenkai_best_distance,
-
-        # 同じ過去走距離での全馬最速タイム
-        "比較基準タイム": tenkai_reference_time,
-
-        # 同じ距離同士で計算した最速差
-        "タイム差": tenkai_time_diff,
+        "タイム差": (
+            tenkai_best_time - fastest_same_distance_time_for_tenkai
+            if tenkai_best_time is not None
+            and fastest_same_distance_time_for_tenkai is not None
+            else None
+        )
     })
 
 tenkai_candidates = sorted(
@@ -2565,27 +2791,45 @@ if tenkai_candidates_without_decisive:
         tenkai_candidates_without_decisive
     )
 if debug_mode:
-    st.subheader("展開が向く馬スコア")
-    st.write(f"人気馬タイプ：{kyakushoku_type}")
-    st.write(f"前崩れ期待度：{front_collapse_score}｜前圧カウント：{front_pressure_count}")
-    st.write(f"人気馬 平均前半：{strong_avg_first}｜平均4角：{strong_avg_last}")
 
-    for h in tenkai_candidates:
+    with st.expander(
+        "🌊 展開ランキング",
+        expanded=False
+    ):
+
         st.write(
-            f"{h['馬番']}番 {h['馬名']} "
-            f"｜展開スコア {h['スコア']} "
-            f"｜平均前半 {h['平均前半']} "
-            f"｜平均4角 {h['平均4角']} "
-            f"｜候補脚質 {h.get('候補脚質')} "
-            f"｜前団持続 {h.get('前団持続回数', 0)} "
-            f"｜中団持続 {h.get('中団持続回数', 0)} "
-            f"｜直近3走 {h.get('直近3走', [])} "
-            f"｜直近加点 {h.get('直近ボーナス', 0)} "
-            f"｜比較距離 {h.get('比較距離')}m "
-            f"｜展開タイム {h.get('展開タイム')} "
-            f"｜同距離最速 {h.get('比較基準タイム')} "
-            f"｜最速差 {h.get('タイム差')}"
+            f"軸タイプ：**{kyakushoku_type}** "
+            f"｜前崩れ期待度："
+            f"{front_collapse_score} "
+            f"｜前圧：{front_pressure_count}"
         )
+
+        for rank, h in enumerate(
+            tenkai_candidates[:5],
+            start=1
+        ):
+
+            time_diff_text = (
+                round(h["タイム差"], 2)
+                if h.get("タイム差")
+                is not None
+                else "なし"
+            )
+
+            st.write(
+                f"{rank}位｜"
+                f"{h['馬番']}番 {h['馬名']} "
+                f"｜展開 "
+                f"{round(h['スコア'], 1)} "
+                f"｜脚質 "
+                f"{h.get('候補脚質')} "
+                f"｜平均 "
+                f"{round(h['平均前半'], 1)}"
+                f"→"
+                f"{round(h['平均4角'], 1)} "
+                f"｜タイム差 "
+                f"{time_diff_text}"
+            )
 
 if not tenkai_candidates:
     st.error("展開馬候補が0頭になりました")
@@ -2716,6 +2960,126 @@ fastest_average_time = min(
     ),
     default=None
 )
+# ==================================================
+# 総合評価専用の同距離持ちタイム
+#
+# 今回1600mなら1600mだけ、
+# 今回800mなら800mだけを使用する。
+#
+# この表は総合評価だけで使用し、
+# タイム圧モードには影響させない。
+# ==================================================
+
+total_same_distance_time_map = {}
+
+for horse in horses:
+
+    exact_distance_times = []
+
+    for item in horse.get(
+        "距離付きタイム",
+        []
+    ):
+
+        # 今回と完全に同じ距離だけ使用する
+        if item.get("距離") != distance_num:
+            continue
+
+        try:
+            minutes, seconds = (
+                item["タイム"].split(":")
+            )
+
+            total_seconds = (
+                int(minutes) * 60
+                + float(seconds)
+            )
+
+            # 園田・姫路の競馬場差補正は残す
+            past_place = item.get(
+                "競馬場",
+                ""
+            )
+
+            if (
+                baba_name == "園田"
+                and past_place == "姫路"
+            ):
+                total_seconds += 5.0
+
+            elif (
+                baba_name == "姫路"
+                and past_place == "園田"
+            ):
+                total_seconds -= 5.0
+
+            exact_distance_times.append(
+                total_seconds
+            )
+
+        except (ValueError, TypeError):
+            continue
+
+    if not exact_distance_times:
+        continue
+
+    # 同距離タイムの速い順
+    exact_distance_times.sort()
+
+    # 総合評価は同距離の上位2走平均
+    top_exact_times = (
+        exact_distance_times[:2]
+    )
+
+    representative_time = (
+        sum(top_exact_times)
+        / len(top_exact_times)
+    )
+
+    total_same_distance_time_map[
+        horse["馬番"]
+    ] = {
+        "代表タイム": representative_time,
+        "使用タイム": top_exact_times,
+        "使用数": len(top_exact_times),
+    }
+
+
+# 同距離タイムを持つ馬が2頭以上いる場合だけ、
+# 総合の持ちタイム点を有効にする
+same_distance_time_horse_count = len(
+    total_same_distance_time_map
+)
+
+if same_distance_time_horse_count >= 2:
+
+    fastest_same_distance_average_time = min(
+        data["代表タイム"]
+        for data
+        in total_same_distance_time_map.values()
+    )
+
+else:
+
+    # 0頭または1頭なら比較できないため、
+    # 全馬の総合タイム点を0にする
+    fastest_same_distance_average_time = None
+
+
+if debug_mode:
+
+    same_distance_horse_numbers = sorted(
+        total_same_distance_time_map.keys()
+    )
+
+    st.write(
+        f"総合同距離タイム対象："
+        f"{distance_num}m "
+        f"｜対象馬数 "
+        f"{same_distance_time_horse_count}頭 "
+        f"｜馬番 "
+        f"{same_distance_horse_numbers}"
+    )
 # ==================================================
 # タイム圧モード
 #
@@ -2907,21 +3271,35 @@ for horse in horses:
     time_diff = None
     used_times = []
 
-    time_info = total_time_map.get(horse_no)
+    # 総合評価では、
+    # 今回と完全に同じ距離のタイムだけを使用する
+    time_info = (
+        total_same_distance_time_map.get(
+            horse_no
+        )
+    )
 
     if (
         time_info is not None
-        and fastest_average_time is not None
+        and fastest_same_distance_average_time
+        is not None
     ):
-        best_time = time_info["代表タイム"]
-        used_times = time_info["使用タイム"]
+
+        best_time = time_info[
+            "代表タイム"
+        ]
+
+        used_times = time_info[
+            "使用タイム"
+        ]
 
         time_diff = max(
             0,
-            best_time - fastest_average_time
+            best_time
+            - fastest_same_distance_average_time
         )
 
-        # 最速馬は120点
+        # 同距離最速馬は120点
         # 1秒遅いごとに40点ずつ下げる
         # 3秒以上遅ければ0点
         time_score = max(
@@ -2929,21 +3307,21 @@ for horse in horses:
             120 - time_diff * 40
         )
 
-        # 完全一致距離がない場合は少し信頼度を下げる
-        if time_info["距離一致"]:
-            time_weight = 1.0
-        else:
-            time_weight = 0.9
+        # 完全同距離なので基本係数は100％
+        time_weight = 1.0
 
-        # 使用できるタイムが1走だけなら、
-        # 一発だけ速かった可能性を考えてさらに下げる
+        # 同距離タイムが1走しかない馬は、
+        # 一発だけ速かった可能性を考えて85％
         if time_info["使用数"] == 1:
             time_weight *= 0.85
 
         time_score *= time_weight
 
         total_score += time_score
-        debug_total_parts["持ちタイム"] += time_score
+
+        debug_total_parts[
+            "持ちタイム"
+        ] += time_score
     
     # ==================================================
     # 総合評価に使う地方実績を決める
@@ -3540,158 +3918,103 @@ if time_pressure_mode:
 
 if debug_mode:
 
-    st.subheader("タイム圧判定")
-
-    st.write(
-        f"発動状況："
-        f"{'ON' if time_pressure_mode else 'OFF'}"
-    )
-
-    if time_pressure_horse_no is not None:
-
-        st.write(
-            f"最速馬："
-            f"{time_pressure_horse_no}番 "
-            f"{time_pressure_horse_name} "
-            f"｜{round(time_pressure_fastest_time, 2)}秒"
-        )
-
-        front_name = (
-            horse_data_map
-            .get(original_front_no, {})
-            .get("馬名", "不明")
-        )
-
-        tenkai_name = (
-            horse_data_map
-            .get(original_tenkai_no, {})
-            .get("馬名", "不明")
-        )
-
-        st.write(
-            f"変更前の先行代表："
-            f"{original_front_no}番 "
-            f"{front_name} "
-            f"｜最速馬との差 "
-            f"{time_pressure_front_diff}"
-        )
-
-        st.write(
-            f"変更前の展開代表："
-            f"{original_tenkai_no}番 "
-            f"{tenkai_name} "
-            f"｜最速馬との差 "
-            f"{time_pressure_tenkai_diff}"
-        )
-
-        st.write(
-            "発動条件：先行代表または展開代表が"
-            "最速馬より1.0秒以上遅い"
-        )
-
-
-    st.write("最速1走ランキング")
-
-    for rank, data in enumerate(
-        time_pressure_ranking,
-        start=1
+    with st.expander(
+        "⏱️ タイム圧判定",
+        expanded=False
     ):
 
-        horse_no = data["馬番"]
-
-        horse_name = (
-            horse_data_map
-            .get(horse_no, {})
-            .get("馬名", "不明")
-        )
-
-        diff = time_pressure_diff_map.get(
-            horse_no
-        )
-
         st.write(
-            f"{rank}位 "
-            f"｜{horse_no}番 {horse_name} "
-            f"｜最速1走 "
-            f"{round(data['最速1走'], 2)}秒 "
-            f"｜最速馬との差 "
-            f"{diff}秒 "
-            f"｜使用数 "
-            f"{data.get('使用数', 0)}"
+            f"発動状況："
+            f"**{'ON' if time_pressure_mode else 'OFF'}**"
         )
+
+        if time_pressure_horse_no is not None:
+
+            st.write(
+                f"最速馬："
+                f"{time_pressure_horse_no}番 "
+                f"{time_pressure_horse_name} "
+                f"｜"
+                f"{round(time_pressure_fastest_time, 2)}秒"
+            )
+
+            st.write(
+                f"変更前の先行代表差："
+                f"{time_pressure_front_diff}秒 "
+                f"｜展開代表差："
+                f"{time_pressure_tenkai_diff}秒"
+            )
+
+        st.markdown("#### 最速1走 上位5頭")
+
+        for rank, data in enumerate(
+            time_pressure_ranking[:5],
+            start=1
+        ):
+
+            horse_no = data["馬番"]
+
+            horse_name = (
+                horse_data_map
+                .get(horse_no, {})
+                .get("馬名", "不明")
+            )
+
+            diff = time_pressure_diff_map.get(
+                horse_no
+            )
+
+            st.write(
+                f"{rank}位｜"
+                f"{horse_no}番 {horse_name} "
+                f"｜{round(data['最速1走'], 2)}秒 "
+                f"｜差 {diff}秒"
+            )
+
+        if time_pressure_mode:
+
+            st.write(
+                f"先行候補から除外："
+                f"{pressure_removed_front}"
+            )
+
+            st.write(
+                f"展開候補から除外："
+                f"{pressure_removed_tenkai}"
+            )
 
 
     if time_pressure_mode:
 
-        st.write(
-            f"先行候補から除外："
-            f"{pressure_removed_front}"
-        )
-
-        st.write(
-            f"展開候補から除外："
-            f"{pressure_removed_tenkai}"
-        )
-
-        st.write("タイム圧対応力")
-
-        for horse_no, response in (
-            time_pressure_response_map.items()
+        with st.expander(
+            "🔍 タイム圧対応力の詳細",
+            expanded=False
         ):
 
-            horse_diff = (
-                time_pressure_diff_map.get(
-                    horse_no
+            for horse_no, response in (
+                time_pressure_response_map.items()
+            ):
+
+                horse_diff = (
+                    time_pressure_diff_map.get(
+                        horse_no
+                    )
                 )
-            )
 
-            st.write(
-                f"{horse_no}番 "
-                f"｜最速差 {horse_diff}秒 "
-                f"｜前成功 "
-                f"{response.get('前成功回数', 0)}回 "
-                f"｜強押し上げ "
-                f"{response.get('強押上回数', 0)}回 "
-                f"｜両方あり "
-                f"{response.get('両方あり', False)}"
-            )
+                st.write(
+                    f"{horse_no}番 "
+                    f"｜最速差 {horse_diff}秒 "
+                    f"｜前成功 "
+                    f"{response.get('前成功回数', 0)}回 "
+                    f"｜押し上げ "
+                    f"{response.get('強押上回数', 0)}回 "
+                    f"｜両対応 "
+                    f"{response.get('両方あり', False)}"
+                )
 
-
-    if time_pressure_mode:
-
-        st.write(
-            f"タイム圧馬："
-            f"{time_pressure_horse_no}番 "
-            f"{time_pressure_horse_name}"
-        )
-
-        st.write(
-            f"先行候補から除外："
-            f"{pressure_removed_front}"
-        )
-
-        st.write(
-            f"展開候補から除外："
-            f"{pressure_removed_tenkai}"
-        )
-
-        st.write("タイム圧対応力")
-
-        for horse_no, response in (
-            time_pressure_response_map.items()
-        ):
-
-            st.write(
-                f"{horse_no}番 "
-                f"｜前成功 "
-                f"{response.get('前成功回数', 0)}回 "
-                f"｜強押し上げ "
-                f"{response.get('強押上回数', 0)}回 "
-                f"｜両方あり "
-                f"{response.get('両方あり', False)} "
-                f"｜詳細 "
-                f"{response.get('詳細', [])}"
-            )
+                st.caption(
+                    f"{response.get('詳細', [])}"
+                )
 # 最終総合ランキングを作る
 final_total_rank_map = {
     h["馬番"]: rank
@@ -4017,45 +4340,93 @@ if jra_count >= 1:
             "単純比較できない場合があります。"
         )
 if debug_mode:
-    st.subheader("展開ランキング（軸タイプ相性反映後）")
 
-    st.write(
-        f"軸タイプ：{kyakushoku_type} "
-        f"｜今回の採用候補脚質：{selected_target_type}"
-    )
+    with st.expander(
+        "🌊 最終展開候補",
+        expanded=False
+    ):
 
-    for h in tenkai_final_candidates:
         st.write(
-            f"{h['馬番']}番 {h['馬名']} "
-            f"｜候補脚質 {h.get('候補脚質', '不明')} "
-            f"｜展開 {round(h['スコア'], 1)} "
-            f"｜最終総合順位 "
-            f"{h.get('最終総合順位', 99)}位 "
-            f"｜総合加点 "
-            f"{h.get('最終総合加点', 0)}"
+            f"軸タイプ：**{kyakushoku_type}** "
+            f"｜採用脚質："
+            f"**{selected_target_type}**"
         )
 
+        for rank, h in enumerate(
+            tenkai_final_candidates[:5],
+            start=1
+        ):
+
+            st.write(
+                f"{rank}位｜"
+                f"{h['馬番']}番 {h['馬名']} "
+                f"｜{h.get('候補脚質', '不明')} "
+                f"｜展開 "
+                f"{round(h['スコア'], 1)} "
+                f"｜総合 "
+                f"{h.get('最終総合順位', 99)}位"
+            )
 if debug_mode:
-    st.subheader("総合力ランキング")
 
-    for h in total_candidates:
-        st.write(
-            f"{h['馬番']}番 {h['馬名']} "
-            f"｜総合 {round(h['総合スコア'], 1)} "
-            f"｜前進 {round(h['内訳']['前進気勢'], 1)} "
-            f"｜タイム {round(h['内訳']['持ちタイム'], 1)} "
-            f"｜上位平均 "
-            f"{round(h['代表タイム'], 2) if h.get('代表タイム') is not None else 'なし'} "
-            f"｜最速差 "
-            f"{round(h['タイム差'], 2) if h.get('タイム差') is not None else 'なし'} "
-            f"｜地力 {round(h['内訳']['地力'], 1)} "
-            f"｜南関転入 {round(h['内訳']['南関転入'], 1)} "
-            f"｜直近3走 {h.get('直近3走', [])} "
-            f"｜直近加点 {round(h['内訳']['直近3走'], 1)} "
-            f"｜着順 {round(h['内訳']['着順'], 1)} "
-            f"｜平均 {round(h['内訳']['平均着順'], 1)} "
-            f"｜減点 {round(h['内訳']['減点'], 1)}"
-        )
+    with st.expander(
+        "👑 総合力ランキング",
+        expanded=False
+    ):
+
+        for rank, h in enumerate(
+            total_candidates[:5],
+            start=1
+        ):
+
+            st.write(
+                f"{rank}位｜"
+                f"{h['馬番']}番 {h['馬名']} "
+                f"｜総合 "
+                f"{round(h['総合スコア'], 1)} "
+                f"｜タイム "
+                f"{round(h['内訳']['持ちタイム'], 1)} "
+                f"｜地力 "
+                f"{round(h['内訳']['地力'], 1)} "
+                f"｜着順 "
+                f"{round(h['内訳']['着順'], 1)} "
+                f"｜平均 "
+                f"{round(h['内訳']['平均着順'], 1)} "
+                f"｜減点 "
+                f"{round(h['内訳']['減点'], 1)}"
+            )
+
+
+    with st.expander(
+        "🔍 総合力の詳細データ",
+        expanded=False
+    ):
+
+        for h in total_candidates:
+
+            st.markdown(
+                f"**{h['馬番']}番 "
+                f"{h['馬名']} "
+                f"｜総合 "
+                f"{round(h['総合スコア'], 1)}**"
+            )
+
+            st.caption(
+                f"前進："
+                f"{round(h['内訳']['前進気勢'], 1)} "
+                f"｜タイム："
+                f"{round(h['内訳']['持ちタイム'], 1)} "
+                f"｜地力："
+                f"{round(h['内訳']['地力'], 1)} "
+                f"｜直近："
+                f"{round(h['内訳']['直近3走'], 1)} "
+                f"｜着順："
+                f"{round(h['内訳']['着順'], 1)} "
+                f"｜平均："
+                f"{round(h['内訳']['平均着順'], 1)} "
+                f"｜減点："
+                f"{round(h['内訳']['減点'], 1)}"
+            )
+
 # 展開が向く馬と先行気勢の馬が同じなら、
 # 先行気勢の馬をスコア2位以降にずらす
 # 期待値高めおすすめ馬
@@ -4669,12 +5040,6 @@ if get_num(tenkai_horse_text) == popular_horse_num:
             tenkai_horse_text = candidate
             break
 
-# 本線2点
-# 総合力1位と地力馬が同じなら、
-# その馬は3着以内期待が高いのでワイド1点目に優先する
-# ワイド1点目を明確に決める
-wide_patterns = []
-
 # ==================================================
 # ワイド1点目
 #
@@ -4682,6 +5047,8 @@ wide_patterns = []
 # A-B-C / A-B-D の形なら、
 # ワイド1点目は A－穴3位
 # ==================================================
+
+wide_patterns = []
 
 same_two_horses_pattern = False
 
@@ -4751,46 +5118,35 @@ else:
         first_target = front_horse_for_trio
 
 
+# ワイド1点目を追加
 wide_patterns.append([
     popular,
     first_target,
 ])
 
-# 2点目候補
+
+# ==================================================
+# ワイド2点目候補
+# ==================================================
 
 # 差し軸で、展開馬と地力馬が同じ場合
-# 本線がその1頭へ集中するため、
-# ワイド2点目は「先行馬－抑え馬」の別世界線にする
 if (
     kyakushoku_type == "差し"
     and tenkai_best["馬番"] == long_best["馬番"]
 ):
     wide_patterns += [
-
-        # 最優先：先行－抑え
         [front_horse, ana_horse],
-
-        # 先行と抑えが被った場合
         [front_horse, ana_third_horse],
-
-        # さらに被った場合の保険
         [popular, ana_horse],
         [popular, ana_third_horse],
     ]
 
-# それ以外は現在の構成を維持
+# それ以外
 else:
     wide_patterns += [
-
-        # 2点目は軸－抑え1を最優先
         [popular, ana_horse],
-
-        # 被った時は穴3
         [popular, ana_third_horse],
-
-        # さらに被った時は穴2
         [popular, ana_second_horse],
-
         [total_horse, ana_third_horse],
         [tenkai_horse_text, ana_third_horse],
     ]
