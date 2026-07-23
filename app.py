@@ -410,7 +410,7 @@ for i, horse in enumerate(real_horses, start=1):
 
         d_match = re.search(
             r"(?:右|左|芝|ダ)\s*"
-            r"(800|820|850|900|920|1000|1200|1230|1300|1400|1500|1600|1700|1800|1870|1900|2000|2100|2200)",
+            r"(800|820|850|900|920|1000|1200|1230|1300|1400|1500|1580|1600|1700|1800|1870|1900|2000|2100|2200)",
             block
         )
         if not d_match:
@@ -1840,8 +1840,8 @@ def analyze_flow_style(race_flows):
             middle_sustain_count += 1
 
         # 差し・押し上げ
-        # 後方から2つ以上位置を上げたレース
-        if first >= 6 and last <= first - 2:
+        # 5番手以下から2つ以上位置を上げたレース
+        if first >= 5 and last <= first - 2:
             push_count += 1
 
         # 後方のまま
@@ -2079,11 +2079,45 @@ elif (
     kyakushoku_type = "持続"
 
 # ④ 差し
-# 後方から押し上げたレースが複数ある馬だけ
+# 後方から押し上げたレースが複数ある馬
 elif strong_push_count >= 2:
     kyakushoku_type = "差し"
 
-# ⑤ どの傾向も定まらない
+# ⑤ 差し救済
+# 押し上げが1回でも、
+# 平均的に中団以降から大きく前進している馬
+elif (
+    strong_push_count >= 1
+    and strong_avg_first >= 4.5
+    and strong_avg_last
+        <= strong_avg_first - 1.5
+):
+    kyakushoku_type = "差し"
+
+# ⑥ 持続救済
+# 持続経験が1回でも、
+# 普段から前〜中団で位置取りが安定している馬
+elif (
+    strong_stable_count >= 1
+    and 3 <= strong_avg_first <= 6
+    and abs(
+        strong_avg_last
+        - strong_avg_first
+    ) <= 1.0
+):
+    kyakushoku_type = "持続"
+
+# ⑦ 先行救済
+# 前団経験が1回でも、
+# 平均的に前で運べている馬
+elif (
+    strong_front_count >= 1
+    and strong_avg_first <= 4
+    and strong_avg_last <= 5
+):
+    kyakushoku_type = "先行"
+
+# ⑧ 本当に傾向が定まらない馬
 else:
     kyakushoku_type = "展開待ち"
 
@@ -2130,58 +2164,67 @@ if kyakushoku_type == "差し" and front_best["馬番"] == popular_horse_num:
             front_best = h
             front_horse = f"{front_best['馬番']}番 {front_best['馬名']}"
             break
-# 展開馬用：今回距離で使える最速タイムを先に探す
-# 1400m戦では820m・900mなどは使わない
-fastest_same_distance_time_for_tenkai = None
+# ==================================================
+# 展開馬用の同距離持ちタイム
+#
+# 今回と完全に同じ距離だけ使用する。
+# 同距離馬が2頭未満なら時計による比較は行わない。
+# ==================================================
+
+tenkai_same_distance_time_map = {}
 
 for h in horses:
-    distance_times = h.get("距離付きタイム", [])
 
-    same_distance_exists = any(
-        x["距離"] == distance_num
-        for x in distance_times
-    )
+    exact_times = []
 
-    for item in distance_times:
-        race_distance = item["距離"]
+    for item in h.get("距離付きタイム", []):
 
-        if same_distance_exists:
-            distance_ok = (race_distance == distance_num)
-        else:
-            if distance_num == 1400:
-                distance_ok = (
-                    abs(race_distance - distance_num) <= 200
-                    and race_distance >= 1200
-                )
-            elif distance_num in [1200, 1230, 1300]:
-                distance_ok = (
-                    abs(race_distance - distance_num) <= 200
-                    and race_distance >= 1000
-                )
-            elif distance_num >= 1900:
-                distance_ok = race_distance in [
-                    1600, 1700, 1800, 1870, 1900, 2000, 2100
-                ]
-            elif distance_num >= 1500:
-                distance_ok = abs(race_distance - distance_num) <= 300
-            else:
-                distance_ok = abs(race_distance - distance_num) <= 100
-
-        if not distance_ok:
+        if item.get("距離") != distance_num:
             continue
 
         try:
             minutes, seconds = item["タイム"].split(":")
-            t = int(minutes) * 60 + float(seconds)
+            total_seconds = (
+                int(minutes) * 60
+                + float(seconds)
+            )
+
+            # 園田・姫路の競馬場差補正
+            past_place = item.get("競馬場", "")
 
             if (
-                fastest_same_distance_time_for_tenkai is None
-                or t < fastest_same_distance_time_for_tenkai
+                baba_name == "園田"
+                and past_place == "姫路"
             ):
-                fastest_same_distance_time_for_tenkai = t
+                total_seconds += 5.0
 
-        except:
-            pass
+            elif (
+                baba_name == "姫路"
+                and past_place == "園田"
+            ):
+                total_seconds -= 5.0
+
+            exact_times.append(total_seconds)
+
+        except (ValueError, TypeError):
+            continue
+
+    if exact_times:
+        tenkai_same_distance_time_map[
+            h["馬番"]
+        ] = min(exact_times)
+
+
+# 2頭以上いないと比較できない
+if len(tenkai_same_distance_time_map) >= 2:
+
+    fastest_same_distance_time_for_tenkai = min(
+        tenkai_same_distance_time_map.values()
+    )
+
+else:
+    fastest_same_distance_time_for_tenkai = None
+
 
 tenkai_candidates = []
 
@@ -2201,75 +2244,38 @@ for horse in horses:
     
     score = 0
     long_score = long_score_map.get(horse_no, 0)
-    # 展開馬の一次試験：今回距離で戦えるタイムがあるか
-    tenkai_best_time = None
-    distance_times = horse.get("距離付きタイム", [])
-
-    # 展開馬のタイム評価
-    # 距離一致を最優先。
-    # 1400m戦で800m・820m・900mのタイムを評価しない。
-
-    same_distance_exists = any(
-        x["距離"] == distance_num
-        for x in distance_times
+    # 展開馬の同距離ベストタイム
+    tenkai_best_time = (
+        tenkai_same_distance_time_map.get(
+            horse_no
+        )
     )
 
-    for item in distance_times:
-        race_distance = item["距離"]
+    # 同距離馬が2頭以上いる場合だけ時計を比較する
+    if fastest_same_distance_time_for_tenkai is not None:
 
-        if same_distance_exists:
-            distance_ok = (race_distance == distance_num)
+        if tenkai_best_time is not None:
+
+            diff = (
+                tenkai_best_time
+                - fastest_same_distance_time_for_tenkai
+            )
+
+            if diff >= 3.0:
+                score -= 300
+            elif diff >= 2.0:
+                score -= 220
+            elif diff >= 1.5:
+                score -= 140
+            elif diff >= 1.0:
+                score -= 80
+
         else:
-            if distance_num == 1400:
-                distance_ok = (
-                    abs(race_distance - distance_num) <= 200
-                    and race_distance >= 1200
-                )
-            elif distance_num in [1200, 1230, 1300]:
-                distance_ok = (
-                    abs(race_distance - distance_num) <= 200
-                    and race_distance >= 1000
-                )
-            elif distance_num >= 1900:
-                distance_ok = race_distance in [
-                    1600, 1700, 1800, 1870, 1900, 2000, 2100
-                ]
-            elif distance_num >= 1500:
-                distance_ok = abs(race_distance - distance_num) <= 300
-            else:
-                distance_ok = abs(race_distance - distance_num) <= 100
+            # 比較できるレースなのに同距離実績がない馬
+            score -= 180
 
-        if not distance_ok:
-            continue
-
-        try:
-            minutes, seconds = item["タイム"].split(":")
-            t = int(minutes) * 60 + float(seconds)
-
-            if tenkai_best_time is None or t < tenkai_best_time:
-                tenkai_best_time = t
-
-        except:
-            pass
-
-    if (
-        tenkai_best_time is not None
-        and fastest_same_distance_time_for_tenkai is not None
-    ):
-        diff = tenkai_best_time - fastest_same_distance_time_for_tenkai
-
-        if diff >= 3.0:
-            score -= 300
-        elif diff >= 2.0:
-            score -= 220
-        elif diff >= 1.5:
-            score -= 140
-        elif diff >= 1.0:
-            score -= 80
-
-    else:
-        # 今回距離で使える展開タイムがない馬は未知数として強めに減点
-        score -= 180
+    # 同距離馬が1頭以下なら、
+    # 全馬の時計評価を行わない
     # 着順が悪い馬は展開評価を少し下げる
     finishes = horse.get("着順", [])
 
