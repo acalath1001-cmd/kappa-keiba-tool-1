@@ -5021,12 +5021,68 @@ show_card(
     "#fed7aa",
     "#f97316"
 )
+# ==================================================
+# 斬り捨て御免馬
+# 分析結果には影響させず、最終買い目からだけ除外する
+# ==================================================
 
+kirisute_options = [
+    f"{h['馬番']}番 {h['馬名']}"
+    for h in horses
+    if h["馬番"] != popular_horse_num
+]
+
+if "kirisute_limit_warning" not in st.session_state:
+    st.session_state.kirisute_limit_warning = False
+
+
+def limit_kirisute_horses():
+    selected = st.session_state.get(
+        "kirisute_horses",
+        []
+    )
+
+    if len(selected) > 2:
+        st.session_state.kirisute_horses = selected[:2]
+        st.session_state.kirisute_limit_warning = True
+    else:
+        st.session_state.kirisute_limit_warning = False
+
+
+with st.expander(
+    "⚔️ 斬り捨て御免馬（任意で斬りたい馬を選択）",
+    expanded=False
+):
+    kirisute_horses = st.multiselect(
+        "斬り捨て御免馬",
+        options=kirisute_options,
+        placeholder="斬りたい馬を選択",
+        label_visibility="collapsed",
+        key="kirisute_horses",
+        on_change=limit_kirisute_horses,
+    )
+
+    if st.session_state.kirisute_limit_warning:
+        st.warning(
+            "⚠️ 斬り捨て御免馬は2頭までです"
+        )
+
+kirisute_horse_numbers = {
+    int(horse_text.split("番")[0])
+    for horse_text in kirisute_horses
+}
 def get_num(horse_text):
     return int(horse_text.split("番")[0])
 
 def add_unique_bet(bets, bet, max_count=2):
     nums = [get_num(h) for h in bet]
+
+    # 斬り捨て御免馬を含む買い目は採用しない
+    if any(
+        num in kirisute_horse_numbers
+        for num in nums
+    ):
+        return bets
 
     # 1つの買い目内で同じ馬がいたら除外
     if len(nums) != len(set(nums)):
@@ -5077,10 +5133,16 @@ tenkai_horse_text = tenkai_horse
 
 def make_unique_trio(first, second, third, fallback_list):
     trio = [first, second, third]
-    nums = [get_num(h) for h in trio]
 
-    if len(nums) == len(set(nums)):
-        return trio
+    # まず従来の予備候補を使い、
+    # 足りない時だけ総合順位から補う
+    extended_fallbacks = list(fallback_list)
+
+    for h in total_candidates:
+        candidate = f"{h['馬番']}番 {h['馬名']}"
+
+        if candidate not in extended_fallbacks:
+            extended_fallbacks.append(candidate)
 
     used_nums = set()
     fixed = []
@@ -5088,22 +5150,33 @@ def make_unique_trio(first, second, third, fallback_list):
     for h in trio:
         n = get_num(h)
 
-        if n not in used_nums:
+        # 重複せず、斬り捨て御免馬でもなければそのまま使う
+        if (
+            n not in used_nums
+            and n not in kirisute_horse_numbers
+        ):
             fixed.append(h)
             used_nums.add(n)
-        else:
-            replacement = None
+            continue
 
-            for fb in fallback_list:
-                fb_num = get_num(fb)
+        replacement = None
 
-                if fb_num not in used_nums:
-                    replacement = fb
-                    break
+        for fb in extended_fallbacks:
+            fb_num = get_num(fb)
 
-            if replacement:
-                fixed.append(replacement)
-                used_nums.add(get_num(replacement))
+            if (
+                fb_num not in used_nums
+                and fb_num not in kirisute_horse_numbers
+                and fb_num != popular_horse_num
+            ):
+                replacement = fb
+                break
+
+        if replacement:
+            fixed.append(replacement)
+            used_nums.add(
+                get_num(replacement)
+            )
 
     if len(fixed) == 3:
         return fixed
@@ -5328,6 +5401,10 @@ else:
             middle_horse
         )
 
+        # 斬り捨て御免馬は最終買い目から除外
+        if middle_num in kirisute_horse_numbers:
+            continue
+
         # 軸との重複を防ぐ
         if middle_num == get_num(popular):
             continue
@@ -5341,6 +5418,10 @@ else:
             osae_num = get_num(
                 osae_candidate
             )
+
+            # 斬り捨て御免馬は最終買い目から除外
+            if osae_num in kirisute_horse_numbers:
+                continue
 
             # 軸・2頭目・1点目の3頭目との
             # 重複を防ぐ
