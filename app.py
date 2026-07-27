@@ -1095,10 +1095,28 @@ popular_horse_num = st.number_input(
     step=1
 )
 
-if popular_horse_num > len(real_horses):
-    st.error(f"軸馬は1〜{len(real_horses)}番を選択してください")
+# 出走取消・競走除外馬は軸にできない
+active_horse_numbers = {
+    h["馬番"]
+    for h in horses
+}
+
+if popular_horse_num not in active_horse_numbers:
+    st.error(
+        f"⚠️ {popular_horse_num}番は出走取消・競走除外のため、"
+        "軸馬には選択できません。"
+    )
     st.stop()
-popular_horse_label = f"{popular_horse_num}番 {real_horses[popular_horse_num - 1]}"
+
+popular_horse_data = next(
+    h for h in horses
+    if h["馬番"] == popular_horse_num
+)
+
+popular_horse_label = (
+    f"{popular_horse_num}番 "
+    f"{popular_horse_data['馬名']}"
+)
 
 # 4角位置が取れていない馬も含めてスコア確認できるようにする
 front_candidates = []
