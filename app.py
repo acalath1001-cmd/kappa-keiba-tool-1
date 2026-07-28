@@ -1002,6 +1002,71 @@ horses = [
     if not h.get("取消除外", False)
 ]
 # ==================================================
+# 南関から他地区への転入初戦を判定
+#
+# 今回が南関以外で、過去走に南関実績があり、
+# 南関以外の地方実績がまだない馬を対象にする。
+#
+# 大井・船橋・川崎・浦和での失速を、
+# 移籍先でも同じ重さの能力不足として扱わない。
+# ==================================================
+
+NANKAN_TRACKS = {
+    "浦和",
+    "船橋",
+    "大井",
+    "川崎",
+}
+
+NON_NANKAN_LOCAL_TRACKS = (
+    set(LOCAL_PLACES)
+    - NANKAN_TRACKS
+)
+
+# 通常の失速・着順マイナスを40％へ弱める
+NANKAN_TRANSFER_PENALTY_WEIGHT = 0.4
+
+# 地力の通常失速減点は最大100点まで
+NANKAN_TRANSFER_RISK_CAP = 100
+
+nankan_transfer_first_horse_numbers = set()
+
+for h in horses:
+
+    past_places = [
+        item.get("競馬場", "")
+        for item in h.get(
+            "全距離付きタイム",
+            []
+        )
+    ]
+
+    has_nankan_history = any(
+        place in NANKAN_TRACKS
+        for place in past_places
+    )
+
+    has_non_nankan_local_history = any(
+        place in NON_NANKAN_LOCAL_TRACKS
+        for place in past_places
+    )
+
+    is_nankan_transfer_first = (
+        baba_name not in NANKAN_TRACKS
+        and has_nankan_history
+        and not has_non_nankan_local_history
+    )
+
+    h["南関転入初戦"] = (
+        is_nankan_transfer_first
+    )
+
+    if is_nankan_transfer_first:
+        nankan_transfer_first_horse_numbers.add(
+            h["馬番"]
+        )
+
+# ==================================================
 # JRA転入馬の共通判定
 #
 # 地方で1回以上走っている元JRA馬は、
@@ -1074,14 +1139,22 @@ jra_rate = (
 fumbaribuso_horse_numbers = {
     h["馬番"]
     for h in horses
-    if h.get("踏ん張り不足", False)
+    if (
+        h.get("踏ん張り不足", False)
+        and h["馬番"]
+        not in nankan_transfer_first_horse_numbers
+    )
 }
 
 # 徐々垂れの馬
 jojo_tare_horse_numbers = {
     h["馬番"]
     for h in horses
-    if h.get("徐々垂れ", False)
+    if (
+        h.get("徐々垂れ", False)
+        and h["馬番"]
+        not in nankan_transfer_first_horse_numbers
+    )
 }
 
 
@@ -1348,6 +1421,11 @@ for horse in horses:
     horse_no = horse["馬番"]
     horse_name = horse["馬名"]
     horse_text = horse.get("取得テキスト", "")
+
+    is_nankan_transfer_first = (
+        horse_no
+        in nankan_transfer_first_horse_numbers
+    )
 
     # ==================================================
     # 地力評価に使う過去走
@@ -1670,11 +1748,32 @@ for horse in horses:
     score += front_success_count * 120
 
     # 複数の失速があっても、
-    # 地力全体を破壊しないよう最大260点
-    applied_risk_penalty = min(
+    # 地力全体を破壊しないよう通常は最大260点
+    raw_applied_risk_penalty = min(
         risk_penalty,
         260
     )
+
+    # 南関から他地区への転入初戦は、
+    # 格上の南関での通常失速を40％へ弱め、
+    # 最大100点までに抑える。
+    #
+    # 直近大失速はこの下の別枠減点として残す。
+    if is_nankan_transfer_first:
+
+        applied_risk_penalty = min(
+            round(
+                raw_applied_risk_penalty
+                * NANKAN_TRANSFER_PENALTY_WEIGHT,
+                1
+            ),
+            NANKAN_TRANSFER_RISK_CAP
+        )
+
+    else:
+        applied_risk_penalty = (
+            raw_applied_risk_penalty
+        )
 
     score -= applied_risk_penalty
     # 直近大失速は通常の失速減点とは別枠。
@@ -1768,8 +1867,10 @@ for horse in horses:
         "前成功回数": front_success_count,
 
         # 能力とは別に管理した失速不安
+        "元失速減点": raw_applied_risk_penalty,
         "失速減点": applied_risk_penalty,
         "失速詳細": risk_details,
+        "南関転入初戦": is_nankan_transfer_first,
         "大失速減点": heavy_collapse_long_penalty,
         # 善戦止まり確認用
         "決め手不足減点": decisive_penalty,
@@ -1800,7 +1901,9 @@ shissoku_heavy_horse_numbers = {
     h["馬番"]
     for h in long_spurt_candidates
     if (
-        h.get("失速減点", 0) >= 100
+        h["馬番"]
+        not in nankan_transfer_first_horse_numbers
+        and h.get("失速減点", 0) >= 100
         and len(h.get("失速詳細", [])) >= 2
     )
 }
@@ -1943,7 +2046,11 @@ if debug_mode:
                 f"｜前経験減点 "
                 f"-{h.get('前経験減点', 0)} "
                 f"｜失速減点 "
-                f"-{h.get('失速減点', 0)}"
+                f"-{h.get('失速減点', 0)} "
+                f"｜元減点 "
+                f"-{h.get('元失速減点', 0)} "
+                f"｜南関転入初戦 "
+                f"{h.get('南関転入初戦', False)}"
             )
 
             st.caption(
@@ -2190,12 +2297,9 @@ if escape_rate >= 0.5:
     kyakushoku_type = "逃げ"
 
 # ② 先行
-# 前団に付けたレースが複数ある馬
-elif (
-    strong_front_count >= 2
-    and strong_avg_first <= 5
-    and strong_front_count >= strong_push_count
-):
+# 過去5走で前団（1角4番手以内）が2回以上あれば、
+# 後方回数や平均位置より、前へ行けた実績を優先する
+elif strong_front_count >= 2:
     kyakushoku_type = "先行"
 
 # ③ 持続
@@ -2248,6 +2352,39 @@ elif (
 # ⑧ 本当に傾向が定まらない馬
 else:
     kyakushoku_type = "展開待ち"
+# ==================================================
+# 南関から他地区への転入初戦・脚色補正
+#
+# 南関で1角2番手以内を2回以上取れている馬は、
+# 格が下がる転入初戦では主導権を取れる可能性を優先し「逃げ」。
+#
+# 2番手以内が2回未満でも、
+# 1角4番手以内が2回以上なら「先行」とする。
+# ==================================================
+
+if popular_horse_num in nankan_transfer_first_horse_numbers:
+
+    nankan_front_two_count = sum(
+        1
+        for flow in strong_flows
+        if len(flow) >= 2
+        and flow[0] <= 2
+    )
+
+    nankan_front_four_count = sum(
+        1
+        for flow in strong_flows
+        if len(flow) >= 2
+        and flow[0] <= 4
+    )
+
+    # 南関で2番手以内を複数回取れていれば逃げを優先
+    if nankan_front_two_count >= 2:
+        kyakushoku_type = "逃げ"
+
+    # 逃げ条件には届かなくても、前団2回以上なら先行
+    elif nankan_front_four_count >= 2:
+        kyakushoku_type = "先行"
 # ==================================================
 # 展開待ち救済
 # ==================================================
@@ -3634,6 +3771,12 @@ for horse in horses:
     finishes = horse.get("着順", [])
     flows = horse.get("通過順", [])
     horse_text = horse.get("取得テキスト", "")
+
+    is_nankan_transfer_first = (
+        horse_no
+        in nankan_transfer_first_horse_numbers
+    )
+
     # 平均1角位置補正
     first_positions = []
 
@@ -3864,6 +4007,17 @@ for horse in horses:
             else:
                 base_finish_point = 0
 
+            # 南関転入初戦では、
+            # 南関時代の悪い着順だけ40％評価へ弱める。
+            # 好走加点はそのまま残す。
+            if (
+                is_nankan_transfer_first
+                and base_finish_point < 0
+            ):
+                base_finish_point *= (
+                    NANKAN_TRANSFER_PENALTY_WEIGHT
+                )
+
             weight = (
                 finish_weights[idx]
                 if idx < len(finish_weights)
@@ -3907,6 +4061,14 @@ for horse in horses:
 
         elif avg_finish >= 8:
             average_finish_part = -50
+
+        if (
+            is_nankan_transfer_first
+            and average_finish_part < 0
+        ):
+            average_finish_part *= (
+                NANKAN_TRANSFER_PENALTY_WEIGHT
+            )
 
         total_score += average_finish_part
 
@@ -4019,16 +4181,34 @@ for horse in horses:
                 and finish is not None
                 and finish >= 7
             ):
-                total_score -= 80
-                debug_total_parts["減点"] -= 80
+                escape_loss_penalty = 80
+
+                if is_nankan_transfer_first:
+                    escape_loss_penalty *= (
+                        NANKAN_TRANSFER_PENALTY_WEIGHT
+                    )
+
+                total_score -= escape_loss_penalty
+                debug_total_parts["減点"] -= (
+                    escape_loss_penalty
+                )
 
             # 前半から4角で大きく後退
             if (
                 first <= 3
                 and last - first >= 4
             ):
-                total_score -= 60
-                debug_total_parts["減点"] -= 60
+                position_drop_penalty = 60
+
+                if is_nankan_transfer_first:
+                    position_drop_penalty *= (
+                        NANKAN_TRANSFER_PENALTY_WEIGHT
+                    )
+
+                total_score -= position_drop_penalty
+                debug_total_parts["減点"] -= (
+                    position_drop_penalty
+                )
 
             # 4角からゴールまでの順位落下
             if finish is not None:
@@ -4047,6 +4227,11 @@ for horse in horses:
 
                 elif drop >= 2:
                     drop_penalty = 25
+
+                if is_nankan_transfer_first:
+                    drop_penalty *= (
+                        NANKAN_TRANSFER_PENALTY_WEIGHT
+                    )
 
                 total_score -= drop_penalty
 
@@ -4067,6 +4252,7 @@ for horse in horses:
         "タイム差": time_diff,
         "タイム係数": time_weight,
         "直近3走": recent_results,
+        "南関転入初戦": is_nankan_transfer_first,
         "内訳": debug_total_parts
     })
 
@@ -5626,679 +5812,624 @@ kirisute_horse_numbers = {
 def get_num(horse_text):
     return int(horse_text.split("番")[0])
 
-def add_unique_bet(bets, bet, max_count=2):
+
+def horse_text(h):
+    return f"{h['馬番']}番 {h['馬名']}"
+
+
+def unique_texts(items):
+    result = []
+    used = set()
+
+    for item in items:
+        num = get_num(item)
+        if num not in used:
+            result.append(item)
+            used.add(num)
+
+    return result
+
+
+def add_bet(bets, roles_list, bet, roles, max_count):
     nums = [get_num(h) for h in bet]
 
-    # 斬り捨て御免馬を含む買い目は採用しない
-    if any(
-        num in kirisute_horse_numbers
-        for num in nums
-    ):
-        return bets
-
-    # 1つの買い目内で同じ馬がいたら除外
+    # 通常買い目の作成中は斬り捨てを見ない
     if len(nums) != len(set(nums)):
-        return bets
+        return
 
-    # 同じ買い目の重複を除外
-    bet_key = tuple(sorted(nums))
-    existing_keys = [
+    key = tuple(sorted(nums))
+    existing = {
         tuple(sorted(get_num(h) for h in b))
         for b in bets
+    }
+
+    if key not in existing and len(bets) < max_count:
+        bets.append(list(bet))
+        roles_list.append(list(roles))
+
+
+# ==================================================
+# 斬り捨て馬の代役候補
+# ==================================================
+
+hole_pool = unique_texts([
+    ana_horse,
+    ana_second_horse,
+    ana_third_horse,
+    ana_fourth_horse,
+    ana_fifth_horse,
+])
+
+tenkai_pool = unique_texts([
+    horse_text(h)
+    for h in tenkai_rank_for_trio
+])
+
+long_pool = unique_texts([
+    horse_text(h)
+    for h in long_spurt_candidates
+])
+
+total_pool = unique_texts([
+    horse_text(h)
+    for h in total_candidates
+])
+
+front_pool = unique_texts([
+    horse_text(h)
+    for h in front_candidates
+])
+
+all_pool = unique_texts(
+    total_pool
+    + tenkai_pool
+    + long_pool
+    + front_pool
+    + hole_pool
+    + [horse_text(h) for h in horses]
+)
+
+role_pools = {
+    "穴": hole_pool,
+    "展開": tenkai_pool,
+    "地力": long_pool,
+    "総合": total_pool,
+    "先行": front_pool,
+    "予備": all_pool,
+    "軸": [],
+}
+
+
+def next_candidates(original, role):
+    pool = role_pools.get(role, all_pool)
+
+    if original in pool:
+        idx = pool.index(original)
+        pool = pool[idx + 1:] + pool[:idx]
+
+    return unique_texts(pool + all_pool)
+
+
+def replace_one_bet(original_bet, roles, existing_keys):
+    cut_indexes = [
+        i
+        for i, h in enumerate(original_bet)
+        if get_num(h) in kirisute_horse_numbers
     ]
 
-    if bet_key not in existing_keys and len(bets) < max_count:
-        bets.append(bet)
+    # 斬られた馬が入っていない買い目は一切変えない
+    if not cut_indexes:
+        return list(original_bet)
 
-    return bets
+    fixed_nums = {
+        get_num(h)
+        for i, h in enumerate(original_bet)
+        if i not in cut_indexes
+    }
 
-popular = f"{popular_horse_num}番 {real_horses[popular_horse_num - 1]}"
+    options = []
 
-# 三連複2点
-st.subheader("おすすめの三連複 2点")
+    for i in cut_indexes:
+        original = original_bet[i]
+        role = roles[i] if i < len(roles) else "予備"
+        candidates = []
 
-trio_bets = []
-# 三連複用：通常の先行馬
-front_horse_for_trio = front_horse
+        for candidate in next_candidates(original, role):
+            num = get_num(candidate)
 
-if get_num(front_horse_for_trio) == popular_horse_num:
-    front_horse_for_trio = long_spurt_horse
+            if num in kirisute_horse_numbers:
+                continue
+            if num in fixed_nums:
+                continue
+            if num == popular_horse_num:
+                continue
+            if num == get_num(original):
+                continue
+
+            candidates.append(candidate)
+
+        options.append(candidates)
+
+    def search(depth, current, used, avoid_duplicate):
+        if depth == len(cut_indexes):
+            key = tuple(sorted(get_num(h) for h in current))
+            if avoid_duplicate and key in existing_keys:
+                return None
+            return current
+
+        target = cut_indexes[depth]
+
+        for candidate in options[depth]:
+            num = get_num(candidate)
+            if num in used:
+                continue
+
+            trial = list(current)
+            trial[target] = candidate
+
+            found = search(
+                depth + 1,
+                trial,
+                used | {num},
+                avoid_duplicate
+            )
+            if found is not None:
+                return found
+
+        return None
+
+    replaced = search(
+        0,
+        list(original_bet),
+        set(fixed_nums),
+        True
+    )
+
+    if replaced is None:
+        replaced = search(
+            0,
+            list(original_bet),
+            set(fixed_nums),
+            False
+        )
+
+    return replaced if replaced is not None else list(original_bet)
 
 
-# 逃げ軸の三連複2点目用：
-# 前進気勢ランキング2位を取得する
-if len(front_candidates) >= 2:
-    front_second = front_candidates[1]
-else:
-    # 候補が1頭しかいない場合は1位を使う
-    front_second = front_candidates[0]
+def replace_bets(original_bets, original_roles):
+    result = []
+    existing_keys = set()
 
-front_second_horse = (
-    f"{front_second['馬番']}番 {front_second['馬名']}"
+    for i, bet in enumerate(original_bets):
+        roles = (
+            original_roles[i]
+            if i < len(original_roles)
+            else ["予備"] * len(bet)
+        )
+
+        replaced = replace_one_bet(
+            bet,
+            roles,
+            existing_keys
+        )
+
+        result.append(replaced)
+        existing_keys.add(
+            tuple(sorted(get_num(h) for h in replaced))
+        )
+
+    return result
+
+
+popular = (
+    f"{popular_horse_num}番 "
+    f"{real_horses[popular_horse_num - 1]}"
 )
-popular = f"{popular_horse_num}番 {real_horses[popular_horse_num - 1]}"
+
 total_horse = total_best_horse
 long_horse = long_spurt_horse
 tenkai_horse_text = tenkai_horse
 
-# 三連複は「軸馬から1点」「総合から1点」で独立して作る
+front_horse_for_trio = front_horse
+if get_num(front_horse_for_trio) == popular_horse_num:
+    front_horse_for_trio = long_spurt_horse
 
-def make_unique_trio(first, second, third, fallback_list):
-    trio = [first, second, third]
+if len(front_candidates) >= 2:
+    front_second = front_candidates[1]
+else:
+    front_second = front_candidates[0]
 
-    # まず従来の予備候補を使い、
-    # 足りない時だけ総合順位から補う
-    extended_fallbacks = list(fallback_list)
+front_second_horse = horse_text(front_second)
+
+
+def make_unique_trio(first, second, third, fallbacks):
+    """
+    各要素は (馬名文字列, 役割)。
+    重複だけを解消し、斬り捨ては後で処理する。
+    """
+
+    items = [first, second, third]
+    extended = list(fallbacks)
+    existing_texts = {item[0] for item in extended}
 
     for h in total_candidates:
-        candidate = f"{h['馬番']}番 {h['馬名']}"
+        item = (horse_text(h), "総合")
+        if item[0] not in existing_texts:
+            extended.append(item)
+            existing_texts.add(item[0])
 
-        if candidate not in extended_fallbacks:
-            extended_fallbacks.append(candidate)
-
-    used_nums = set()
     fixed = []
+    used = set()
 
-    for h in trio:
-        n = get_num(h)
+    for item in items:
+        num = get_num(item[0])
 
-        # 重複せず、斬り捨て御免馬でもなければそのまま使う
-        if (
-            n not in used_nums
-            and n not in kirisute_horse_numbers
-        ):
-            fixed.append(h)
-            used_nums.add(n)
+        if num not in used:
+            fixed.append(item)
+            used.add(num)
             continue
 
         replacement = None
 
-        for fb in extended_fallbacks:
-            fb_num = get_num(fb)
-
-            if (
-                fb_num not in used_nums
-                and fb_num not in kirisute_horse_numbers
-                and fb_num != popular_horse_num
-            ):
+        for fb in extended:
+            fb_num = get_num(fb[0])
+            if fb_num not in used and fb_num != popular_horse_num:
                 replacement = fb
                 break
 
-        if replacement:
+        if replacement is not None:
             fixed.append(replacement)
-            used_nums.add(
-                get_num(replacement)
-            )
+            used.add(get_num(replacement[0]))
 
-    if len(fixed) == 3:
-        return fixed
+    if len(fixed) != 3:
+        return None, None
 
-    return None
+    return (
+        [item[0] for item in fixed],
+        [item[1] for item in fixed],
+    )
 
 
-# 1点目：軸馬から
+# ==================================================
+# 通常の三連複2点を先に作る
+# ==================================================
 
-# 総合と展開が被った時は押さえ1位を使う
+trio_bets = []
+trio_roles = []
+
 if total_best["馬番"] == tenkai_best["馬番"]:
-    axis_third = ana_horse
-
-# 通常
+    axis_third = (ana_horse, "穴")
+elif kyakushoku_type == "差し":
+    axis_third = (ana_third_horse, "穴")
+elif kyakushoku_type == "逃げ":
+    axis_third = (ana_second_horse, "穴")
+elif total_best["馬番"] == long_best["馬番"]:
+    axis_third = (long_horse, "地力")
+elif front_best["馬番"] == popular_horse_num:
+    axis_third = (long_horse, "地力")
 else:
-
-    # 三連複1点目：軸馬から
-
-    # 差し軸なら 軸－展開－穴3
-    if kyakushoku_type == "差し":
-        axis_third = ana_third_horse
-
-    # 逃げ軸なら 軸－展開－穴2
-    elif kyakushoku_type == "逃げ":
-        axis_third = ana_second_horse
-
-    # 持続・展開待ちは 軸－持続(地力)－先行
-    elif kyakushoku_type in ["持続", "展開待ち"]:
-        axis_third = front_horse_for_trio
-
-    # 総合と地力が同じ馬なら 軸－展開－地力
-    elif total_best["馬番"] == long_best["馬番"]:
-        axis_third = long_horse
-
-    # 先行馬と軸が被った時は地力馬
-    elif front_best["馬番"] == popular_horse_num:
-        axis_third = long_horse
-
-    # 通常は 軸－展開－先行
-    else:
-        axis_third = front_horse_for_trio
+    axis_third = (front_horse_for_trio, "先行")
 
 axis_fallbacks = [
-    ana_horse,
-    ana_second_horse,
-    ana_third_horse,
-    long_horse,
-    total_horse,
+    (ana_horse, "穴"),
+    (ana_second_horse, "穴"),
+    (ana_third_horse, "穴"),
+    (long_horse, "地力"),
+    (total_horse, "総合"),
 ]
 
-# 持続・先行・展開待ちは個別処理
-
 if kyakushoku_type == "持続":
-    axis_trio = make_unique_trio(
-        popular,
-        tenkai_horse_text,
-        long_horse,
+    axis_trio, axis_role = make_unique_trio(
+        (popular, "軸"),
+        (tenkai_horse_text, "展開"),
+        (long_horse, "地力"),
         [
-            front_horse_for_trio,
-            ana_horse,
-            ana_second_horse,
-            ana_third_horse,
-            total_horse,
+            (front_horse_for_trio, "先行"),
+            (ana_horse, "穴"),
+            (ana_second_horse, "穴"),
+            (ana_third_horse, "穴"),
+            (total_horse, "総合"),
         ]
     )
-
 elif kyakushoku_type == "先行":
-    axis_trio = make_unique_trio(
-        popular,
-        tenkai_horse_text,
-        ana_second_horse,
+    axis_trio, axis_role = make_unique_trio(
+        (popular, "軸"),
+        (tenkai_horse_text, "展開"),
+        (ana_second_horse, "穴"),
         [
-            long_horse,
-            ana_horse,
-            ana_third_horse,
-            front_horse_for_trio,
-            total_horse,
+            (long_horse, "地力"),
+            (ana_horse, "穴"),
+            (ana_third_horse, "穴"),
+            (front_horse_for_trio, "先行"),
+            (total_horse, "総合"),
         ]
     )
-
 elif kyakushoku_type == "展開待ち":
-    axis_trio = make_unique_trio(
-        popular,
-        front_horse_for_trio,
-        ana_horse,
+    axis_trio, axis_role = make_unique_trio(
+        (popular, "軸"),
+        (front_horse_for_trio, "先行"),
+        (ana_horse, "穴"),
         axis_fallbacks
     )
-
 else:
-    axis_trio = make_unique_trio(
-        popular,
-        tenkai_horse_text,
+    axis_trio, axis_role = make_unique_trio(
+        (popular, "軸"),
+        (tenkai_horse_text, "展開"),
         axis_third,
         axis_fallbacks
     )
 
 if axis_trio:
-    trio_bets = add_unique_bet(
+    add_bet(
         trio_bets,
+        trio_roles,
         axis_trio,
-        max_count=2
-    )
-# ==================================================
-# 三連複2点目
-#
-# 基本：
-# 軸 － 展開ランキング2位以降 － 穴2以降
-#
-# 1点目で使った相手馬は2点目では使わない。
-#
-# 穴側：
-# 穴2 → 穴3 → 穴4 → 穴5 → 穴1
-#
-# 展開側：
-# 展開2位 → 3位 → 4位 → 5位…
-#
-# これで2点の相手を入れ替えて
-# 別シナリオを作る。
-# ==================================================
-
-second_trio = None
-
-# 1点目で使用した馬番
-first_trio_nums = set()
-
-if axis_trio:
-    first_trio_nums = {
-        get_num(h)
-        for h in axis_trio
-    }
-
-
-# ==================================================
-# ① 2点目の穴馬を決める
-#
-# 穴2を最優先。
-# 1点目で使っていたら穴3→穴4…へ送る
-# ==================================================
-
-second_hole_priority = [
-    ana_second_horse,   # 穴2
-    ana_third_horse,    # 穴3
-    ana_fourth_horse,   # 穴4
-    ana_fifth_horse,    # 穴5
-    ana_horse,          # 穴1
-]
-
-second_trio_hole = None
-
-for hole_horse in second_hole_priority:
-
-    hole_num = get_num(
-        hole_horse
+        axis_role,
+        2
     )
 
-    # 軸馬は使わない
-    if hole_num == popular_horse_num:
-        continue
-
-    # 1点目で使った馬は使わない
-    if hole_num in first_trio_nums:
-        continue
-
-    # 斬り捨て御免馬は使わない
-    if hole_num in kirisute_horse_numbers:
-        continue
-
-    second_trio_hole = hole_horse
-    break
-# ==================================================
-# ② 三連複2点目のBを決める
-#
-# 優先順位：
-# ① 後詰め馬（総合1位）
-# ② 展開ランキング上位
-# ③ 地力馬
-# ④ 前進気勢2位
-#
-# ただし、
-# ・軸馬
-# ・1点目で使用済み
-# ・斬り捨て御免馬
-# ・今回の穴馬C
-# は使わない
-# ==================================================
-
-tenkai_second_horse = None
-
-second_b_priority = []
-
-# ① 後詰め馬（総合1位）
-second_b_priority.append(
-    total_horse
+first_trio_nums = (
+    {get_num(h) for h in axis_trio}
+    if axis_trio
+    else set()
 )
 
-# ② 展開ランキング上位
-for h in tenkai_rank_for_trio:
-
-    candidate = (
-        f"{h['馬番']}番 "
-        f"{h['馬名']}"
-    )
-
-    if candidate not in second_b_priority:
-        second_b_priority.append(
-            candidate
-        )
-
-# ③ 地力馬
-if long_horse not in second_b_priority:
-    second_b_priority.append(
-        long_horse
-    )
-
-# ④ 前進気勢2位
-if front_second_horse not in second_b_priority:
-    second_b_priority.append(
-        front_second_horse
-    )
-
-
-# 優先順位どおりに、
-# 実際に使える最上位馬を選ぶ
-for candidate in second_b_priority:
-
-    horse_no = get_num(
-        candidate
-    )
-
-    # 軸馬は使わない
-    if horse_no == popular_horse_num:
+second_hole = None
+for candidate in [
+    ana_second_horse,
+    ana_third_horse,
+    ana_fourth_horse,
+    ana_fifth_horse,
+    ana_horse,
+]:
+    num = get_num(candidate)
+    if num == popular_horse_num:
+        continue
+    if num in first_trio_nums:
         continue
 
-    # 1点目で使った馬は使わない
-    if horse_no in first_trio_nums:
-        continue
-
-    # 斬り捨て御免馬は使わない
-    if horse_no in kirisute_horse_numbers:
-        continue
-
-    # 今回の穴馬Cとは被らせない
-    if (
-        second_trio_hole is not None
-        and horse_no
-        == get_num(second_trio_hole)
-    ):
-        continue
-
-    tenkai_second_horse = candidate
+    second_hole = candidate
     break
-# ==================================================
-# ③ 2点目を作る
-# ==================================================
 
-if (
-    tenkai_second_horse is not None
-    and second_trio_hole is not None
-):
+second_b_items = [(total_horse, "総合")]
+seen_second_b = {total_horse}
 
-    second_trio = [
-        popular,
-        tenkai_second_horse,
-        second_trio_hole,
-    ]
+for h in tenkai_rank_for_trio:
+    item = (horse_text(h), "展開")
+    if item[0] not in seen_second_b:
+        second_b_items.append(item)
+        seen_second_b.add(item[0])
 
+for item in [
+    (long_horse, "地力"),
+    (front_second_horse, "先行"),
+]:
+    if item[0] not in seen_second_b:
+        second_b_items.append(item)
+        seen_second_b.add(item[0])
 
-if second_trio:
+second_b = None
 
-    trio_bets = add_unique_bet(
+for item in second_b_items:
+    num = get_num(item[0])
+
+    if num == popular_horse_num:
+        continue
+    if num in first_trio_nums:
+        continue
+    if second_hole is not None and num == get_num(second_hole):
+        continue
+
+    second_b = item
+    break
+
+if second_b is not None and second_hole is not None:
+    add_bet(
         trio_bets,
-        second_trio,
-        max_count=2
+        trio_roles,
+        [popular, second_b[0], second_hole],
+        ["軸", second_b[1], "穴"],
+        2
     )
 
-# ==================================================
-# 三連複 最終安全装置
-#
-# 通常ロジックで2点作れなかった場合だけ発動。
-#
-# ・斬り捨て馬は絶対使わない
-# ・軸馬は必ず残す
-# ・同じ3頭の組み合わせは作らない
-# ・まず評価上位候補を使う
-# ・それでも足りなければ全出走馬まで広げる
-#
-# これにより、斬り捨て御免を使っても
-# 原則として三連複は必ず2点出す
-# ==================================================
 
+# 通常ロジックで2点作れない時だけ補充
 if len(trio_bets) < 2:
-
-    # ------------------------------------------
-    # 優先候補
-    # ------------------------------------------
-
     if total_best["馬番"] == popular_horse_num:
-
-        # 軸＝総合なら穴候補を優先
-        trio_fallback_pool = [
-            ana_second_horse,
-            ana_third_horse,
-            ana_fourth_horse,
-            ana_fifth_horse,
-            ana_horse,
-            long_horse,
-            tenkai_horse_text,
-            front_horse_for_trio,
-            front_second_horse,
+        fallback_items = [
+            (ana_second_horse, "穴"),
+            (ana_third_horse, "穴"),
+            (ana_fourth_horse, "穴"),
+            (ana_fifth_horse, "穴"),
+            (ana_horse, "穴"),
+            (long_horse, "地力"),
+            (tenkai_horse_text, "展開"),
+            (front_horse_for_trio, "先行"),
+            (front_second_horse, "先行"),
         ]
-
     else:
-
-        # 通常は地力・総合・展開を優先
-        trio_fallback_pool = [
-            long_horse,
-            total_horse,
-            tenkai_horse_text,
-            ana_horse,
-            ana_second_horse,
-            ana_third_horse,
-            ana_fourth_horse,
-            ana_fifth_horse,
-            front_horse_for_trio,
-            front_second_horse,
+        fallback_items = [
+            (long_horse, "地力"),
+            (total_horse, "総合"),
+            (tenkai_horse_text, "展開"),
+            (ana_horse, "穴"),
+            (ana_second_horse, "穴"),
+            (ana_third_horse, "穴"),
+            (ana_fourth_horse, "穴"),
+            (ana_fifth_horse, "穴"),
+            (front_horse_for_trio, "先行"),
+            (front_second_horse, "先行"),
         ]
 
-
-    # ------------------------------------------
-    # 総合ランキングから候補追加
-    # ------------------------------------------
+    known = {item[0] for item in fallback_items}
 
     for h in total_candidates:
-
-        candidate = (
-            f"{h['馬番']}番 {h['馬名']}"
-        )
-
-        if candidate not in trio_fallback_pool:
-            trio_fallback_pool.append(candidate)
-
-
-    # ------------------------------------------
-    # 最終的には全出走馬まで候補を広げる
-    # ------------------------------------------
+        item = (horse_text(h), "総合")
+        if item[0] not in known:
+            fallback_items.append(item)
+            known.add(item[0])
 
     for h in horses:
+        item = (horse_text(h), "予備")
+        if item[0] not in known:
+            fallback_items.append(item)
+            known.add(item[0])
 
-        candidate = (
-            f"{h['馬番']}番 {h['馬名']}"
-        )
+    cleaned = []
+    used = set()
 
-        if candidate not in trio_fallback_pool:
-            trio_fallback_pool.append(candidate)
-
-
-    # ------------------------------------------
-    # 斬り捨て・軸重複・同一馬を整理
-    # ------------------------------------------
-
-    cleaned_trio_pool = []
-    used_pool_nums = set()
-
-    for horse_text in trio_fallback_pool:
-
-        horse_num = get_num(horse_text)
-
-        # 軸は後で固定して入れる
-        if horse_num == popular_horse_num:
+    for item in fallback_items:
+        num = get_num(item[0])
+        if num == popular_horse_num or num in used:
             continue
 
-        # 斬り捨て馬は絶対使わない
-        if horse_num in kirisute_horse_numbers:
-            continue
+        cleaned.append(item)
+        used.add(num)
 
-        # 同じ馬を候補に重複登録しない
-        if horse_num in used_pool_nums:
-            continue
-
-        cleaned_trio_pool.append(
-            horse_text
-        )
-
-        used_pool_nums.add(
-            horse_num
-        )
-
-
-    # ------------------------------------------
-    # 軸＋残った2頭で組み合わせを総当たり
-    # ------------------------------------------
-
-    for i in range(
-        len(cleaned_trio_pool)
-    ):
-
+    for i in range(len(cleaned)):
         if len(trio_bets) >= 2:
             break
 
-        for j in range(
-            i + 1,
-            len(cleaned_trio_pool)
-        ):
-
-            candidate_trio = [
-                popular,
-                cleaned_trio_pool[i],
-                cleaned_trio_pool[j],
-            ]
-
-            trio_bets = add_unique_bet(
+        for j in range(i + 1, len(cleaned)):
+            add_bet(
                 trio_bets,
-                candidate_trio,
-                max_count=2
+                trio_roles,
+                [popular, cleaned[i][0], cleaned[j][0]],
+                ["軸", cleaned[i][1], cleaned[j][1]],
+                2
             )
 
             if len(trio_bets) >= 2:
                 break
 
+normal_trio_bets = [list(b) for b in trio_bets]
+normal_trio_roles = [list(r) for r in trio_roles]
 
-for bet in trio_bets:
-    st.write(
-        f"{bet[0]} - {bet[1]} - {bet[2]}"
-    )
-# ワイド 本線2点＋カッパの浮き輪保険1点
-st.subheader("おすすめのワイド２点")
+
+# ==================================================
+# 最終買い目を作る
+#
+# ① 三連複は、斬られた馬の席だけ交換
+# ② ワイドは最終三連複からシンプルに作る
+#
+# 三連複
+# 1点目：A－B－C
+# 2点目：A－D－E
+#
+# ワイド
+# 1点目：A－B
+# 2点目：A－E
+# ==================================================
+
+trio_bets = replace_bets(
+    normal_trio_bets,
+    normal_trio_roles
+)
+
+
+# ==================================================
+# ワイド2点
+# 最終表示の三連複から直接作る
+# ==================================================
 
 wide_bets = []
 
-popular = f"{popular_horse_num}番 {real_horses[popular_horse_num - 1]}"
-tenkai_horse_text = f"{tenkai_best['馬番']}番 {tenkai_best['馬名']}"
 
-if get_num(tenkai_horse_text) == popular_horse_num:
-    for h in tenkai_candidates:
-        candidate = f"{h['馬番']}番 {h['馬名']}"
-        if get_num(candidate) != popular_horse_num:
-            tenkai_horse_text = candidate
-            break
+def append_unique_wide(first, second):
+    if first is None or second is None:
+        return
 
-# ==================================================
-# ワイド1点目
-#
-# 三連複2点が
-# A-B-C / A-B-D の形なら、
-# ワイド1点目は A－穴3位
-# ==================================================
+    first_num = get_num(first)
+    second_num = get_num(second)
 
-wide_patterns = []
+    # 同じ馬同士のワイドは作らない
+    if first_num == second_num:
+        return
 
-same_two_horses_pattern = False
+    wide_key = tuple(
+        sorted([
+            first_num,
+            second_num,
+        ])
+    )
+
+    existing_keys = {
+        tuple(
+            sorted(
+                get_num(h)
+                for h in bet
+            )
+        )
+        for bet in wide_bets
+    }
+
+    if (
+        wide_key not in existing_keys
+        and len(wide_bets) < 2
+    ):
+        wide_bets.append([
+            first,
+            second,
+        ])
+
+
+# 1点目：三連複1点目 A－B－C の A－B
+if len(trio_bets) >= 1 and len(trio_bets[0]) >= 2:
+    append_unique_wide(
+        trio_bets[0][0],
+        trio_bets[0][1],
+    )
+
+
+# 2点目：三連複2点目 A－D－E の A－E
+if len(trio_bets) >= 2 and len(trio_bets[1]) >= 3:
+    append_unique_wide(
+        trio_bets[1][0],
+        trio_bets[1][2],
+    )
+
+
+# 同じ組み合わせになった場合だけ予備を使う
+wide_fallbacks = []
 
 if len(trio_bets) >= 2:
+    wide_fallbacks += [
+        # 2点目の A－D
+        [
+            trio_bets[1][0],
+            trio_bets[1][1],
+        ],
+    ]
 
-    first_trio_nums = {
-        get_num(h)
-        for h in trio_bets[0]
-    }
-
-    second_trio_nums = {
-        get_num(h)
-        for h in trio_bets[1]
-    }
-
-    common_nums = (
-        first_trio_nums
-        & second_trio_nums
-    )
-
-    # 軸馬を含む2頭が共通なら
-    # A-B-C / A-B-D型
-    if (
-        len(common_nums) == 2
-        and popular_horse_num in common_nums
-    ):
-        same_two_horses_pattern = True
+if len(trio_bets) >= 1 and len(trio_bets[0]) >= 3:
+    wide_fallbacks += [
+        # 1点目の A－C
+        [
+            trio_bets[0][0],
+            trio_bets[0][2],
+        ],
+    ]
 
 
-# A-B-C / A-B-D型
-# → ワイド1点目は軸－穴3位
-if same_two_horses_pattern:
-
-    first_target = ana_third_horse
-
-    # 軸と穴3位が被った場合の予備
-    if get_num(popular) == get_num(first_target):
-        first_target = ana_fourth_horse
-
-    if get_num(popular) == get_num(first_target):
-        first_target = ana_second_horse
-
-    if get_num(popular) == get_num(first_target):
-        first_target = ana_horse
-
-
-# それ以外は従来どおり
-else:
-
-    # 持続軸は軸－地力
-    if kyakushoku_type == "持続":
-        first_target = long_horse
-
-    else:
-        first_target = tenkai_horse_text
-
-    if get_num(popular) == get_num(first_target):
-        first_target = long_horse
-
-    if get_num(popular) == get_num(first_target):
-        first_target = ana_horse
-
-    if get_num(popular) == get_num(first_target):
-        first_target = ana_second_horse
-
-    if get_num(popular) == get_num(first_target):
-        first_target = front_horse_for_trio
-
-
-# ワイド1点目を追加
-wide_patterns.append([
-    popular,
-    first_target,
-])
-# ==================================================
-# ワイド2点目候補
-#
-# 脚質や「展開＝地力」による特殊処理は行わない。
-# 軸－穴候補を優先する。
-# ==================================================
-
-wide_patterns += [
-    [popular, ana_second_horse],        # ① 軸－穴2
-    [popular, ana_third_horse],         # ② 軸－穴3
-    [popular, ana_horse],               # ③ 軸－穴1
-    [total_horse, ana_third_horse],     # ④ 後詰め－穴3
-    [tenkai_horse_text, ana_third_horse],  # ⑤ 展開－穴3
-]
-for pattern in wide_patterns:
-    wide_bets = add_unique_bet(
-        wide_bets,
-        pattern,
-        max_count=2
-    )
-
+for fallback in wide_fallbacks:
     if len(wide_bets) >= 2:
         break
 
-for bet in wide_bets:
-    st.write(f"{bet[0]} - {bet[1]}")
+    append_unique_wide(
+        fallback[0],
+        fallback[1],
+    )
 
+
+# ==================================================
 # カッパの浮き輪保険
-st.markdown("### 🛟 カッパの浮き輪保険")
+#
+# 最終ワイド2点と同じ組み合わせは使わない。
+# 斬り捨て馬が入っていれば、その席だけ穴の次順位へ交換する。
+# ==================================================
 
 float_bets = []
 
-# ==================================================
-# カッパの浮き輪保険
-#
-# 優先順位：
-# ① 穴2－穴3
-# ② 穴2－穴4
-# ③ 穴2－穴5
-#
-# おすすめワイド2点と
-# 同じ組み合わせになった場合だけ次候補へ送る。
-#
-# 本線で使われている馬そのものは除外しない。
-# banned処理も行わない。
-# ==================================================
-
-# おすすめワイド2点の組み合わせを保存
 wide_existing_keys = {
     tuple(
         sorted(
@@ -6309,8 +6440,7 @@ wide_existing_keys = {
     for bet in wide_bets
 }
 
-# 浮き輪候補
-float_patterns = [
+float_candidates = [
     [
         ana_third_horse,
         ana_second_horse,
@@ -6328,30 +6458,73 @@ float_patterns = [
 ]
 
 
-for pattern in float_patterns:
+for candidate in float_candidates:
 
-    pattern_key = tuple(
-        sorted(
-            get_num(h)
-            for h in pattern
-        )
+    replaced_list = replace_bets(
+        [candidate],
+        [["穴", "穴"]],
     )
 
-    # おすすめワイドと同じ買い目なら次へ
-    if pattern_key in wide_existing_keys:
+    if not replaced_list:
         continue
 
-    float_bets = add_unique_bet(
-        float_bets,
-        pattern,
-        max_count=1
+    replaced = replaced_list[0]
+
+    # 斬り捨て馬が残っている場合は採用しない
+    if any(
+        get_num(h) in kirisute_horse_numbers
+        for h in replaced
+    ):
+        continue
+
+    # 同じ馬同士は採用しない
+    replaced_nums = [
+        get_num(h)
+        for h in replaced
+    ]
+
+    if len(replaced_nums) != len(set(replaced_nums)):
+        continue
+
+    replaced_key = tuple(
+        sorted(replaced_nums)
     )
 
-    if float_bets:
-        break
+    # おすすめワイドと同じ買い目なら次候補へ
+    if replaced_key in wide_existing_keys:
+        continue
+
+    float_bets.append(replaced)
+    break
+
+
+# ==================================================
+# 最終表示
+# ==================================================
+
+st.subheader("おすすめの三連複 2点")
+
+for bet in trio_bets:
+    st.write(
+        f"{bet[0]} - {bet[1]} - {bet[2]}"
+    )
+
+
+st.subheader("おすすめのワイド２点")
+
+for bet in wide_bets:
+    st.write(
+        f"{bet[0]} - {bet[1]}"
+    )
+
+
+st.markdown("### 🛟 カッパの浮き輪保険")
 
 for bet in float_bets:
-    st.write(f"{bet[0]} - {bet[1]}")
+    st.write(
+        f"{bet[0]} - {bet[1]}"
+    )
+
 
 st.caption(
     "※買い目の一例です。最終判断はオッズや馬場を見て調整してください。"
