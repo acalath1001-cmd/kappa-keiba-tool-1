@@ -6471,7 +6471,24 @@ def select_bet_alphabet_horses(
         for symbol in alphabet_priority
         if symbol in required_symbols
     ]
+    # B＝展開、F＝後詰めを同じ買い目で使う場合は、
+    # 展開馬を優先して先に確定する。
+    #
+    # 例：A-B-FでBとFが同じ8番なら、
+    # B＝展開1位の8番を残し、
+    # F＝総合2位へ繰り下げる。
+    if (
+        "B" in selection_order
+        and "F" in selection_order
+    ):
+        selection_order.remove("B")
 
+        f_index = selection_order.index("F")
+
+        selection_order.insert(
+            f_index,
+            "B",
+        )
     for symbol in selection_order:
 
         selected_horse = choose_alphabet_horse(
