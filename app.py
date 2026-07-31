@@ -6445,7 +6445,6 @@ def choose_alphabet_horse(
 
     return None
 
-
 def select_bet_alphabet_horses(
     excluded_numbers=None,
 ):
@@ -6453,6 +6452,12 @@ def select_bet_alphabet_horses(
     今回使う記号だけを、
     A → F → C → E → D → B → G → I
     の順で確定する。
+
+    別の買い目に出る記号同士は、
+    同じ馬を使用してもよい。
+
+    同じ買い目内に登場する記号同士だけ、
+    同じ馬にならないようにする。
     """
 
     excluded_numbers = set(
@@ -6469,23 +6474,15 @@ def select_bet_alphabet_horses(
 
     for symbol in selection_order:
 
-        # まずは異なる記号をすべて別馬にする。
         selected_horse = choose_alphabet_horse(
             symbol,
             selected_symbols,
             excluded_numbers,
-            require_global_unique=True,
-        )
 
-        # 少頭数で全記号を別馬にできない場合だけ、
-        # 同じ買い目に出ない記号との重複を許す。
-        if selected_horse is None:
-            selected_horse = choose_alphabet_horse(
-                symbol,
-                selected_symbols,
-                excluded_numbers,
-                require_global_unique=False,
-            )
+            # 全記号を別馬にはしない。
+            # 同じ買い目内の重複だけ防ぐ。
+            require_global_unique=False,
+        )
 
         if selected_horse is not None:
             selected_symbols[symbol] = (
@@ -6493,7 +6490,6 @@ def select_bet_alphabet_horses(
             )
 
     return selected_symbols
-
 
 def make_bets_from_symbols(
     symbol_templates,
