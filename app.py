@@ -6155,7 +6155,7 @@ handwritten_bet_templates = {
     "先行": {
         "三連複": [
             ["A", "B", "F"],
-            ["A", "F", "E"],
+            ["A", "F", "C"]
         ],
         "ワイド": [
             ["A", "B"],
@@ -6181,7 +6181,7 @@ handwritten_bet_templates = {
     "差し": {
         "三連複": [
             ["A", "B", "E"],
-            ["A", "F", "G"],
+            ["A", "E", "G"],
         ],
         "ワイド": [
             ["A", "B"],
@@ -6530,7 +6530,165 @@ def make_bets_from_symbols(
         )
 
     return result
+def make_unique_trio_bets(
+    symbol_templates,
+    selected_symbols,
+    excluded_numbers=None,
+):
+    """
+    三連複を上から順番に作る。
 
+    1点目と2点目が、並び順だけ違う同じ3頭になった場合は、
+    後ろ側の記号から、その記号専用候補の次順位へ繰り下げる。
+
+    軸Aは固定する。
+    """
+
+    excluded_numbers = set(
+        excluded_numbers or set()
+    )
+
+    result = []
+    used_trio_keys = set()
+
+    for symbol_list in symbol_templates:
+
+        if not all(
+            symbol in selected_symbols
+            for symbol in symbol_list
+        ):
+            continue
+
+        bet = [
+            selected_symbols[symbol]
+            for symbol in symbol_list
+        ]
+
+        bet_numbers = [
+            get_num(horse_name)
+            for horse_name in bet
+        ]
+
+        bet_key = frozenset(
+            bet_numbers
+        )
+
+        # 同じ買い目内で3頭が別馬、
+        # かつ過去の三連複と同じ組み合わせでなければ確定
+        if (
+            len(bet_numbers) == 3
+            and len(set(bet_numbers)) == 3
+            and bet_key not in used_trio_keys
+        ):
+            result.append(bet)
+            used_trio_keys.add(bet_key)
+            continue
+
+        resolved_bet = None
+
+        # 右側の記号から順番に次候補を探す。
+        # Aは軸なので変更しない。
+        for change_index in range(
+            len(symbol_list) - 1,
+            -1,
+            -1,
+        ):
+
+            change_symbol = symbol_list[
+                change_index
+            ]
+
+            if change_symbol == "A":
+                continue
+
+            candidate_pool = (
+                alphabet_candidate_pools.get(
+                    change_symbol,
+                    all_bet_pool,
+                )
+            )
+
+            current_horse = selected_symbols[
+                change_symbol
+            ]
+
+            current_number = get_num(
+                current_horse
+            )
+
+            # 現在選ばれている馬が、
+            # 候補プールの何番目かを確認
+            current_pool_index = next(
+                (
+                    index
+                    for index, candidate
+                    in enumerate(candidate_pool)
+                    if get_num(candidate)
+                    == current_number
+                ),
+                -1,
+            )
+
+            # 現在馬より下位の候補だけを試す
+            next_candidates = candidate_pool[
+                current_pool_index + 1:
+            ]
+
+            for candidate in next_candidates:
+
+                candidate_number = get_num(
+                    candidate
+                )
+
+                if (
+                    candidate_number
+                    in excluded_numbers
+                ):
+                    continue
+
+                test_bet = bet[:]
+                test_bet[
+                    change_index
+                ] = candidate
+
+                test_numbers = [
+                    get_num(horse_name)
+                    for horse_name in test_bet
+                ]
+
+                # 同じ三連複内で馬が被る候補は不可
+                if len(set(test_numbers)) != 3:
+                    continue
+
+                test_key = frozenset(
+                    test_numbers
+                )
+
+                # 1点目と同じ3頭なら、さらに次候補へ
+                if test_key in used_trio_keys:
+                    continue
+
+                resolved_bet = test_bet
+                break
+
+            if resolved_bet is not None:
+                break
+
+        if resolved_bet is not None:
+
+            result.append(
+                resolved_bet
+            )
+
+            used_trio_keys.add(
+                frozenset(
+                    get_num(horse_name)
+                    for horse_name
+                    in resolved_bet
+                )
+            )
+
+    return result
 
 # --------------------------------------------------
 # 斬り捨て前の通常選出
@@ -6548,9 +6706,10 @@ final_bet_symbols = select_bet_alphabet_horses(
     excluded_numbers=kirisute_horse_numbers
 )
 
-trio_bets = make_bets_from_symbols(
+trio_bets = make_unique_trio_bets(
     current_bet_template["三連複"],
     final_bet_symbols,
+    excluded_numbers=kirisute_horse_numbers,
 )
 
 wide_bets = make_bets_from_symbols(
