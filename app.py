@@ -172,7 +172,44 @@ def calc_time_pressure_response(horse):
         ),
         "詳細": response_details,
     }
+def extract_current_jockey(horse_row):
+    """
+    NAR出馬表の現在騎手だけを取得する。
 
+    過去走の騎手名は使用せず、
+    RiderMarkへのリンクになっている今回騎手だけを見る。
+    """
+
+    if horse_row is None:
+        return ""
+
+    jockey_link = horse_row.find(
+        "a",
+        href=re.compile(
+            r"DataRoom/RiderMark"
+        )
+    )
+
+    if jockey_link is None:
+        return ""
+
+    jockey_name = jockey_link.get_text(
+        " ",
+        strip=True
+    )
+
+    # 例：
+    # 望月洵（愛知） → 望月洵
+    # 吉村智（兵庫） → 吉村智
+    jockey_name = jockey_name.split("（")[0]
+
+    jockey_name = (
+        jockey_name
+        .replace(" ", "")
+        .replace("　", "")
+    )
+
+    return jockey_name
 st.set_page_config(
     page_title="地方競馬予想ツール",
     page_icon="favicon.png",
@@ -373,7 +410,10 @@ for i, horse in enumerate(real_horses, start=1):
                         break
 
                 horse_text += nearby_text + "\n"
-
+    # 今回騎乗する騎手だけを取得
+    current_jockey = extract_current_jockey(
+        horse_row
+    )
     # 距離・タイム・通過順を取得
     # 笠松など「タイムと距離が別行」の競馬場に対応するため
     # 除外・取消を除いた日付行から距離を取得し、
@@ -912,6 +952,7 @@ for i, horse in enumerate(real_horses, start=1):
     horses.append({
         "馬番": i,
         "馬名": horse,
+        "今回騎手": current_jockey,
         "取消除外": is_scratched,
 
         # 評価用の4地点通過順
@@ -1056,19 +1097,26 @@ for h in horses:
             h["馬番"]
         )
 # ==================================================
-# JRA転入馬の共通判定
+# JRA転入馬の3段階判定
 #
-# 地方で1回以上走っている元JRA馬は、
-# 地方走だけで評価し、警告対象には入れない。
+# 地方0走      ＝ JRA転入直後
+# 地方1〜2走   ＝ 地方慣らし中
+# 地方3走以上 ＝ 通常の地方馬として評価
 #
-# 地方走がまだ0回の馬だけ、
-# JRA転入馬として加点・警告の対象にする。
+# jra_horse_numbers は従来どおり
+# 「地方0走」の警告・初転入救済専用として残す。
 # ==================================================
 
 JRA_TRACKS = set(JRA_PLACES)
 LOCAL_TRACKS = set(LOCAL_PLACES)
 
-# 地方未出走のJRA転入馬だけ保存
+# JRA履歴馬ごとの地方出走数
+jra_local_result_count_map = {}
+
+# JRA履歴が確認できる全馬
+jra_all_horse_numbers = set()
+
+# 地方0走のJRA転入馬だけ、従来の警告表示に使う
 jra_horse_info_map = {}
 
 for h in horses:
@@ -1090,8 +1138,21 @@ for h in horses:
         ) in LOCAL_TRACKS
     )
 
-    # 地方で1回でも走っていれば警告対象外
-    if local_result_count >= 1:
+    horse_no = h["馬番"]
+
+    jra_all_horse_numbers.add(
+        horse_no
+    )
+
+    jra_local_result_count_map[
+        horse_no
+    ] = local_result_count
+
+    # 各馬データにも保存してデバッグしやすくする
+    h["JRA地方走数"] = local_result_count
+
+    # 従来のJRA警告は地方0走だけ
+    if local_result_count != 0:
         continue
 
     past_places = {
@@ -1100,7 +1161,7 @@ for h in horses:
     }
 
     jra_horse_info_map[
-        h["馬番"]
+        horse_no
     ] = {
         "馬名": h["馬名"],
         "地方走数": local_result_count,
@@ -1109,20 +1170,77 @@ for h in horses:
         ),
     }
 
-# 地方未出走のJRA転入馬だけ
-jra_horse_numbers = set(
-    jra_horse_info_map.keys()
+# 地方0走：JRA転入直後
+jra_horse_numbers = {
+    horse_no
+    for horse_no, local_count
+    in jra_local_result_count_map.items()
+    if local_count == 0
+}
+
+# 地方1〜2走：地方慣らし中
+jra_acclimating_horse_numbers = {
+    horse_no
+    for horse_no, local_count
+    in jra_local_result_count_map.items()
+    if 1 <= local_count <= 2
+}
+
+# 前進気勢・総合評価でJRA転入扱いを残す範囲
+jra_transfer_watch_numbers = (
+    jra_horse_numbers
+    | jra_acclimating_horse_numbers
 )
 
+# 従来の警告件数は地方0走だけ
 jra_count = len(
     jra_horse_numbers
 )
 
+# 展開の足切り判断では、
+# 地方慣らし中もJRA転入の影響馬として数える
 jra_rate = (
-    jra_count / len(horses)
+    len(jra_transfer_watch_numbers)
+    / len(horses)
     if horses
     else 0
 )
+
+if debug_mode:
+
+    with st.expander(
+        "🏇 JRA転入段階",
+        expanded=False
+    ):
+
+        for h in horses:
+
+            horse_no = h["馬番"]
+
+            if horse_no not in jra_all_horse_numbers:
+                continue
+
+            local_count = (
+                jra_local_result_count_map.get(
+                    horse_no,
+                    0
+                )
+            )
+
+            if local_count == 0:
+                stage = "転入直後"
+
+            elif local_count <= 2:
+                stage = "地方慣らし中"
+
+            else:
+                stage = "通常評価"
+
+            st.write(
+                f"{horse_no}番 {h['馬名']} "
+                f"｜地方{local_count}走 "
+                f"｜{stage}"
+            )
 # 踏ん張り不足の馬
 fumbaribuso_horse_numbers = {
     h["馬番"]
@@ -1290,7 +1408,8 @@ for horse in horses:
     horse_text = horse.get("取得テキスト", "")
 
     jra_transfer = (
-        horse_no in jra_horse_numbers
+        horse_no
+        in jra_transfer_watch_numbers
     )
     if jra_transfer:
         for flow in horse["通過順"]:
@@ -1780,8 +1899,15 @@ for horse in horses:
 
     # 地力評価にも前進気勢を少し反映
     score += front_score_map.get(horse_no, 0) * 0.25
-    # 望月騎手補正
-    if "望月" in horse_text:
+    # 今回騎手が望月騎手の場合だけ地力補正
+    current_jockey = horse.get(
+        "今回騎手",
+        ""
+    )
+
+    if current_jockey.startswith(
+        "望月"
+    ):
         score += 80
     # ==================================================
     # 善戦止まり・決め手不足減点
@@ -3776,7 +3902,8 @@ for horse in horses:
     debug_total_parts["直近3走"] += recent_form_bonus
 
     jra_transfer = (
-        horse_no in jra_horse_numbers
+        horse_no
+        in jra_transfer_watch_numbers
     )
     # 前進気勢も少しだけ
     front_part = front_score_map.get(horse_no, 0) * 0.12
@@ -3831,10 +3958,32 @@ for horse in horses:
         # 完全同距離なので基本係数は100％
         time_weight = 1.0
 
-        # 同距離タイムが1走しかない馬は、
-        # 一発だけ速かった可能性を考えて85％
-        if time_info["使用数"] == 1:
-            time_weight *= 0.85
+        local_result_count_for_jra = (
+            jra_local_result_count_map.get(
+                horse_no,
+                0
+            )
+        )
+
+        # JRA転入後の地方1〜2走は、
+        # 地方で実際に出した同距離タイムを少し重く見る
+        if (
+            horse_no
+            in jra_acclimating_horse_numbers
+        ):
+
+            # 地方1走：一発時計なので95％
+            if local_result_count_for_jra == 1:
+                time_weight = 0.95
+
+            # 地方2走：地方適性が見え始めるので110％
+            elif local_result_count_for_jra == 2:
+                time_weight = 1.10
+
+        # 通常馬・地方3走以上の元JRA馬
+        # 同距離タイムが1走だけなら85％
+        elif time_info["使用数"] == 1:
+            time_weight = 0.85
 
         time_score *= time_weight
 
@@ -4091,12 +4240,31 @@ for horse in horses:
         total_score += nankan_transfer_bonus
 
     debug_total_parts["南関転入"] += nankan_transfer_bonus
-    # 吉村智洋騎手補正
-    if "吉村" in horse_text and "智洋" in horse_text:
-        total_score += 35
-    # 望月洵輝騎手補正
-    if "望月" in horse_text:
-        total_score += 35
+    # 今回騎手だけを使った騎手補正
+    current_jockey = horse.get(
+        "今回騎手",
+        ""
+    )
+
+    jockey_bonus = 0
+
+    # NAR出馬表では「吉村智」表記の場合がある
+    if current_jockey.startswith(
+        "吉村智"
+    ):
+        jockey_bonus = 35
+
+    # 「望月洵」「望月」などの表記に対応
+    elif current_jockey.startswith(
+        "望月"
+    ):
+        jockey_bonus = 35
+
+    total_score += jockey_bonus
+
+    debug_total_parts[
+        "騎手"
+    ] += jockey_bonus
     # 地方実績を評価できる馬は、
     # JRA転入馬でも地方での垂れを減点する
     if use_local_evaluation:
@@ -5939,551 +6107,533 @@ else:
 
 front_second_horse = horse_text(front_second)
 
-def make_unique_trio(first, second, third, fallbacks):
-    """
-    各要素は (馬名文字列, 役割)。
-    重複だけを解消し、斬り捨ては後で処理する。
-    """
-
-    items = [first, second, third]
-    extended = list(fallbacks)
-    existing_texts = {item[0] for item in extended}
-
-    for h in total_candidates:
-        item = (horse_text(h), "総合")
-        if item[0] not in existing_texts:
-            extended.append(item)
-            existing_texts.add(item[0])
-
-    fixed = []
-    used = set()
-
-    for item in items:
-        num = get_num(item[0])
-
-        if num not in used:
-            fixed.append(item)
-            used.add(num)
-            continue
-
-        replacement = None
-
-        for fb in extended:
-            fb_num = get_num(fb[0])
-            if fb_num not in used and fb_num != popular_horse_num:
-                replacement = fb
-                break
-
-        if replacement is not None:
-            fixed.append(replacement)
-            used.add(get_num(replacement[0]))
-
-    if len(fixed) != 3:
-        return None, None
-
-    return (
-        [item[0] for item in fixed],
-        [item[1] for item in fixed],
-    )
 # ==================================================
-# 通常の三連複2点を先に作る
+# 手書き設計版・最終買い目
+#
+# 表示中の5頭は一切変更しない。
+# ここから下は「買い目専用」のアルファベット馬を作る。
+#
+# A：軸
+# B：展開
+# C：地力
+# D：先行
+# E：抑え
+# F：後詰め
+# G：穴3
+# I：穴2
+#
+# 異なる記号が同じ馬になった場合の優先順位：
+# A → F → C → E → D → B → G → I
+#
+# 先に確定した記号を残し、
+# 後から確定する記号だけ自分の候補2位以降へ移動する。
+#
+# 同じ記号を複数の買い目で使う場合は、
+# 同じ馬をそのまま再使用する。
+#
+# I（穴2）だけは例外で、
+# 穴3を飛ばし、穴4 → 穴5 → 穴1の順に進む。
 # ==================================================
-trio_bets = []
-trio_roles = []
 
-if total_best["馬番"] == tenkai_best["馬番"]:
-    axis_third = (ana_horse, "穴")
-elif kyakushoku_type == "差し":
-    axis_third = (ana_third_horse, "穴")
-elif kyakushoku_type == "逃げ":
-    axis_third = (ana_second_horse, "穴")
-elif total_best["馬番"] == long_best["馬番"]:
-    axis_third = (long_horse, "地力")
-elif front_best["馬番"] == popular_horse_num:
-    axis_third = (long_horse, "地力")
-else:
-    axis_third = (front_horse_for_trio, "先行")
+# --------------------------------------------------
+# 軸タイプ別・手書き買い目
+# --------------------------------------------------
+handwritten_bet_templates = {
+    "逃げ": {
+        "三連複": [
+            ["A", "B", "D"],
+            ["A", "D", "C"],
+        ],
+        "ワイド": [
+            ["A", "B"],
+            ["D", "E"],
+        ],
+        "浮き輪": [
+            ["D", "G"],
+        ],
+    },
+    "先行": {
+        "三連複": [
+            ["A", "B", "F"],
+            ["A", "F", "E"],
+        ],
+        "ワイド": [
+            ["A", "B"],
+            ["A", "F"],
+        ],
+        "浮き輪": [
+            ["D", "E"],
+        ],
+    },
+    "持続": {
+        "三連複": [
+            ["A", "B", "C"],
+            ["A", "C", "E"],
+        ],
+        "ワイド": [
+            ["A", "B"],
+            ["D", "C"],
+        ],
+        "浮き輪": [
+            ["E", "G"],
+        ],
+    },
+    "差し": {
+        "三連複": [
+            ["A", "B", "E"],
+            ["A", "F", "G"],
+        ],
+        "ワイド": [
+            ["A", "B"],
+            ["A", "G"],
+        ],
+        "浮き輪": [
+            ["I", "G"],
+        ],
+    },
+    "展開待ち": {
+        "三連複": [
+            ["A", "B", "F"],
+            ["A", "F", "D"],
+        ],
+        "ワイド": [
+            ["A", "B"],
+            ["F", "C"],
+        ],
+        "浮き輪": [
+            ["E", "G"],
+        ],
+    },
+}
 
-axis_fallbacks = [
-    (ana_horse, "穴"),
-    (ana_second_horse, "穴"),
-    (ana_third_horse, "穴"),
-    (long_horse, "地力"),
-    (total_horse, "総合"),
-]
-
-if kyakushoku_type == "持続":
-    axis_trio, axis_role = make_unique_trio(
-        (popular, "軸"),
-        (tenkai_horse_text, "展開"),
-        (long_horse, "地力"),
-        [
-            (front_horse_for_trio, "先行"),
-            (ana_horse, "穴"),
-            (ana_second_horse, "穴"),
-            (ana_third_horse, "穴"),
-            (total_horse, "総合"),
-        ]
-    )
-elif kyakushoku_type == "先行":
-    axis_trio, axis_role = make_unique_trio(
-        (popular, "軸"),
-        (tenkai_horse_text, "展開"),
-        (ana_second_horse, "穴"),
-        [
-            (long_horse, "地力"),
-            (ana_horse, "穴"),
-            (ana_third_horse, "穴"),
-            (front_horse_for_trio, "先行"),
-            (total_horse, "総合"),
-        ]
-    )
-elif kyakushoku_type == "展開待ち":
-    axis_trio, axis_role = make_unique_trio(
-        (popular, "軸"),
-        (front_horse_for_trio, "先行"),
-        (ana_horse, "穴"),
-        axis_fallbacks
-    )
-else:
-    axis_trio, axis_role = make_unique_trio(
-        (popular, "軸"),
-        (tenkai_horse_text, "展開"),
-        axis_third,
-        axis_fallbacks
-    )
-
-if axis_trio:
-    add_bet(
-        trio_bets,
-        trio_roles,
-        axis_trio,
-        axis_role,
-        2
-    )
-
-first_trio_nums = (
-    {get_num(h) for h in axis_trio}
-    if axis_trio
-    else set()
+current_bet_template = handwritten_bet_templates.get(
+    kyakushoku_type,
+    handwritten_bet_templates["展開待ち"],
 )
 
-# ==================================================
-# 三連複2点目のC候補
+# --------------------------------------------------
+# 買い目専用の候補プール
 #
-# 先行軸の時だけは、
-# 1点目で使った変馬を2点目にも固定する。
+# 1頭目には画面表示中の代表馬を置く。
+# その後ろに各ランキング順をつなぐ。
 #
-# 例：
-# 1点目　軸－展開－変馬
-# 2点目　軸－先行－同じ変馬
-#
-# それ以外の軸タイプは、
-# 1点目と被らない穴馬を従来どおり選ぶ。
-# ==================================================
-second_hole = None
+# これにより、画面表示は変えず、
+# 買い目内で被った時だけ2位・3位へ移動できる。
+# --------------------------------------------------
 
-if (
-    kyakushoku_type == "先行"
-    and axis_trio
-    and len(axis_trio) >= 3
-):
-    # 1点目のCをそのまま2点目のCにも使う
-    second_hole = axis_trio[2]
+all_bet_pool = unique_texts(
+    [horse_text(h) for h in horses]
+)
 
-else:
-    for candidate in [
+f_pool = unique_texts(
+    [total_best_horse]
+    + [horse_text(h) for h in total_candidates]
+    + all_bet_pool
+)
+
+c_pool = unique_texts(
+    [long_spurt_horse]
+    + [horse_text(h) for h in long_spurt_candidates]
+    + all_bet_pool
+)
+
+e_pool = unique_texts(
+    [
+        ana_horse,
         ana_second_horse,
+        ana_third_horse,
+        ana_fourth_horse,
+        ana_fifth_horse,
+    ]
+    + [horse_text(h) for h in ana_fallback]
+    + all_bet_pool
+)
+
+d_pool = unique_texts(
+    [front_horse]
+    + [horse_text(h) for h in front_candidates]
+    + all_bet_pool
+)
+
+b_pool = unique_texts(
+    [tenkai_horse]
+    + [horse_text(h) for h in tenkai_rank_for_trio]
+    + [horse_text(h) for h in tenkai_candidates]
+    + all_bet_pool
+)
+
+# G＝穴3
+# 穴3 → 穴4 → 穴5 → 穴1 → 穴2
+g_pool = unique_texts(
+    [
         ana_third_horse,
         ana_fourth_horse,
         ana_fifth_horse,
         ana_horse,
-    ]:
-        num = get_num(candidate)
-
-        if num == popular_horse_num:
-            continue
-
-        if num in first_trio_nums:
-            continue
-
-        second_hole = candidate
-        break
-
-# ==================================================
-# 三連複2点目のB候補
-#
-# 先行軸：
-# 前進気勢ランキング1位から順番に採用する。
-# 軸・1点目・固定した変馬と被る場合は、
-# 前進気勢2位、3位…へ送る。
-#
-# 差し軸：
-# 持続（地力）ランキングを最優先する。
-#
-# その他：
-# 総合 → 展開 → 地力 → 先行の従来順。
-# ==================================================
-second_b_items = []
-seen_second_b = set()
-
-if kyakushoku_type == "先行":
-
-    # 前進気勢ランキングを1位から順番に並べる
-    for h in front_candidates:
-        item = (
-            horse_text(h),
-            "先行",
-        )
-
-        if item[0] not in seen_second_b:
-            second_b_items.append(item)
-            seen_second_b.add(item[0])
-
-    # 前進気勢馬がすべて被った場合だけ使う予備
-    fallback_items = [
-        (total_horse, "総合"),
-        (long_horse, "地力"),
+        ana_second_horse,
     ]
-
-    for h in tenkai_rank_for_trio:
-        fallback_items.append(
-            (horse_text(h), "展開")
-        )
-
-elif kyakushoku_type == "差し":
-
-    # 持続（地力）ランキングを最優先
-    for h in long_spurt_candidates:
-        item = (
-            horse_text(h),
-            "地力",
-        )
-
-        if item[0] not in seen_second_b:
-            second_b_items.append(item)
-            seen_second_b.add(item[0])
-
-    # 持続馬が使えない場合の予備
-    fallback_items = [
-        (total_horse, "総合"),
-        (front_second_horse, "先行"),
-    ]
-
-    for h in tenkai_rank_for_trio:
-        fallback_items.append(
-            (horse_text(h), "展開")
-        )
-
-else:
-
-    # その他の軸タイプは従来どおり
-    fallback_items = [
-        (total_horse, "総合"),
-    ]
-
-    for h in tenkai_rank_for_trio:
-        fallback_items.append(
-            (horse_text(h), "展開")
-        )
-
-    fallback_items += [
-        (long_horse, "地力"),
-        (front_second_horse, "先行"),
-    ]
-
-for item in fallback_items:
-    if item[0] not in seen_second_b:
-        second_b_items.append(item)
-        seen_second_b.add(item[0])
-
-second_b = None
-
-for item in second_b_items:
-    num = get_num(item[0])
-
-    # 軸馬本人は使わない
-    if num == popular_horse_num:
-        continue
-
-    # 1点目にすでに入った馬はBに使わない
-    if num in first_trio_nums:
-        continue
-
-    # BとCが同じ馬になる場合は次順位へ
-    if (
-        second_hole is not None
-        and num == get_num(second_hole)
-    ):
-        continue
-
-    second_b = item
-    break
-
-if second_b is not None and second_hole is not None:
-    add_bet(
-        trio_bets,
-        trio_roles,
-        [
-            popular,
-            second_b[0],
-            second_hole,
-        ],
-        [
-            "軸",
-            second_b[1],
-            "穴",
-        ],
-        2
-    )
-
-# 通常ロジックで2点作れない時だけ補充
-if len(trio_bets) < 2:
-    if total_best["馬番"] == popular_horse_num:
-        fallback_items = [
-            (ana_second_horse, "穴"),
-            (ana_third_horse, "穴"),
-            (ana_fourth_horse, "穴"),
-            (ana_fifth_horse, "穴"),
-            (ana_horse, "穴"),
-            (long_horse, "地力"),
-            (tenkai_horse_text, "展開"),
-            (front_horse_for_trio, "先行"),
-            (front_second_horse, "先行"),
-        ]
-    else:
-        fallback_items = [
-            (long_horse, "地力"),
-            (total_horse, "総合"),
-            (tenkai_horse_text, "展開"),
-            (ana_horse, "穴"),
-            (ana_second_horse, "穴"),
-            (ana_third_horse, "穴"),
-            (ana_fourth_horse, "穴"),
-            (ana_fifth_horse, "穴"),
-            (front_horse_for_trio, "先行"),
-            (front_second_horse, "先行"),
-        ]
-
-    known = {item[0] for item in fallback_items}
-
-    for h in total_candidates:
-        item = (horse_text(h), "総合")
-        if item[0] not in known:
-            fallback_items.append(item)
-            known.add(item[0])
-
-    for h in horses:
-        item = (horse_text(h), "予備")
-        if item[0] not in known:
-            fallback_items.append(item)
-            known.add(item[0])
-
-    cleaned = []
-    used = set()
-
-    for item in fallback_items:
-        num = get_num(item[0])
-        if num == popular_horse_num or num in used:
-            continue
-
-        cleaned.append(item)
-        used.add(num)
-
-    for i in range(len(cleaned)):
-        if len(trio_bets) >= 2:
-            break
-
-        for j in range(i + 1, len(cleaned)):
-            add_bet(
-                trio_bets,
-                trio_roles,
-                [popular, cleaned[i][0], cleaned[j][0]],
-                ["軸", cleaned[i][1], cleaned[j][1]],
-                2
-            )
-
-            if len(trio_bets) >= 2:
-                break
-
-normal_trio_bets = [list(b) for b in trio_bets]
-normal_trio_roles = [list(r) for r in trio_roles]
-
-# ==================================================
-# 最終買い目を作る
-#
-# ① 三連複は、斬られた馬の席だけ交換
-# ② ワイドは最終三連複からシンプルに作る
-#
-# 三連複
-# 1点目：A－B－C
-# 2点目：A－D－E
-#
-# ワイド
-# 1点目：A－B
-# 2点目：A－E
-# ==================================================
-trio_bets = replace_bets(
-    normal_trio_bets,
-    normal_trio_roles
+    + [horse_text(h) for h in ana_fallback]
+    + all_bet_pool
 )
 
-# ==================================================
-# ワイド2点
-# 最終表示の三連複から直接作る
-# ==================================================
-wide_bets = []
+# I＝穴2
+# 穴2 → 穴4 → 穴5 → 穴1
+# 穴3の馬は、別ランキング経由でもIには入れない。
+hole3_number_for_i = get_num(
+    ana_third_horse
+)
 
-def append_unique_wide(first, second):
-    if first is None or second is None:
-        return
-
-    first_num = get_num(first)
-    second_num = get_num(second)
-
-    # 同じ馬同士のワイドは作らない
-    if first_num == second_num:
-        return
-
-    wide_key = tuple(
-        sorted([
-            first_num,
-            second_num,
-        ])
-    )
-
-    existing_keys = {
-        tuple(
-            sorted(
-                get_num(h)
-                for h in bet
-            )
-        )
-        for bet in wide_bets
-    }
-
-    if (
-        wide_key not in existing_keys
-        and len(wide_bets) < 2
-    ):
-        wide_bets.append([
-            first,
-            second,
-        ])
-
-# 1点目：三連複1点目 A－B－C の A－B
-if len(trio_bets) >= 1 and len(trio_bets[0]) >= 2:
-    append_unique_wide(
-        trio_bets[0][0],
-        trio_bets[0][1],
-    )
-
-# 2点目：三連複2点目 A－D－E の A－E
-if len(trio_bets) >= 2 and len(trio_bets[1]) >= 3:
-    append_unique_wide(
-        trio_bets[1][0],
-        trio_bets[1][2],
-    )
-
-# 同じ組み合わせになった場合だけ予備を使う
-wide_fallbacks = []
-
-if len(trio_bets) >= 2:
-    wide_fallbacks += [
-        # 2点目の A－D
+i_pool = [
+    item
+    for item in unique_texts(
         [
-            trio_bets[1][0],
-            trio_bets[1][1],
-        ],
-    ]
-
-if len(trio_bets) >= 1 and len(trio_bets[0]) >= 3:
-    wide_fallbacks += [
-        # 1点目の A－C
-        [
-            trio_bets[0][0],
-            trio_bets[0][2],
-        ],
-    ]
-
-for fallback in wide_fallbacks:
-    if len(wide_bets) >= 2:
-        break
-
-    append_unique_wide(
-        fallback[0],
-        fallback[1],
+            ana_second_horse,
+            ana_fourth_horse,
+            ana_fifth_horse,
+            ana_horse,
+        ]
+        + [horse_text(h) for h in ana_fallback]
+        + all_bet_pool
     )
-# ==================================================
-# カッパの浮き輪保険
-#
-# 最終ワイド2点と同じ組み合わせは使わない。
-# 斬り捨て馬が入っていれば、その席だけ穴の次順位へ交換する。
-# ==================================================
-float_bets = []
-
-wide_existing_keys = {
-    tuple(
-        sorted(
-            get_num(h)
-            for h in bet
-        )
-    )
-    for bet in wide_bets
-}
-
-float_candidates = [
-    [
-        ana_third_horse,
-        ana_second_horse,
-    ],  # ① 穴3－穴2
-
-    [
-        ana_third_horse,
-        ana_fourth_horse,
-    ],  # ② 穴3－穴4
-
-    [
-        ana_third_horse,
-        ana_fifth_horse,
-    ],  # ③ 穴3－穴5
+    if get_num(item) != hole3_number_for_i
 ]
 
-for candidate in float_candidates:
+alphabet_candidate_pools = {
+    "A": [popular],
+    "F": f_pool,
+    "C": c_pool,
+    "E": e_pool,
+    "D": d_pool,
+    "B": b_pool,
+    "G": g_pool,
+    "I": i_pool,
+}
 
-    replaced_list = replace_bets(
-        [candidate],
-        [["穴", "穴"]],
+alphabet_role_names = {
+    "A": "軸",
+    "F": "後詰め",
+    "C": "地力",
+    "E": "抑え",
+    "D": "先行",
+    "B": "展開",
+    "G": "穴3",
+    "I": "穴2",
+}
+
+alphabet_priority = [
+    "A",
+    "F",
+    "C",
+    "E",
+    "D",
+    "B",
+    "G",
+    "I",
+]
+
+
+def collect_required_symbols(template):
+    """
+    今回の軸タイプで実際に使う記号だけを集める。
+
+    使わない記号が、使う記号の馬を奪わないようにする。
+    """
+
+    required = set()
+
+    for bet_group in template.values():
+        for symbol_list in bet_group:
+            required.update(symbol_list)
+
+    return required
+
+
+def build_symbol_conflicts(template):
+    """
+    同じ買い目内に出る記号同士を保存する。
+
+    少頭数で全記号を別馬にできない場合でも、
+    同一買い目内だけは同じ馬にならないようにする。
+    """
+
+    conflicts = {}
+
+    for bet_group in template.values():
+        for symbol_list in bet_group:
+            for symbol in symbol_list:
+                conflicts.setdefault(
+                    symbol,
+                    set(),
+                )
+
+                conflicts[symbol].update(
+                    other_symbol
+                    for other_symbol in symbol_list
+                    if other_symbol != symbol
+                )
+
+    return conflicts
+
+
+required_symbols = collect_required_symbols(
+    current_bet_template
+)
+
+symbol_conflicts = build_symbol_conflicts(
+    current_bet_template
+)
+
+
+def choose_alphabet_horse(
+    symbol,
+    selected_symbols,
+    excluded_numbers,
+    require_global_unique=True,
+):
+    """
+    記号専用候補から最上位馬を選ぶ。
+
+    通常は、すでに他記号で使った馬をすべて避ける。
+    少頭数で候補が足りない時だけ、
+    同じ買い目に出ない記号との重複を許す。
+    """
+
+    candidate_pool = alphabet_candidate_pools.get(
+        symbol,
+        all_bet_pool,
     )
 
-    replaced = replaced_list[0]
+    used_numbers = {
+        get_num(horse_name)
+        for horse_name
+        in selected_symbols.values()
+    }
 
-    # 斬り捨て馬が残っている場合は採用しない
-    if any(
-        get_num(h) in kirisute_horse_numbers
-        for h in replaced
-    ):
-        continue
+    conflicting_symbols = symbol_conflicts.get(
+        symbol,
+        set(),
+    )
 
-    # 同じ馬同士は採用しない
-    replaced_nums = [
-        get_num(h)
-        for h in replaced
+    for candidate in candidate_pool:
+        candidate_number = get_num(
+            candidate
+        )
+
+        if candidate_number in excluded_numbers:
+            continue
+
+        if (
+            require_global_unique
+            and candidate_number in used_numbers
+        ):
+            continue
+
+        # 全体重複を許す最終救済でも、
+        # 同じ買い目内の記号とは絶対に被らせない。
+        same_bet_duplicate = any(
+            other_symbol in selected_symbols
+            and get_num(
+                selected_symbols[other_symbol]
+            ) == candidate_number
+            for other_symbol in conflicting_symbols
+        )
+
+        if same_bet_duplicate:
+            continue
+
+        return candidate
+
+    return None
+
+
+def select_bet_alphabet_horses(
+    excluded_numbers=None,
+):
+    """
+    今回使う記号だけを、
+    A → F → C → E → D → B → G → I
+    の順で確定する。
+    """
+
+    excluded_numbers = set(
+        excluded_numbers or set()
+    )
+
+    selected_symbols = {}
+
+    selection_order = [
+        symbol
+        for symbol in alphabet_priority
+        if symbol in required_symbols
     ]
 
-    if len(replaced_nums) != len(set(replaced_nums)):
-        continue
+    for symbol in selection_order:
 
-    replaced_key = tuple(
-        sorted(replaced_nums)
+        # まずは異なる記号をすべて別馬にする。
+        selected_horse = choose_alphabet_horse(
+            symbol,
+            selected_symbols,
+            excluded_numbers,
+            require_global_unique=True,
+        )
+
+        # 少頭数で全記号を別馬にできない場合だけ、
+        # 同じ買い目に出ない記号との重複を許す。
+        if selected_horse is None:
+            selected_horse = choose_alphabet_horse(
+                symbol,
+                selected_symbols,
+                excluded_numbers,
+                require_global_unique=False,
+            )
+
+        if selected_horse is not None:
+            selected_symbols[symbol] = (
+                selected_horse
+            )
+
+    return selected_symbols
+
+
+def make_bets_from_symbols(
+    symbol_templates,
+    selected_symbols,
+):
+    """
+    記号の買い目を実際の馬名へ変換する。
+    """
+
+    result = []
+
+    for symbol_list in symbol_templates:
+
+        if not all(
+            symbol in selected_symbols
+            for symbol in symbol_list
+        ):
+            continue
+
+        bet = [
+            selected_symbols[symbol]
+            for symbol in symbol_list
+        ]
+
+        bet_numbers = [
+            get_num(horse_name)
+            for horse_name in bet
+        ]
+
+        # 同じ買い目内で同じ馬になったものは出さない。
+        if len(bet_numbers) != len(
+            set(bet_numbers)
+        ):
+            continue
+
+        result.append(
+            bet
+        )
+
+    return result
+
+
+# --------------------------------------------------
+# 斬り捨て前の通常選出
+# --------------------------------------------------
+normal_bet_symbols = select_bet_alphabet_horses()
+
+# --------------------------------------------------
+# 斬り捨て後の最終選出
+#
+# 斬られた記号だけではなく、
+# 優先順位の先頭から再計算することで、
+# 各記号の順位関係を崩さない。
+# --------------------------------------------------
+final_bet_symbols = select_bet_alphabet_horses(
+    excluded_numbers=kirisute_horse_numbers
+)
+
+trio_bets = make_bets_from_symbols(
+    current_bet_template["三連複"],
+    final_bet_symbols,
+)
+
+wide_bets = make_bets_from_symbols(
+    current_bet_template["ワイド"],
+    final_bet_symbols,
+)
+
+float_bets = make_bets_from_symbols(
+    current_bet_template["浮き輪"],
+    final_bet_symbols,
+)
+
+# 必要な買い目を作れなかった場合は、
+# 斬り捨て前の通常選出へ戻す。
+if len(trio_bets) < 2:
+    trio_bets = make_bets_from_symbols(
+        current_bet_template["三連複"],
+        normal_bet_symbols,
     )
 
-    # おすすめワイドと同じ買い目なら次候補へ
-    if replaced_key in wide_existing_keys:
-        continue
+if len(wide_bets) < 2:
+    wide_bets = make_bets_from_symbols(
+        current_bet_template["ワイド"],
+        normal_bet_symbols,
+    )
 
-    float_bets.append(replaced)
-    break
+if len(float_bets) < 1:
+    float_bets = make_bets_from_symbols(
+        current_bet_template["浮き輪"],
+        normal_bet_symbols,
+    )
+
+
+if debug_mode:
+
+    with st.expander(
+        "🔤 買い目用アルファベット選出",
+        expanded=False,
+    ):
+
+        st.write(
+            "優先順位："
+            "A → F → C → E → D → B → G → I"
+        )
+
+        st.write(
+            f"軸タイプ：{kyakushoku_type}"
+        )
+
+        for symbol in alphabet_priority:
+
+            if symbol not in required_symbols:
+                continue
+
+            normal_horse = normal_bet_symbols.get(
+                symbol,
+                "候補なし",
+            )
+
+            final_horse = final_bet_symbols.get(
+                symbol,
+                "候補なし",
+            )
+
+            st.write(
+                f"{symbol}（"
+                f"{alphabet_role_names[symbol]}"
+                f"）｜通常：{normal_horse}"
+                f"｜最終：{final_horse}"
+            )
+
+        st.caption(
+            f"三連複記号："
+            f"{current_bet_template['三連複']}\n\n"
+            f"ワイド記号："
+            f"{current_bet_template['ワイド']}\n\n"
+            f"浮き輪記号："
+            f"{current_bet_template['浮き輪']}"
+        )
 
 # ==================================================
 # 最終表示
