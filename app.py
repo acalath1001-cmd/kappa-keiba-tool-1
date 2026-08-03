@@ -6142,11 +6142,11 @@ handwritten_bet_templates = {
     "逃げ": {
         "三連複": [
             ["A", "B", "D"],
-            ["A", "D", "C"],
+            ["A", "G", "C"],
         ],
         "ワイド": [
             ["A", "B"],
-            ["D", "E"],
+            ["A", "E"],
         ],
         "浮き輪": [
             ["D", "G"],
@@ -6555,9 +6555,17 @@ def make_unique_trio_bets(
     """
     三連複を上から順番に作る。
 
-    1点目と2点目が、並び順だけ違う同じ3頭になった場合は、
-    後ろ側の記号から、その記号専用候補の次順位へ繰り下げる。
+    三連複1点目にFがあり、
+    後詰めFの本来1位が軸Aと同じ馬だった場合だけ、
+    1点目のFを先行馬へ変更する。
 
+    先行馬1位が軸・別枠・斬り捨て馬と被る場合は、
+    先行馬2位、3位へ順番に繰り下げる。
+
+    有効な先行馬がいない場合は、
+    通常の後詰めFの繰り下げ馬をそのまま使う。
+
+    2点目以降のFには影響させない。
     軸Aは固定する。
     """
 
@@ -6568,16 +6576,85 @@ def make_unique_trio_bets(
     result = []
     used_trio_keys = set()
 
-    for symbol_list in symbol_templates:
+    # 三連複1点目のF置き換え専用
+    # all_bet_poolは入れず、本当の先行候補だけを使う
+    first_trio_front_pool = unique_texts(
+        [front_horse]
+        + [
+            horse_text(h)
+            for h in front_candidates
+        ]
+    )
+
+    for bet_index, symbol_list in enumerate(
+        symbol_templates
+    ):
+
+        # この買い目だけで使う記号
+        # 元のselected_symbolsは変更しない
+        bet_selected_symbols = dict(
+            selected_symbols
+        )
+
+        # ==================================================
+        # 三連複1点目限定
+        #
+        # 後詰めFの本来1位が軸Aと同じ馬なら、
+        # 1点目のFだけ先行馬へ変更する。
+        #
+        # 脚色タイプ名では判定しないため、
+        # どの脚色でも1点目にFがあれば共通で適用される。
+        # ==================================================
+        if (
+            bet_index == 0
+            and "F" in symbol_list
+            and f_pool
+            and get_num(f_pool[0]) == popular_horse_num
+        ):
+
+            # F以外ですでに使われる馬番
+            other_numbers = {
+                get_num(
+                    bet_selected_symbols[symbol]
+                )
+                for symbol in symbol_list
+                if (
+                    symbol != "F"
+                    and symbol in bet_selected_symbols
+                )
+            }
+
+            front_replacement = next(
+                (
+                    candidate
+                    for candidate
+                    in first_trio_front_pool
+                    if (
+                        get_num(candidate)
+                        not in excluded_numbers
+
+                        and get_num(candidate)
+                        not in other_numbers
+                    )
+                ),
+                None,
+            )
+
+            # 有効な先行馬が見つかった時だけ変更
+            # 見つからなければ通常のFを維持する
+            if front_replacement is not None:
+                bet_selected_symbols["F"] = (
+                    front_replacement
+                )
 
         if not all(
-            symbol in selected_symbols
+            symbol in bet_selected_symbols
             for symbol in symbol_list
         ):
             continue
 
         bet = [
-            selected_symbols[symbol]
+            bet_selected_symbols[symbol]
             for symbol in symbol_list
         ]
 
@@ -6625,9 +6702,11 @@ def make_unique_trio_bets(
                 )
             )
 
-            current_horse = selected_symbols[
-                change_symbol
-            ]
+            current_horse = (
+                bet_selected_symbols[
+                    change_symbol
+                ]
+            )
 
             current_number = get_num(
                 current_horse
@@ -6664,6 +6743,7 @@ def make_unique_trio_bets(
                     continue
 
                 test_bet = bet[:]
+
                 test_bet[
                     change_index
                 ] = candidate
@@ -6681,7 +6761,8 @@ def make_unique_trio_bets(
                     test_numbers
                 )
 
-                # 1点目と同じ3頭なら、さらに次候補へ
+                # 1点目と同じ3頭なら、
+                # さらに次候補へ進む
                 if test_key in used_trio_keys:
                     continue
 
@@ -6742,7 +6823,7 @@ float_bets = make_bets_from_symbols(
 # 必要な買い目を作れなかった場合は、
 # 斬り捨て前の通常選出へ戻す。
 if len(trio_bets) < 2:
-    trio_bets = make_bets_from_symbols(
+    trio_bets = make_unique_trio_bets(
         current_bet_template["三連複"],
         normal_bet_symbols,
     )
