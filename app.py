@@ -101,6 +101,189 @@ def calc_recent_form_bonus(finish_positions):
         bonus += 8
 
     return bonus, recent_results
+def calc_distance_change_score(
+    horse,
+    current_distance,
+):
+    """
+    距離短縮・距離延長の適性を、
+    展開評価専用の加点として判定する。
+
+    同じ馬に複数の該当走があっても、
+    最も強い1走だけを採用する。
+
+    1900m以上の距離延長は、
+    既存の距離延長・押し上げ型ロジックへ任せる。
+    """
+
+    best_score = 0
+    best_type = "なし"
+    best_detail = None
+
+    for item in horse.get(
+        "距離付きタイム",
+        [],
+    ):
+
+        past_distance = item.get(
+            "距離",
+            0,
+        )
+
+        flow = item.get(
+            "通過順",
+            [],
+        )
+
+        finish = item.get(
+            "着順"
+        )
+
+        if (
+            finish is None
+            or len(flow) < 2
+        ):
+            continue
+
+        first = flow[0]
+        last = flow[-1]
+
+        shortening = (
+            past_distance
+            - current_distance
+        )
+
+        extension = (
+            current_distance
+            - past_distance
+        )
+
+        race_score = 0
+        change_type = "なし"
+        reasons = []
+
+        # ------------------------------------------
+        # 100〜300mの距離短縮
+        # 長い距離でも前で運べた馬、
+        # 最後だけ少し甘くなった馬を拾う。
+        # ------------------------------------------
+        if 100 <= shortening <= 300:
+
+            change_type = "短縮"
+
+            if (
+                first <= 4
+                and last <= 5
+            ):
+                race_score += 40
+                reasons.append(
+                    "長い距離でも前で運べた"
+                )
+
+            goal_drop = finish - last
+
+            if (
+                first <= 4
+                and last <= 5
+                and 2 <= goal_drop <= 4
+            ):
+                race_score += 30
+                reasons.append(
+                    "最後だけ少し甘くなった"
+                )
+
+        # ------------------------------------------
+        # 100〜300mの距離延長
+        # 1900m未満だけを対象にする。
+        # 位置を保って好走した持続型、
+        # 押し上げて好走した馬を拾う。
+        # ------------------------------------------
+        elif (
+            current_distance < 1900
+            and 100 <= extension <= 300
+        ):
+
+            change_type = "延長"
+
+            if (
+                2 <= first <= 7
+                and abs(last - first) <= 2
+                and finish <= 5
+            ):
+                race_score += 50
+                reasons.append(
+                    "短い距離で位置を保って好走"
+                )
+
+            elif (
+                first >= 6
+                and last <= first - 3
+                and finish <= 5
+            ):
+                race_score += 30
+                reasons.append(
+                    "短い距離で押し上げて好走"
+                )
+
+            # 踏ん張り不足馬は、
+            # 距離延長のプラス評価を弱める。
+            if (
+                race_score > 0
+                and horse.get(
+                    "踏ん張り不足",
+                    False,
+                )
+            ):
+                race_score = max(
+                    0,
+                    race_score - 60,
+                )
+                reasons.append(
+                    "踏ん張り不足で延長加点を抑制"
+                )
+
+        if (
+            race_score > best_score
+            or (
+                race_score == best_score == 0
+                and reasons
+                and best_detail is None
+            )
+        ):
+            best_score = race_score
+            best_type = change_type
+            best_detail = {
+                "過去距離": past_distance,
+                "今回距離": current_distance,
+                "通過順": flow,
+                "着順": finish,
+                "理由": reasons,
+            }
+
+    # 最新走で大失速した馬は、
+    # 距離変化だけで信用を戻さない。
+    if (
+        best_score > 0
+        and horse.get(
+            "直近大失速強度",
+            0,
+        ) >= 1.0
+    ):
+        best_score = 0
+        best_type = "大失速で無効"
+
+        if best_detail is not None:
+            best_detail["理由"].append(
+                "最新走大失速のため加点なし"
+            )
+
+    return {
+        "スコア": best_score,
+        "種類": best_type,
+        "詳細": best_detail,
+    }
+
+
 def calc_time_pressure_response(horse):
     """
     タイム圧馬がいるレースで、
@@ -1393,13 +1576,23 @@ for horse in horses:
     front_score = calc_front_score(
         horse["通過順"]
     )
-    # 距離短縮で逃げ経験がある馬は、前進気勢にだけ加点
+    # 距離短縮で逃げ・2番手経験がある馬は、
+    # 100〜300m短縮の時だけ前進気勢に加点する。
+    # 極端な距離短縮は、前へ行ける根拠として使わない。
     if distance_num <= 1400:
         for item in horse.get("距離付きタイム", []):
             past_distance = item["距離"]
             flow = item["通過順"]
 
-            if past_distance > distance_num and len(flow) >= 2:
+            shortening = (
+                past_distance
+                - distance_num
+            )
+
+            if (
+                100 <= shortening <= 300
+                and len(flow) >= 2
+            ):
                 if flow[0] == 1:
                     front_score += 120
                 elif flow[0] == 2:
@@ -2677,6 +2870,22 @@ for horse in horses:
     )
 
     score -= heavy_collapse_tenkai_penalty
+
+    # 距離短縮・距離延長の適性は、
+    # 展開評価だけへ加点する。
+    distance_change = (
+        calc_distance_change_score(
+            horse,
+            distance_num,
+        )
+    )
+
+    distance_change_score = (
+        distance_change["スコア"]
+    )
+
+    score += distance_change_score
+
     # 展開馬の同距離ベストタイム
     # ==================================================
     # 距離延長・押し上げ型
@@ -3146,6 +3355,9 @@ for horse in horses:
         "前団持続回数": target_front_sustain_count,
         "中団持続回数": target_middle_sustain_count,
         "大失速減点": heavy_collapse_tenkai_penalty,
+        "距離変化": distance_change["種類"],
+        "距離変化点": distance_change_score,
+        "距離変化詳細": distance_change["詳細"],
         "距離延長押上型": distance_extension_push,
         "距離延長押上回数": distance_extension_push_count,
         "直近3走": recent_results,
@@ -3236,7 +3448,10 @@ if debug_mode:
                 f"｜タイム差 "
                 f"{time_diff_text} "
                 f"｜大失速 "
-                f"-{h.get('大失速減点', 0)}"
+                f"-{h.get('大失速減点', 0)} "
+                f"｜距離変化 "
+                f"{h.get('距離変化', 'なし')} "
+                f"{h.get('距離変化点', 0)}点"
             )
 
 if not tenkai_candidates:
@@ -3259,104 +3474,7 @@ front_score_map = {h["馬番"]: h["スコア"] for h in front_candidates}
 long_score_map = {h["馬番"]: h["スコア"] for h in long_spurt_candidates}
 
 total_candidates = []
-# ==================================================
-# 総合力用の持ちタイム
-# 各馬の上位2走平均を作り、その平均同士で比較する
-# ==================================================
-total_time_map = {}
 
-for horse in horses:
-    distance_times = horse.get("距離付きタイム", [])
-
-    # 同距離実績がある馬は、同距離だけを使う
-    same_distance_exists = any(
-        item["距離"] == distance_num
-        for item in distance_times
-    )
-
-    usable_times = []
-
-    for item in distance_times:
-        race_distance = item["距離"]
-
-        if same_distance_exists:
-            distance_ok = race_distance == distance_num
-
-        else:
-            if distance_num == 1400:
-                distance_ok = (
-                    abs(race_distance - distance_num) <= 200
-                    and race_distance >= 1200
-                )
-
-            elif distance_num in [1200, 1230, 1300]:
-                distance_ok = (
-                    abs(race_distance - distance_num) <= 200
-                    and race_distance >= 1000
-                )
-
-            elif distance_num >= 1900:
-                distance_ok = race_distance in [
-                    1600, 1700, 1800, 1870,
-                    1900, 2000, 2100
-                ]
-
-            elif distance_num >= 1500:
-                distance_ok = (
-                    abs(race_distance - distance_num) <= 300
-                )
-
-            else:
-                distance_ok = (
-                    abs(race_distance - distance_num) <= 100
-                )
-
-        if not distance_ok:
-            continue
-
-        try:
-            minutes, seconds = item["タイム"].split(":")
-            total_seconds = (
-                int(minutes) * 60
-                + float(seconds)
-            )
-
-            # 園田・姫路の競馬場差補正
-            past_place = item.get("競馬場", "")
-
-            if baba_name == "園田" and past_place == "姫路":
-                total_seconds += 5.0
-
-            elif baba_name == "姫路" and past_place == "園田":
-                total_seconds -= 5.0
-
-            usable_times.append(total_seconds)
-
-        except (ValueError, TypeError):
-            continue
-
-    if not usable_times:
-        continue
-
-    # 速い順に並べ、上位2走を使用する
-    usable_times.sort()
-    top_times = usable_times[:2]
-
-    representative_time = (
-        sum(top_times) / len(top_times)
-    )
-
-    total_time_map[horse["馬番"]] = {
-        # 総合評価では上位2走平均を使用
-        "代表タイム": representative_time,
-
-        # タイム圧モードでは最速1走を使用
-        "最速1走": top_times[0],
-
-        "使用タイム": top_times,
-        "使用数": len(top_times),
-        "距離一致": same_distance_exists,
-    }
 # ==================================================
 # 総合評価専用の同距離持ちタイム
 #
@@ -4574,11 +4692,6 @@ if time_pressure_mode:
             False
         )
 
-        long_score = long_score_map.get(
-            horse_no,
-            0
-        )
-
         remove_candidate = False
 
         candidate_diff = (
@@ -5579,18 +5692,6 @@ def add_ana_fallback(horse_no, horse_name):
         "馬名": horse_name,
     })
 
-    # 同じ馬は追加しない
-    if any(
-        h["馬番"] == horse_no
-        for h in ana_fallback
-    ):
-        return
-
-    ana_fallback.append({
-        "馬番": horse_no,
-        "馬名": horse_name,
-    })
-
 # ① 本来の穴候補を最優先
 for h in ana_candidates:
     add_ana_fallback(
@@ -5903,209 +6004,10 @@ def unique_texts(items):
 
     return result
 
-def add_bet(bets, roles_list, bet, roles, max_count):
-    nums = [get_num(h) for h in bet]
-
-    # 通常買い目の作成中は斬り捨てを見ない
-    if len(nums) != len(set(nums)):
-        return
-
-    key = tuple(sorted(nums))
-    existing = {
-        tuple(sorted(get_num(h) for h in b))
-        for b in bets
-    }
-
-    if key not in existing and len(bets) < max_count:
-        bets.append(list(bet))
-        roles_list.append(list(roles))
-# ==================================================
-# 斬り捨て馬の代役候補
-# ==================================================
-hole_pool = unique_texts([
-    ana_horse,
-    ana_second_horse,
-    ana_third_horse,
-    ana_fourth_horse,
-    ana_fifth_horse,
-])
-
-tenkai_pool = unique_texts([
-    horse_text(h)
-    for h in tenkai_rank_for_trio
-])
-
-long_pool = unique_texts([
-    horse_text(h)
-    for h in long_spurt_candidates
-])
-
-total_pool = unique_texts([
-    horse_text(h)
-    for h in total_candidates
-])
-
-front_pool = unique_texts([
-    horse_text(h)
-    for h in front_candidates
-])
-
-all_pool = unique_texts(
-    total_pool
-    + tenkai_pool
-    + long_pool
-    + front_pool
-    + hole_pool
-    + [horse_text(h) for h in horses]
-)
-
-role_pools = {
-    "穴": hole_pool,
-    "展開": tenkai_pool,
-    "地力": long_pool,
-    "総合": total_pool,
-    "先行": front_pool,
-    "予備": all_pool,
-    "軸": [],
-}
-
-def next_candidates(original, role):
-    pool = role_pools.get(role, all_pool)
-
-    if original in pool:
-        idx = pool.index(original)
-        pool = pool[idx + 1:] + pool[:idx]
-
-    return unique_texts(pool + all_pool)
-
-def replace_one_bet(original_bet, roles, existing_keys):
-    cut_indexes = [
-        i
-        for i, h in enumerate(original_bet)
-        if get_num(h) in kirisute_horse_numbers
-    ]
-
-    # 斬られた馬が入っていない買い目は一切変えない
-    if not cut_indexes:
-        return list(original_bet)
-
-    fixed_nums = {
-        get_num(h)
-        for i, h in enumerate(original_bet)
-        if i not in cut_indexes
-    }
-
-    options = []
-
-    for i in cut_indexes:
-        original = original_bet[i]
-        role = roles[i] if i < len(roles) else "予備"
-        candidates = []
-
-        for candidate in next_candidates(original, role):
-            num = get_num(candidate)
-
-            if num in kirisute_horse_numbers:
-                continue
-            if num in fixed_nums:
-                continue
-            if num == popular_horse_num:
-                continue
-            if num == get_num(original):
-                continue
-
-            candidates.append(candidate)
-
-        options.append(candidates)
-
-    def search(depth, current, used, avoid_duplicate):
-        if depth == len(cut_indexes):
-            key = tuple(sorted(get_num(h) for h in current))
-            if avoid_duplicate and key in existing_keys:
-                return None
-            return current
-
-        target = cut_indexes[depth]
-
-        for candidate in options[depth]:
-            num = get_num(candidate)
-            if num in used:
-                continue
-
-            trial = list(current)
-            trial[target] = candidate
-
-            found = search(
-                depth + 1,
-                trial,
-                used | {num},
-                avoid_duplicate
-            )
-            if found is not None:
-                return found
-
-        return None
-
-    replaced = search(
-        0,
-        list(original_bet),
-        set(fixed_nums),
-        True
-    )
-
-    if replaced is None:
-        replaced = search(
-            0,
-            list(original_bet),
-            set(fixed_nums),
-            False
-        )
-
-    return replaced if replaced is not None else list(original_bet)
-
-def replace_bets(original_bets, original_roles):
-    result = []
-    existing_keys = set()
-
-    for i, bet in enumerate(original_bets):
-        roles = (
-            original_roles[i]
-            if i < len(original_roles)
-            else ["予備"] * len(bet)
-        )
-
-        replaced = replace_one_bet(
-            bet,
-            roles,
-            existing_keys
-        )
-
-        result.append(replaced)
-        existing_keys.add(
-            tuple(sorted(get_num(h) for h in replaced))
-        )
-
-    return result
-
 popular = (
     f"{popular_horse_num}番 "
     f"{real_horses[popular_horse_num - 1]}"
 )
-
-total_horse = total_best_horse
-long_horse = long_spurt_horse
-tenkai_horse_text = tenkai_horse
-
-front_horse_for_trio = front_horse
-if get_num(front_horse_for_trio) == popular_horse_num:
-    front_horse_for_trio = long_spurt_horse
-
-if len(front_candidates) >= 2:
-    front_second = front_candidates[1]
-else:
-    front_second = front_candidates[0]
-
-front_second_horse = horse_text(front_second)
 
 # ==================================================
 # 手書き設計版・最終買い目
@@ -6181,11 +6083,11 @@ handwritten_bet_templates = {
     "差し": {
         "三連複": [
             ["A", "B", "E"],
-            ["A", "D", "C"],
+            ["A", "D", "I"],
         ],
         "ワイド": [
             ["A", "B"],
-            ["A", "G"],
+            ["A", "C"],
         ],
         "浮き輪": [
             ["I", "G"],
@@ -6352,12 +6254,16 @@ def build_symbol_conflicts(template):
     """
     同じ買い目内に出る記号同士を保存する。
 
-    少頭数で全記号を別馬にできない場合でも、
-    同一買い目内だけは同じ馬にならないようにする。
+    さらに、同じ軸を共有するワイド2点では、
+    相手記号同士も同じ馬にならないようにする。
+
+    例：A-B / A-E の場合はBとEも競合扱いにする。
+    これにより、A-BとA-Eが同じワイドになるのを防ぐ。
     """
 
     conflicts = {}
 
+    # 同じ1つの買い目内に出る記号同士
     for bet_group in template.values():
         for symbol_list in bet_group:
             for symbol in symbol_list:
@@ -6371,6 +6277,66 @@ def build_symbol_conflicts(template):
                     for other_symbol in symbol_list
                     if other_symbol != symbol
                 )
+
+    # 同じ軸を共有するワイド同士の重複を防ぐ。
+    # 例：A-B / A-Eなら、BとEを別馬にする。
+    wide_templates = [
+        symbol_list
+        for symbol_list in template.get(
+            "ワイド",
+            [],
+        )
+        if len(symbol_list) == 2
+    ]
+
+    for first_index in range(
+        len(wide_templates)
+    ):
+        for second_index in range(
+            first_index + 1,
+            len(wide_templates),
+        ):
+            first_pair = wide_templates[
+                first_index
+            ]
+            second_pair = wide_templates[
+                second_index
+            ]
+
+            shared_symbols = (
+                set(first_pair)
+                & set(second_pair)
+            )
+
+            # 1つの記号を共通で使うワイドだけ対象
+            if len(shared_symbols) != 1:
+                continue
+
+            shared_symbol = next(
+                iter(shared_symbols)
+            )
+
+            first_other = next(
+                symbol
+                for symbol in first_pair
+                if symbol != shared_symbol
+            )
+
+            second_other = next(
+                symbol
+                for symbol in second_pair
+                if symbol != shared_symbol
+            )
+
+            conflicts.setdefault(
+                first_other,
+                set(),
+            ).add(second_other)
+
+            conflicts.setdefault(
+                second_other,
+                set(),
+            ).add(first_other)
 
     return conflicts
 
