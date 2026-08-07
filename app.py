@@ -284,77 +284,6 @@ def calc_distance_change_score(
     }
 
 
-def calc_time_pressure_response(horse):
-    """
-    タイム圧馬がいるレースで、
-    強い流れに対応できる材料があるかを判定する。
-
-    ① 前で戦って3着以内
-    ② 後方から大きく押し上げて5着以内
-    """
-
-    flows = horse.get("通過順", [])
-    finishes = horse.get("着順", [])
-
-    front_success_count = 0
-    strong_push_count = 0
-    response_details = []
-
-    check_count = min(
-        len(flows),
-        len(finishes)
-    )
-
-    for idx in range(check_count):
-        flow = flows[idx]
-        finish = finishes[idx]
-
-        if len(flow) < 2:
-            continue
-
-        first = flow[0]
-        last = flow[-1]
-
-        # 前でしっかり戦った経験
-        # 例：3-3-3-1、2-2-2-2
-        front_success = (
-            first <= 4
-            and last <= 4
-            and finish <= 3
-        )
-
-        # 後ろから前の集団へ強く取り付いた経験
-        # 例：10-9-4-4
-        strong_push = (
-            first >= 7
-            and last <= 4
-            and first - last >= 4
-            and finish <= 5
-        )
-
-        if front_success:
-            front_success_count += 1
-
-        if strong_push:
-            strong_push_count += 1
-
-        if front_success or strong_push:
-            response_details.append({
-                "通過順": flow,
-                "着順": finish,
-                "前成功": front_success,
-                "強押し上げ": strong_push,
-            })
-
-    return {
-        "前成功回数": front_success_count,
-        "強押上回数": strong_push_count,
-        "両方あり": (
-            front_success_count >= 1
-            and strong_push_count >= 1
-        ),
-        "詳細": response_details,
-    }
 def extract_current_jockey(horse_row):
     """
     NAR出馬表の現在騎手だけを取得する。
@@ -1675,6 +1604,18 @@ front_candidates = [
     h for h in front_candidates
     if h["スコア"] > 0
 ]
+
+# ==================================================
+# 展開馬選出用・前進気勢TOP5
+#
+# この直後の画面表示と同じ順位を保存する。
+# 後段で「先行代表」用のリスク除外が入っても、
+# 展開馬はこのTOP5を基準にする。
+# ==================================================
+front_top5_for_tenkai = [
+    dict(h)
+    for h in front_candidates[:5]
+]
 if debug_mode:
 
     with st.expander(
@@ -2188,6 +2129,14 @@ long_spurt_candidates = [
     h for h in long_spurt_candidates
     if h["通過順"]
 ]
+
+# ==================================================
+# 展開馬選出用・地力TOP5
+# ==================================================
+long_top5_for_tenkai = [
+    dict(h)
+    for h in long_spurt_candidates[:5]
+]
 # ==================================================
 # 失速不安が強い馬
 #
@@ -2267,27 +2216,9 @@ front_score_map = {
     h["馬番"]: h["スコア"]
     for h in front_candidates
 }
-# 表示用の「長く脚」は、
-# 先行気勢1位と踏ん張り不足の馬を外す
-long_spurt_display_candidates = [
-    h for h in long_spurt_candidates
-    if (
-        h["馬番"] != front_best["馬番"]
-        and h["馬番"] not in fumbaribuso_horse_numbers
-    )
-]
+# 地力ランキングは評価順位をそのまま使う。
+# 踏ん張り不足・失速不安はランキング上の評価にすでに反映済み。
 
-# 先行気勢との重複より、
-# 踏ん張り不足の除外を優先する
-if not long_spurt_display_candidates:
-    long_spurt_display_candidates = [
-        h for h in long_spurt_candidates
-        if h["馬番"] not in fumbaribuso_horse_numbers
-    ]
-
-# 全馬が踏ん張り不足だった場合だけ元候補へ戻す
-if not long_spurt_display_candidates:
-    long_spurt_display_candidates = long_spurt_candidates
 if debug_mode:
 
     with st.expander(
@@ -2363,8 +2294,13 @@ if not long_spurt_candidates:
     st.error("長く脚の評価データが取れていません")
     st.stop()
 
-long_best = long_spurt_display_candidates[0]
-long_spurt_horse = f"{long_best['馬番']}番 {long_best['馬名']}"
+# 地力ランキング1位をそのまま代表馬にする
+long_best = long_spurt_candidates[0]
+
+long_spurt_horse = (
+    f"{long_best['馬番']}番 "
+    f"{long_best['馬名']}"
+)
 
 # 展開評価で使用するスコアマップ
 front_score_map = {
@@ -2779,695 +2715,469 @@ if kyakushoku_type == "差し" and front_best["馬番"] == popular_horse_num:
             front_horse = f"{front_best['馬番']}番 {front_best['馬名']}"
             break
 # ==================================================
-# 展開馬用の同距離持ちタイム
+# 新・展開馬候補ロジック
 #
-# 今回と完全に同じ距離だけ使用する。
-# 同距離馬が2頭未満なら時計による比較は行わない。
+# ① 軸タイプを先に判定する
+# ② 前進気勢ランキングTOP5と地力ランキングTOP5の
+#    「両方」に入っている馬だけを共通候補にする
+# ③ 軸タイプに合う脚質の馬を共通候補から選ぶ
+# ④ 共通候補に軸タイプ適合馬がいない場合は、
+#    総合ランキング確定後に総合上位から選ぶ
+#
+# ※軸馬自身は展開馬候補から除外する
 # ==================================================
 
-tenkai_same_distance_time_map = {}
+front_rank_map_for_tenkai = {
+    h["馬番"]: rank
+    for rank, h in enumerate(
+        front_top5_for_tenkai,
+        start=1,
+    )
+}
 
-for h in horses:
+long_rank_map_for_tenkai = {
+    h["馬番"]: rank
+    for rank, h in enumerate(
+        long_top5_for_tenkai,
+        start=1,
+    )
+}
 
-    exact_times = []
+front_top5_numbers_for_tenkai = set(
+    front_rank_map_for_tenkai.keys()
+)
 
-    for item in h.get("距離付きタイム", []):
+long_top5_numbers_for_tenkai = set(
+    long_rank_map_for_tenkai.keys()
+)
 
-        if item.get("距離") != distance_num:
-            continue
+# 前進TOP5 ∩ 地力TOP5
+common_top5_numbers_for_tenkai = (
+    front_top5_numbers_for_tenkai
+    & long_top5_numbers_for_tenkai
+)
 
-        try:
-            minutes, seconds = item["タイム"].split(":")
-            total_seconds = (
-                int(minutes) * 60
-                + float(seconds)
-            )
-
-            # 園田・姫路の競馬場差補正
-            past_place = item.get("競馬場", "")
-
-            if (
-                baba_name == "園田"
-                and past_place == "姫路"
-            ):
-                total_seconds += 5.0
-
-            elif (
-                baba_name == "姫路"
-                and past_place == "園田"
-            ):
-                total_seconds -= 5.0
-
-            exact_times.append(total_seconds)
-
-        except (ValueError, TypeError):
-            continue
-
-    if exact_times:
-        tenkai_same_distance_time_map[
-            h["馬番"]
-        ] = min(exact_times)
+# 軸馬自身は除外
+common_top5_numbers_for_tenkai.discard(
+    popular_horse_num
+)
 
 
-# 2頭以上いないと比較できない
-if len(tenkai_same_distance_time_map) >= 2:
+def classify_tenkai_candidate(horse):
+    """
+    展開候補の脚質を通過順だけで判定する。
 
-    fastest_same_distance_time_for_tenkai = min(
-        tenkai_same_distance_time_map.values()
+    軸馬の脚質判定と同じ考え方で、
+    逃げ・先行・持続・差し・展開待ちの5種類に分ける。
+    """
+
+    race_flows = horse.get(
+        "通過順",
+        [],
     )
 
-else:
-    fastest_same_distance_time_for_tenkai = None
-
-
-tenkai_candidates = []
-
-for horse in horses:
-    horse_no = horse["馬番"]
-    horse_name = horse["馬名"]
-    race_flows = horse["通過順"]
-
-    if horse_no == base_horse_no:
-        continue
-
-    firsts = [flow[0] for flow in race_flows if len(flow) >= 2]
-    lasts = [flow[-1] for flow in race_flows if len(flow) >= 2]
-
-    avg_first = avg_nonzero(firsts)
-    avg_last = avg_nonzero(lasts)
-    
-    score = 0
-    long_score = long_score_map.get(horse_no, 0)
-    # 直近大失速は、
-    # 展開が向いても信用しすぎない
-    heavy_collapse_tenkai_penalty = round(
-        280
-        * horse.get(
-            "直近大失速強度",
-            0
-        ),
-        1
-    )
-
-    score -= heavy_collapse_tenkai_penalty
-
-    # 距離短縮・距離延長の適性は、
-    # 展開評価だけへ加点する。
-    distance_change = (
-        calc_distance_change_score(
-            horse,
-            distance_num,
-        )
-    )
-
-    distance_change_score = (
-        distance_change["スコア"]
-    )
-
-    score += distance_change_score
-
-    # 展開馬の同距離ベストタイム
-    # ==================================================
-    # 距離延長・押し上げ型
-    #
-    # 1900m以上のレースで、
-    # 今回より100〜400m短い距離から
-    # 後方→前団まで大きく押し上げて好走した馬を評価する。
-    #
-    # 短距離の時計そのものは比較しない。
-    # 「距離延長で追走が楽になれば力を出せるタイプ」
-    # として展開評価だけで拾う。
-    # ==================================================
-
-    distance_extension_push_count = 0
-
-    if distance_num >= 1900:
-
-        for item in horse.get(
-            "距離付きタイム",
-            []
-        ):
-
-            past_distance = item.get(
-                "距離",
-                0
-            )
-
-            # 今回より100〜400m短い距離だけ
-            if not (
-                100
-                <= distance_num - past_distance
-                <= 400
-            ):
-                continue
-
-            flow = item.get(
-                "通過順",
-                []
-            )
-
-            finish = item.get(
-                "着順"
-            )
-
-            if (
-                finish is None
-                or len(flow) < 2
-            ):
-                continue
-
-            first = flow[0]
-            last = flow[-1]
-
-            # 後方から前団まで強く押し上げて好走
-            if (
-                first >= 6
-                and last <= 4
-                and first - last >= 4
-                and finish <= 5
-            ):
-                distance_extension_push_count += 1
-
-    distance_extension_push = (
-        distance_extension_push_count >= 1
-    )
-
-    # 距離延長で力を出せそうな材料として加点
-    if distance_extension_push:
-        score += 120
-    tenkai_best_time = (
-        tenkai_same_distance_time_map.get(
-            horse_no
-        )
-    )
-
-    # 同距離馬が2頭以上いる場合だけ時計を比較する
-    if fastest_same_distance_time_for_tenkai is not None:
-
-        if tenkai_best_time is not None:
-
-            diff = (
-                tenkai_best_time
-                - fastest_same_distance_time_for_tenkai
-            )
-
-            if diff >= 3.0:
-                score -= 300
-            elif diff >= 2.0:
-                score -= 220
-            elif diff >= 1.5:
-                score -= 140
-            elif diff >= 1.0:
-                score -= 80
-
-        else:
-            # 同距離実績がなくても、
-            # 距離延長で押し上げ能力を発揮できそうな馬は
-            # 一律－180にはしない
-            if distance_extension_push:
-                score -= 60
-            else:
-                score -= 180
-
-    # 同距離馬が1頭以下なら、
-    # 全馬の時計評価を行わない
-    # 着順が悪い馬は展開評価を少し下げる
-    finishes = horse.get("着順", [])
-
-    # 直近3走の好調度を展開評価へ60％反映
-    recent_form_bonus, recent_results = calc_recent_form_bonus(
-        finishes
-    )
-
-    tenkai_recent_bonus = round(
-        recent_form_bonus * 0.60,
-        1
-    )
-
-    score += tenkai_recent_bonus
-
-    if finishes:
-        # 展開馬の足切り：近走で着順が悪すぎる馬は除外
-        # 例：10,6,12,12,11 みたいな馬
-        if finishes:
-            avg_finish = sum(finishes) / len(finishes)
-            best_finish = min(finishes)
-            bad_finish_count = sum(1 for f in finishes if f >= 8)
-
-        # JRA転入馬が多いレースは足切りしない
-
-        if jra_rate < 0.7:
-
-            if avg_finish >= 8 and best_finish >= 6:
-                continue
-
-            if bad_finish_count >= 4:
-                continue
-
-        if avg_finish >= 8:
-            score -= 80
-        elif avg_finish >= 6:
-            score -= 40
-
-        if bad_finish_count >= 3:
-            score -= 80
-        elif bad_finish_count >= 2:
-            score -= 40
-
-    # 前で競馬したのに最後垂れる馬は展開評価を下げる
-    for idx, flow in enumerate(race_flows):
-
-        if len(flow) < 2:
-            continue
-
-        first = flow[0]
-        last = flow[-1]
-        finish = finishes[idx] if idx < len(finishes) else None
-
-        # 前に行けるけど大きく順位を落とす馬は展開馬から下げる
-        if first <= 3 and last - first >= 3:
-            score -= 180
-
-        elif first <= 5 and last - first >= 4:
-            score -= 140
-
-        if finish is None:
-            continue
-
-        # 4角からゴールまでに何頭に抜かれたかを評価
-        drop = finish - last
-
-        # 地方競馬では、4角から大きく順位を落とす馬は
-        # 踏ん張れない・走るのを止める可能性があるため強く減点
-        if drop >= 5:
-            score -= 260
-
-        elif drop >= 4:
-            score -= 180
-
-        elif drop >= 3:
-            score -= 110
-
-        elif drop >= 2:
-            score -= 40
-     # 軸馬タイプを大きく2系統で見る
-    # 逃げ・先行・展開待ち
-    # → 先行できて垂れない馬を相手にする
-    # 逃げ軸は前残り狙い
-    if kyakushoku_type == "逃げ":
-
-        score += front_score_map.get(horse_no, 0) * 0.9
-
-        if avg_first <= 2:
-            score += 140
-        elif avg_first <= 4:
-            score += 100
-
-        if avg_last <= 4:
-            score += 100
-
-        # 前で粘れる馬を高評価
-        if abs(avg_last - avg_first) <= 2:
-            score += 80
-
-        # 後方待機馬は評価しない
-        if avg_first >= 6:
-            score -= 120
-
-    # 先行 → 先行＋持続
-    elif kyakushoku_type == "先行":
-
-        score += front_score_map.get(horse_no, 0) * 0.8
-
-        long_score = long_score_map.get(horse_no, 0)
-        if long_score > 0:
-            score += long_score * 0.04
-
-        if avg_first <= 3:
-            score += 120
-        elif avg_first <= 5:
-            score += 90
-
-        if avg_last <= 4:
-            score += 100
-        elif avg_last <= 6:
-            score += 70
-
-    # 前圧が高い時だけ、差し・地力タイプを少し評価する
-    if front_collapse_score >= 70:
-
-        # 中団から4角までに押し上げる馬
-        if avg_first >= 5 and avg_last < avg_first and avg_last <= 6:
-            score += 50
-
-        # 地力上位馬を少しだけ上げる
-        if long_score > 0:
-            score += long_score * 0.07
-
-    # 持続 → 持続馬を展開馬にする
-    elif kyakushoku_type == "持続":
-
-        long_score = long_score_map.get(horse_no, 0)
-        if long_score > 0:
-            score += long_score * 0.25
-
-        # 持続型：前〜中団で大きく動かず脚を使える馬
-        if 3 <= avg_first <= 6 and 3 <= avg_last <= 6:
-            score += 160
-
-        # 位置取りが安定している馬を評価
-        if abs(avg_last - avg_first) <= 2:
-            score += 120
-
-        # 前すぎる逃げ馬は少し下げる
-        if avg_first <= 2:
-            score -= 80
-
-        # 後方すぎる馬も下げる
-        if avg_first >= 8:
-            score -= 80
-
-    # 差し
-    elif kyakushoku_type == "差し":
-
-        # 差し軸なら距離に関係なく差し・持続タイプを相手にする
-        long_score = long_score_map.get(horse_no, 0)
-        if long_score > 0:
-            score += long_score * 0.20
-
-        # 前〜中団で長く脚を使える馬
-        if 3 <= avg_first <= 6 and 3 <= avg_last <= 6:
-            score += 160
-
-        # 中団〜後方から差して来る馬も少し評価
-        if avg_first >= 5 and avg_last < avg_first:
-            score += 90
-
-        # 位置取りが安定している馬
-        if abs(avg_last - avg_first) <= 2:
-            score += 120
-
-        # 逃げ・先行タイプは少し減点
-        if avg_first <= 2:
-            score -= 80
-        elif avg_first <= 4:
-            score -= 40
-
-    # 展開待ち → 前で残れる先行馬を展開馬にする
-    elif kyakushoku_type == "展開待ち":
-
-        score += front_score_map.get(horse_no, 0) * 0.8
-
-        if avg_first <= 3:
-            score += 120
-        elif avg_first <= 5:
-            score += 90
-
-        if avg_last <= 4:
-            score += 100
-        elif avg_last <= 6:
-            score += 70
-
-        # 後方タイプは展開馬にしにくくする
-        if avg_first >= 7:
-            score -= 100
-    # 前崩れ警戒時だけ、後ろから押し上げる馬を少し加点
-        # 前崩れ山型理論
-    # 完全後方馬ではなく、
-    # 押し上げられる馬を少し評価する
-
-    if front_collapse_score >= 40:
-
-        for flow in race_flows[-3:]:
-
-            if len(flow) < 2:
-                continue
-
-            first = flow[0]
-            last = flow[-1]
-
-            # 少し後ろから脚を使える馬
-            if first >= 5 and last <= 6:
-                score += front_collapse_score * 0.3
-
-            # 完全後方馬は評価しない
-            if first >= 8 and last >= 8:
-                score -= 50
-        # 総合順位による加点は、
-        # 最終総合ランキング確定後に反映する
-        # ほんのり内枠補正：4角である程度前に来れる馬だけ
-    if avg_last <= 5:
-        if horse_no == 1:
-            score += 4
-        elif horse_no == 2:
-            score += 3.5
-        elif horse_no == 3:
-            score += 3
-        elif horse_no <= 5:
-            score += 1.5
-
-    # 展開馬候補も、通過順だけで脚質傾向を判定する
-    target_style = analyze_flow_style(
+    style = analyze_flow_style(
         race_flows
     )
 
-    target_front_count = (
-        target_style["前団回数"]
+    firsts = [
+        flow[0]
+        for flow in race_flows
+        if len(flow) >= 2
+    ]
+
+    lasts = [
+        flow[-1]
+        for flow in race_flows
+        if len(flow) >= 2
+    ]
+
+    avg_first = avg_nonzero(
+        firsts
     )
 
-    target_front_sustain_count = (
-        target_style["前団持続回数"]
+    avg_last = avg_nonzero(
+        lasts
     )
 
-    target_middle_sustain_count = (
-        target_style["中団持続回数"]
-    )
+    escape_rate = style[
+        "逃げ率"
+    ]
 
-    target_stable_count = (
-        target_style["持続回数"]
-    )
+    front_count = style[
+        "前団回数"
+    ]
 
-    target_push_count = (
-        target_style["押し上げ回数"]
-    )
+    stable_count = style[
+        "持続回数"
+    ]
 
-    target_escape_rate = (
-        target_style["逃げ率"]
-    )
+    push_count = style[
+        "押し上げ回数"
+    ]
 
-    target_type = "展開待ち"
-
-    # 逃げ
-    if target_escape_rate >= 0.5:
+    # ① 逃げ
+    if escape_rate >= 0.5:
         target_type = "逃げ"
 
-    # 先行
-    elif (
-        target_front_count >= 2
-        and avg_first <= 5
-        and target_front_count >= target_push_count
-    ):
+    # ② 先行
+    elif front_count >= 2:
         target_type = "先行"
 
-    # 前団持続・中団持続をまとめて持続
+    # ③ 持続
     elif (
-        target_stable_count >= 2
-        and target_stable_count >= target_push_count
+        stable_count >= 2
+        and stable_count >= push_count
     ):
         target_type = "持続"
 
-    # 差しは押し上げ経験が複数ある馬だけ
-    elif target_push_count >= 2:
+    # ④ 差し
+    elif push_count >= 2:
         target_type = "差し"
 
-    # ==================================================
-    # 裏側だけで持続の位置を使い分ける
-    #
-    # 点数は控えめにして、
-    # タイム・着順・失速評価を上回らないようにする
-    # ==================================================
+    # ⑤ 差し救済
+    elif (
+        push_count >= 1
+        and avg_first >= 4.5
+        and avg_last
+        <= avg_first - 1.5
+    ):
+        target_type = "差し"
 
-    if kyakushoku_type == "逃げ":
+    # ⑥ 持続救済
+    elif (
+        stable_count >= 1
+        and 3 <= avg_first <= 6
+        and abs(
+            avg_last
+            - avg_first
+        ) <= 1.0
+    ):
+        target_type = "持続"
 
-        # 逃げ馬の後ろで流れに乗れる前団持続を優先
-        score += (
-            target_front_sustain_count * 45
-        )
+    # ⑦ 先行救済
+    elif (
+        front_count >= 1
+        and avg_first <= 4
+        and avg_last <= 5
+    ):
+        target_type = "先行"
 
-        score += (
-            target_middle_sustain_count * 10
-        )
+    else:
+        target_type = "展開待ち"
 
-    elif kyakushoku_type == "先行":
-
-        score += (
-            target_front_sustain_count * 30
-        )
-
-        score += (
-            target_middle_sustain_count * 15
-        )
-
-    elif kyakushoku_type == "持続":
-
-        # 軸馬自身が前団持続寄り
-        if (
-            strong_front_sustain_count
-            >= strong_middle_sustain_count
-        ):
-            score += (
-                target_front_sustain_count * 35
-            )
-
-            score += (
-                target_middle_sustain_count * 15
-            )
-
-        # 軸馬自身が中団持続寄り
-        else:
-            score += (
-                target_middle_sustain_count * 35
-            )
-
-            score += (
-                target_front_sustain_count * 15
-            )
-
-    elif kyakushoku_type == "差し":
-
-        # 差し軸には中団で流れに乗れる馬を少し評価
-        score += (
-            target_middle_sustain_count * 25
-        )
-
-    # 展開待ちタイプは除外せず、減点して候補には残す
-    if target_type == "展開待ち":
-        score -= 120
-    tenkai_candidates.append({
-        "馬番": horse_no,
-        "馬名": horse_name,
-        "スコア": score,
+    return {
+        "候補脚質": target_type,
         "平均前半": avg_first,
         "平均4角": avg_last,
-        "通過順": race_flows,
-        # 最終的な展開馬選出で使用する
-        "候補脚質": target_type,
-        "前団持続回数": target_front_sustain_count,
-        "中団持続回数": target_middle_sustain_count,
-        "大失速減点": heavy_collapse_tenkai_penalty,
-        "距離変化": distance_change["種類"],
-        "距離変化点": distance_change_score,
-        "距離変化詳細": distance_change["詳細"],
-        "距離延長押上型": distance_extension_push,
-        "距離延長押上回数": distance_extension_push_count,
-        "直近3走": recent_results,
-        "直近ボーナス": tenkai_recent_bonus,
-        "展開タイム": tenkai_best_time,
-        "タイム差": (
-            tenkai_best_time - fastest_same_distance_time_for_tenkai
-            if tenkai_best_time is not None
-            and fastest_same_distance_time_for_tenkai is not None
-            else None
+        "逃げ率": escape_rate,
+        "前団回数": front_count,
+        "持続回数": stable_count,
+        "押し上げ回数": push_count,
+    }
+
+
+# 軸タイプごとに、展開相手として優先する脚質
+# 最上位の脚質が1頭でもいれば、その脚質内だけで選ぶ。
+tenkai_type_priority = {
+    "逃げ": [
+        "逃げ",
+        "先行",
+        "持続",
+    ],
+    "先行": [
+        "先行",
+        "持続",
+        "逃げ",
+    ],
+    "持続": [
+        "持続",
+        "差し",
+        "先行",
+    ],
+    "差し": [
+        "差し",
+        "持続",
+    ],
+    "展開待ち": [
+        "先行",
+        "持続",
+        "差し",
+    ],
+}
+
+
+# 軸タイプごとの前進・地力の比重
+# これは展開候補スコア表示と、同脚質内の補助比較に使う。
+tenkai_rank_weights = {
+    "逃げ": (0.70, 0.30),
+    "先行": (0.60, 0.40),
+    "持続": (0.35, 0.65),
+    "差し": (0.25, 0.75),
+    "展開待ち": (0.50, 0.50),
+}
+
+front_weight, long_weight = (
+    tenkai_rank_weights.get(
+        kyakushoku_type,
+        (0.50, 0.50),
+    )
+)
+
+
+# 共通TOP5候補を作る
+tenkai_common_candidates = []
+
+for horse_no in sorted(
+    common_top5_numbers_for_tenkai
+):
+
+    horse = next(
+        (
+            h
+            for h in horses
+            if h["馬番"] == horse_no
+        ),
+        None,
+    )
+
+    if horse is None:
+        continue
+
+    front_rank = (
+        front_rank_map_for_tenkai[
+            horse_no
+        ]
+    )
+
+    long_rank = (
+        long_rank_map_for_tenkai[
+            horse_no
+        ]
+    )
+
+    style_info = (
+        classify_tenkai_candidate(
+            horse
         )
+    )
+
+    # 1位=5点、2位=4点 ... 5位=1点
+    front_rank_point = (
+        6 - front_rank
+    )
+
+    long_rank_point = (
+        6 - long_rank
+    )
+
+    # 0〜500程度の比較用スコア
+    rank_score = (
+        front_rank_point
+        * front_weight
+        * 100
+        + long_rank_point
+        * long_weight
+        * 100
+    )
+
+    tenkai_common_candidates.append({
+        "馬番": horse_no,
+        "馬名": horse["馬名"],
+        "スコア": rank_score,
+        "前進順位": front_rank,
+        "地力順位": long_rank,
+        "順位合計": (
+            front_rank + long_rank
+        ),
+        "候補脚質": style_info[
+            "候補脚質"
+        ],
+        "平均前半": style_info[
+            "平均前半"
+        ],
+        "平均4角": style_info[
+            "平均4角"
+        ],
+        "逃げ率": style_info[
+            "逃げ率"
+        ],
+        "前団回数": style_info[
+            "前団回数"
+        ],
+        "持続回数": style_info[
+            "持続回数"
+        ],
+        "押し上げ回数": style_info[
+            "押し上げ回数"
+        ],
+        "選出元": "前進TOP5×地力TOP5",
     })
 
-tenkai_candidates = sorted(
-    tenkai_candidates,
-    key=lambda x: x["スコア"],
-    reverse=True
-)
-# ==================================================
-# 決め手不足馬を展開候補から除外
-#
-# 大きく崩れなくても勝ち切る材料が乏しい馬は、
-# 「今回展開が向く代表」には選ばない
-# ==================================================
 
-tenkai_candidates_without_decisive = [
-    h for h in tenkai_candidates
-    if h["馬番"]
-    not in decisive_shortage_horse_numbers
-]
+def tenkai_candidate_sort_key(h):
+    """
+    同じ優先脚質の中での並べ方。
 
-# 候補が残る場合だけ差し替える
-if tenkai_candidates_without_decisive:
-    tenkai_candidates = (
-        tenkai_candidates_without_decisive
+    逃げ：前進順位を最優先
+    先行：前進＋地力のバランス、同点なら前進
+    持続：地力順位を最優先
+    差し：地力順位 → 押し上げ実績 → 前進順位
+    展開待ち：前進＋地力のバランス
+    """
+
+    front_rank = h.get(
+        "前進順位",
+        99,
     )
-# ==================================================
-# 三連複2点目用に、
-# 画面の展開ランキング順を保存しておく
-#
-# 後でタイム圧などによって候補が絞られても、
-# ここでの2位・3位・4位…を使用する
-# ==================================================
-tenkai_rank_for_trio = [
-    {
-        "馬番": h["馬番"],
-        "馬名": h["馬名"],
-    }
-    for h in tenkai_candidates
-]
-if debug_mode:
 
-    with st.expander(
-        "🌊 展開ランキング",
-        expanded=False
-    ):
+    long_rank = h.get(
+        "地力順位",
+        99,
+    )
 
-        st.write(
-            f"軸タイプ：**{kyakushoku_type}** "
-            f"｜前崩れ期待度："
-            f"{front_collapse_score} "
-            f"｜前圧：{front_pressure_count}"
+    rank_sum = (
+        front_rank
+        + long_rank
+    )
+
+    if kyakushoku_type == "逃げ":
+        return (
+            front_rank,
+            long_rank,
         )
 
-        for rank, h in enumerate(
-            tenkai_candidates[:5],
-            start=1
-        ):
+    if kyakushoku_type == "先行":
+        return (
+            rank_sum,
+            front_rank,
+            long_rank,
+        )
 
-            time_diff_text = (
-                round(h["タイム差"], 2)
-                if h.get("タイム差")
-                is not None
-                else "なし"
-            )
+    if kyakushoku_type == "持続":
+        return (
+            long_rank,
+            front_rank,
+        )
 
-            st.write(
-                f"{rank}位｜"
-                f"{h['馬番']}番 {h['馬名']} "
-                f"｜展開 "
-                f"{round(h['スコア'], 1)} "
-                f"｜脚質 "
-                f"{h.get('候補脚質')} "
-                f"｜平均 "
-                f"{round(h['平均前半'], 1)}"
-                f"→"
-                f"{round(h['平均4角'], 1)} "
-                f"｜タイム差 "
-                f"{time_diff_text} "
-                f"｜大失速 "
-                f"-{h.get('大失速減点', 0)} "
-                f"｜距離変化 "
-                f"{h.get('距離変化', 'なし')} "
-                f"{h.get('距離変化点', 0)}点"
-            )
+    if kyakushoku_type == "差し":
+        return (
+            long_rank,
+            -h.get(
+                "押し上げ回数",
+                0,
+            ),
+            front_rank,
+        )
 
-if not tenkai_candidates:
-    st.error("展開馬候補が0頭になりました")
-    st.stop()
-# 850m以下で軸が逃げなら、展開馬も逃げ・先行寄りにする
-tenkai_best = tenkai_candidates[0]
-tenkai_horse = f"{tenkai_best['馬番']}番 {tenkai_best['馬名']}"
+    return (
+        rank_sum,
+        long_rank,
+        front_rank,
+    )
 
-# 念のため、軸馬と展開馬が被ったら展開2位へずらす
-if tenkai_best["馬番"] == popular_horse_num:
-    for h in tenkai_candidates:
-        if h["馬番"] != popular_horse_num:
-            tenkai_best = h
-            tenkai_horse = f"{h['馬番']}番 {h['馬名']}"
-            break
+
+# --------------------------------------------------
+# 軸タイプに合う馬を、共通TOP5から探す
+# --------------------------------------------------
+preferred_types = (
+    tenkai_type_priority.get(
+        kyakushoku_type,
+        [],
+    )
+)
+
+selected_target_type = None
+compatible_common_candidates = []
+
+for preferred_type in preferred_types:
+
+    same_type_candidates = [
+        h
+        for h in tenkai_common_candidates
+        if h.get(
+            "候補脚質"
+        ) == preferred_type
+    ]
+
+    if not same_type_candidates:
+        continue
+
+    compatible_common_candidates = sorted(
+        same_type_candidates,
+        key=tenkai_candidate_sort_key,
+    )
+
+    selected_target_type = (
+        preferred_type
+    )
+
+    break
+
+
+# 共通TOP5の中に軸タイプ適合馬がいる場合は、
+# 採用脚質を先頭にし、その後ろも軸タイプの脚質優先順で並べる。
+# これで三連複Bが被って繰り下がる時も、
+# なるべく軸タイプに合う相手から順番に使える。
+if compatible_common_candidates:
+
+    ranked_common_candidates = []
+    ranked_common_numbers = set()
+
+    for preferred_type in preferred_types:
+
+        type_group = sorted(
+            [
+                h
+                for h in tenkai_common_candidates
+                if (
+                    h.get("候補脚質")
+                    == preferred_type
+                    and h["馬番"]
+                    not in ranked_common_numbers
+                )
+            ],
+            key=tenkai_candidate_sort_key,
+        )
+
+        ranked_common_candidates.extend(
+            type_group
+        )
+
+        ranked_common_numbers.update(
+            h["馬番"]
+            for h in type_group
+        )
+
+    # 優先脚質に入らなかった馬は最後尾へ
+    leftover_candidates = sorted(
+        [
+            h
+            for h in tenkai_common_candidates
+            if h["馬番"]
+            not in ranked_common_numbers
+        ],
+        key=tenkai_candidate_sort_key,
+    )
+
+    tenkai_candidates = (
+        ranked_common_candidates
+        + leftover_candidates
+    )
+
+    tenkai_selection_source = (
+        "前進TOP5×地力TOP5"
+    )
+
+else:
+
+    # 総合ランキングがまだ未確定なので、
+    # ここでは空のまま待つ。
+    tenkai_candidates = []
+
+    tenkai_selection_source = (
+        "総合ランキング待ち"
+    )
 
 # 総合力1位を裏側で判定
 front_score_map = {h["馬番"]: h["スコア"] for h in front_candidates}
@@ -3482,7 +3192,7 @@ total_candidates = []
 # 今回800mなら800mだけを使用する。
 #
 # この表は総合評価だけで使用し、
-# タイム圧モードには影響させない。
+# この表は総合評価だけで使用する。
 # ==================================================
 total_same_distance_time_map = {}
 
@@ -3752,204 +3462,6 @@ if debug_mode:
         f"{same_distance_horse_numbers}"
     )
 # ==================================================
-# タイム圧モード
-#
-# 今回と完全に同じ距離の最速1走だけで比較する。
-#
-# 例：
-# 今回1600m戦なら1600mだけ。
-# 1400m・1800mなどはタイム圧判定には使わない。
-#
-# 同距離タイムを持つ馬が2頭以上いて、
-# 1位が2位より1.6秒以上速い時だけ発動する。
-#
-# 普通のレースでは発動せず、
-# 明らかに時計が抜けた馬がいる時だけ使う非常モード。
-# ==================================================
-time_pressure_mode = False
-
-time_pressure_horse_no = None
-time_pressure_horse_name = ""
-
-time_pressure_fastest_time = None
-time_pressure_second_time = None
-time_pressure_gap = None
-
-time_pressure_diff_map = {}
-
-time_pressure_front_diff = None
-time_pressure_tenkai_diff = None
-
-
-original_front_no = (
-    front_best["馬番"]
-    if front_best
-    else None
-)
-
-original_tenkai_no = (
-    tenkai_best["馬番"]
-    if tenkai_best
-    else None
-)
-# ==================================================
-# タイム圧専用
-#
-# 直近3走だけを見る。
-# その3走の中に今回と完全に同じ距離があれば、
-# その中の最速1走をタイム圧判定に使用する。
-#
-# 4走前・5走前の時計はタイム圧では完全に無視する。
-# ==================================================
-time_pressure_best_time_map = {}
-
-for horse in horses:
-
-    horse_no = horse["馬番"]
-
-    # 最新走から直近3走だけ
-    recent_three_pairs = horse.get(
-        "距離付きタイム",
-        []
-    )[:3]
-
-    for item in recent_three_pairs:
-
-        # 今回と完全に同じ距離だけ
-        if item.get("距離") != distance_num:
-            continue
-
-        try:
-            minutes, seconds = (
-                item["タイム"].split(":")
-            )
-
-            race_time = (
-                int(minutes) * 60
-                + float(seconds)
-            )
-
-            # 園田・姫路の競馬場差補正
-            past_place = item.get(
-                "競馬場",
-                ""
-            )
-
-            if (
-                baba_name == "園田"
-                and past_place == "姫路"
-            ):
-                race_time += 5.0
-
-            elif (
-                baba_name == "姫路"
-                and past_place == "園田"
-            ):
-                race_time -= 5.0
-
-        except (ValueError, TypeError, AttributeError):
-            continue
-
-        current_best = (
-            time_pressure_best_time_map.get(
-                horse_no
-            )
-        )
-
-        if (
-            current_best is None
-            or race_time < current_best
-        ):
-            time_pressure_best_time_map[
-                horse_no
-            ] = race_time
-# 同距離の最速1走ランキング
-time_pressure_ranking = sorted(
-    [
-        {
-            "馬番": horse_no,
-            "最速1走": race_time,
-        }
-        for horse_no, race_time
-        in time_pressure_best_time_map.items()
-    ],
-    key=lambda x: x["最速1走"]
-)
-
-# 最速馬を保存
-if time_pressure_ranking:
-
-    time_pressure_fastest_time = (
-        time_pressure_ranking[0]["最速1走"]
-    )
-
-    time_pressure_horse_no = (
-        time_pressure_ranking[0]["馬番"]
-    )
-
-    # 各馬が最速馬から何秒遅いか
-    time_pressure_diff_map = {
-        data["馬番"]: round(
-            data["最速1走"]
-            - time_pressure_fastest_time,
-            3
-        )
-        for data in time_pressure_ranking
-    }
-
-    # デバッグ確認用
-    time_pressure_front_diff = (
-        time_pressure_diff_map.get(
-            original_front_no
-        )
-    )
-
-    time_pressure_tenkai_diff = (
-        time_pressure_diff_map.get(
-            original_tenkai_no
-        )
-    )
-
-# ==================================================
-# 同距離タイム持ちが2頭以上いる時だけ判定
-#
-# 1位と2位が1.6秒以上離れていればタイム圧ON
-# ==================================================
-
-if len(time_pressure_ranking) >= 2:
-
-    time_pressure_second_time = (
-        time_pressure_ranking[1]["最速1走"]
-    )
-
-    time_pressure_gap = round(
-        time_pressure_second_time
-        - time_pressure_fastest_time,
-        3
-    )
-
-    time_pressure_mode = (
-        time_pressure_gap >= 1.6
-    )
-
-horse_data_map = {
-    h["馬番"]: h
-    for h in horses
-}
-
-if time_pressure_horse_no is not None:
-
-    time_pressure_horse_name = (
-        horse_data_map
-        .get(time_pressure_horse_no, {})
-        .get("馬名", "不明")
-    )
-
-# 全馬のタイム圧対応力
-time_pressure_response_map = {
-    h["馬番"]: calc_time_pressure_response(h)
-    for h in horses
-}
 for horse in horses:
     horse_no = horse["馬番"]
     horse_name = horse["馬名"]
@@ -4484,742 +3996,216 @@ total_candidates = sorted(
     reverse=True
 )
 # ==================================================
-# タイム圧モード時の最終候補整理
-#
-# 総合ランキングは変更しない。
-# 展開馬・先行力の代表だけ消去法で選び直す。
+# 総合ランキング確定
 # ==================================================
 
-pressure_removed_front = []
-pressure_removed_tenkai = []
-
-if time_pressure_mode:
-
-    # --------------------------------------------------
-    # 先行力候補
-    #
-    # タイム圧馬本人、または
-    # 「前成功＋強い押し上げ」の両方がある馬だけ残す。
-    # --------------------------------------------------
-
-    original_front_candidates = front_candidates[:]
-
-    original_front_map = {
-        h["馬番"]: h
-        for h in original_front_candidates
-    }
-
-    pressure_front_candidates = []
-
-    # タイム圧モードでは、
-    # 元の前進気勢ランキングに入っていない馬も対象にする
-    for horse in horses:
-        horse_no = horse["馬番"]
-
-        # 軸馬本人は相手候補にしない
-        if horse_no == popular_horse_num:
-            continue
-        # 決め手不足馬は、
-        # タイム圧モードでも先行代表へ戻さない
-        if (
-            horse_no
-            in decisive_shortage_horse_numbers
-        ):
-            continue
-        response = time_pressure_response_map.get(
-            horse_no,
-            {}
-        )
-
-        is_pressure_horse = (
-            horse_no == time_pressure_horse_no
-        )
-
-        has_both_response = response.get(
-            "両方あり",
-            False
-        )
-
-        candidate_diff = (
-            time_pressure_diff_map.get(
-                horse_no
-            )
-        )
-
-        # 最速馬本人は残す
-        if is_pressure_horse:
-            pass
-
-        # タイム不明、または最速馬より1.0秒以上遅い馬は、
-        # 前成功＋強押し上げの両方がなければ消す
-        elif (
-            candidate_diff is None
-            or candidate_diff >= 1.0
-        ):
-
-            if not has_both_response:
-
-                if horse_no in original_front_map:
-                    pressure_removed_front.append(
-                        horse_no
-                    )
-
-                continue
-
-        # 1.0秒未満の馬は、
-        # タイム圧へ対応できる範囲として候補に残す
-
-        # 元の前進気勢候補にいる場合は、
-        # そのスコアをそのまま使用
-        candidate = original_front_map.get(
-            horse_no
-        )
-
-        # 元の前進気勢ランキングにいない馬は、
-        # タイム圧モードでも先行代表には新規追加しない
-        if candidate is None:
-            continue
-
-        pressure_front_candidates.append(
-            candidate
-        )
-
-    # 候補が残った場合だけ差し替える
-    if pressure_front_candidates:
-        front_candidates = sorted(
-            pressure_front_candidates,
-            key=lambda x: x["スコア"],
-            reverse=True
-        )
-
-    front_best = front_candidates[0]
-
-    front_horse = (
-        f"{front_best['馬番']}番 "
-        f"{front_best['馬名']}"
+if not total_candidates:
+    st.error(
+        "総合ランキングを作成できませんでした"
     )
+    st.stop()
 
-    # 先行代表が変わったので、
-    # 地力表示も重複しないように選び直す
-    long_spurt_display_candidates = [
-        h for h in long_spurt_candidates
-        if (
-            h["馬番"] != front_best["馬番"]
-            and h["馬番"]
-            not in fumbaribuso_horse_numbers
-        )
-    ]
-
-    if not long_spurt_display_candidates:
-        long_spurt_display_candidates = [
-            h for h in long_spurt_candidates
-            if h["馬番"]
-            not in fumbaribuso_horse_numbers
-        ]
-
-    if not long_spurt_display_candidates:
-        long_spurt_display_candidates = (
-            long_spurt_candidates
-        )
-
-    long_best = (
-        long_spurt_display_candidates[0]
-    )
-
-    long_spurt_horse = (
-        f"{long_best['馬番']}番 "
-        f"{long_best['馬名']}"
-    )
-    # --------------------------------------------------
-    # 展開候補
-    #
-    # タイム圧馬本人は残す。
-    #
-    # その他は、
-    # ・踏ん張り不足、徐々垂れ
-    # ・前成功も強押し上げもない
-    # ・地力マイナスで両対応もない
-    # を除外する。
-    # --------------------------------------------------
-
-    pressure_tenkai_candidates = []
-
-    for h in tenkai_candidates:
-        horse_no = h["馬番"]
-
-        horse_data = horse_data_map.get(
-            horse_no,
-            {}
-        )
-
-        response = time_pressure_response_map.get(
-            horse_no,
-            {}
-        )
-
-        front_success_count = response.get(
-            "前成功回数",
-            0
-        )
-
-        strong_push_count = response.get(
-            "強押上回数",
-            0
-        )
-
-        has_front_response = (
-            front_success_count >= 1
-        )
-
-        has_push_response = (
-            strong_push_count >= 1
-        )
-
-        has_both_response = (
-            has_front_response
-            and has_push_response
-        )
-
-        is_fumbaribuso = horse_data.get(
-            "踏ん張り不足",
-            False
-        )
-
-        # 徐々垂れ判定をまだ入れていなくても
-        # .getなのでエラーにはならない
-        is_jojo_tare = horse_data.get(
-            "徐々垂れ",
-            False
-        )
-
-        remove_candidate = False
-
-        candidate_diff = (
-            time_pressure_diff_map.get(
-                horse_no
-            )
-        )
-
-        # 踏ん張り不足・徐々垂れは除外
-        if is_fumbaribuso or is_jojo_tare:
-            remove_candidate = True
-
-        # タイム不明、または最速馬より1.0秒以上遅い場合は、
-        # 前成功＋強押し上げの両方がなければ除外
-        elif (
-            candidate_diff is None
-            or candidate_diff >= 1.0
-        ):
-
-            if not has_both_response:
-                remove_candidate = True
-
-        # 最速馬との差が1.0秒未満なら、
-        # タイム圧へ対応可能な範囲として残す
-
-        if remove_candidate:
-            pressure_removed_tenkai.append(
-                horse_no
-            )
-            continue
-
-        pressure_tenkai_candidates.append(h)
-
-    # 全馬消える場合は、元候補へ戻して暴走を防ぐ
-    if pressure_tenkai_candidates:
-        tenkai_candidates = sorted(
-            pressure_tenkai_candidates,
-            key=lambda x: x["スコア"],
-            reverse=True
-        )
-# ==================================================
-# タイム圧判定デバッグ
-#
-# 発動・未発動に関係なく、
-# 判定に使った最速タイムと差を表示する
-# ==================================================
-
-# ==================================================
-# タイム圧判定デバッグ
-# ==================================================
-
-if debug_mode:
-
-    with st.expander(
-        "⏱️ タイム圧判定",
-        expanded=False
-    ):
-
-        st.write(
-            f"発動状況："
-            f"**{'ON' if time_pressure_mode else 'OFF'}**"
-        )
-
-        if time_pressure_horse_no is not None:
-
-            st.write(
-                f"最速馬："
-                f"{time_pressure_horse_no}番 "
-                f"{time_pressure_horse_name} "
-                f"｜"
-                f"{round(time_pressure_fastest_time, 2)}秒"
-            )
-            gap_text = (
-                f"{time_pressure_gap}秒"
-                if time_pressure_gap is not None
-                else "比較不可"
-            )
-
-            st.write(
-                f"同距離1位－2位差："
-                f"**{gap_text}** "
-                f"｜発動基準：1.6秒"
-            )
-            st.write(
-                f"変更前の先行代表差："
-                f"{time_pressure_front_diff}秒 "
-                f"｜展開代表差："
-                f"{time_pressure_tenkai_diff}秒"
-            )
-
-        st.markdown("#### 最速1走 上位5頭")
-
-        for rank, data in enumerate(
-            time_pressure_ranking[:5],
-            start=1
-        ):
-
-            horse_no = data["馬番"]
-
-            horse_name = (
-                horse_data_map
-                .get(horse_no, {})
-                .get("馬名", "不明")
-            )
-
-            diff = time_pressure_diff_map.get(
-                horse_no
-            )
-
-            st.write(
-                f"{rank}位｜"
-                f"{horse_no}番 {horse_name} "
-                f"｜{round(data['最速1走'], 2)}秒 "
-                f"｜差 {diff}秒"
-            )
-
-        if time_pressure_mode:
-
-            st.write(
-                f"先行候補から除外："
-                f"{pressure_removed_front}"
-            )
-
-            st.write(
-                f"展開候補から除外："
-                f"{pressure_removed_tenkai}"
-            )
-
-
-    if time_pressure_mode:
-
-        with st.expander(
-            "🔍 タイム圧対応力の詳細",
-            expanded=False
-        ):
-
-            for horse_no, response in (
-                time_pressure_response_map.items()
-            ):
-
-                horse_diff = (
-                    time_pressure_diff_map.get(
-                        horse_no
-                    )
-                )
-
-                st.write(
-                    f"{horse_no}番 "
-                    f"｜最速差 {horse_diff}秒 "
-                    f"｜前成功 "
-                    f"{response.get('前成功回数', 0)}回 "
-                    f"｜押し上げ "
-                    f"{response.get('強押上回数', 0)}回 "
-                    f"｜両対応 "
-                    f"{response.get('両方あり', False)}"
-                )
-
-                st.caption(
-                    f"{response.get('詳細', [])}"
-                )
-# 最終総合ランキングを作る
 final_total_rank_map = {
     h["馬番"]: rank
     for rank, h in enumerate(
         total_candidates,
-        start=1
+        start=1,
     )
 }
 
-# 最終総合順位を展開馬へ反映する
-for h in tenkai_candidates:
-    horse_no = h["馬番"]
-    final_total_rank = final_total_rank_map.get(
-        horse_no,
-        99
-    )
-
-    final_total_bonus = 0
-
-    # 最終総合3位以内だけ＋10
-    if final_total_rank <= 3:
-        final_total_bonus = 10
-
-    h["スコア"] += final_total_bonus
-    h["最終総合順位"] = final_total_rank
-    h["最終総合加点"] = final_total_bonus
-
-# 最終総合を反映して展開馬を並べ直す
-tenkai_candidates = sorted(
-    tenkai_candidates,
-    key=lambda x: x["スコア"],
-    reverse=True
-)
-# ==================================================
-# 踏ん張り不足の馬は、
-# 総合馬・展開馬の最終代表には選ばない
-#
-# 元のランキングには残すので、
-# 前進気勢・地力・穴候補では使用できる
-# ==================================================
-# ==================================================
-# 展開馬の最終候補
-#
-# 通常時：
-# 踏ん張り不足・徐々垂れを除外する
-#
-# タイム圧モード時：
-# タイム圧馬本人だけは、
-# 踏ん張り不足・徐々垂れでも候補に残す
-# ==================================================
-if time_pressure_mode:
-
-    tenkai_base_candidates = [
-        h for h in tenkai_candidates
-        if (
-            # 最新走大失速は、
-            # タイム圧でも展開代表には戻さない
-            h["馬番"]
-            not in latest_heavy_collapse_horse_numbers
-
-            and h["馬番"]
-            not in fumbaribuso_horse_numbers
-
-            and h["馬番"]
-            not in shissoku_heavy_horse_numbers
-
-            # タイム圧馬本人は、
-            # 徐々垂れだけなら救済
-            and (
-                h["馬番"] == time_pressure_horse_no
-                or h["馬番"]
-                not in jojo_tare_horse_numbers
-            )
-        )
-    ]
-
-else:
-
-    tenkai_base_candidates = [
-        h for h in tenkai_candidates
-        if (
-            h["馬番"]
-            not in latest_heavy_collapse_horse_numbers
-
-            and h["馬番"]
-            not in fumbaribuso_horse_numbers
-
-            and h["馬番"]
-            not in jojo_tare_horse_numbers
-
-            and h["馬番"]
-            not in shissoku_heavy_horse_numbers
-        )
-    ]
-
-# 候補が0頭になった場合は、
-# 徐々垂れだけ戻す
-if not tenkai_base_candidates:
-
-    tenkai_base_candidates = [
-        h for h in tenkai_candidates
-        if (
-            # 最新走大失速は戻さない
-            h["馬番"]
-            not in latest_heavy_collapse_horse_numbers
-
-            and h["馬番"]
-            not in fumbaribuso_horse_numbers
-
-            and h["馬番"]
-            not in shissoku_heavy_horse_numbers
-        )
-    ]
-
-# それでも0頭なら、
-# 総合上位から安全な馬を代用
-if not tenkai_base_candidates:
-
-    total_fallback = next(
-        (
-            h for h in total_candidates
-            if (
-                h["馬番"] != popular_horse_num
-
-                and h["馬番"]
-                not in latest_heavy_collapse_horse_numbers
-
-                and h["馬番"]
-                not in fumbaribuso_horse_numbers
-
-                and h["馬番"]
-                not in shissoku_heavy_horse_numbers
-            )
-        ),
-        None
-    )
-
-    if total_fallback is not None:
-
-        tenkai_base_candidates = [
-            {
-                "馬番": total_fallback["馬番"],
-                "馬名": total_fallback["馬名"],
-                "スコア": total_fallback["総合スコア"],
-                "候補脚質": "総合代替",
-            }
-        ]
-
-    else:
-
-        st.warning(
-            "⚠️ 直近大失速・踏ん張り不足ではない"
-            "展開候補がいません。"
-        )
-
-        st.stop()
-# ==================================================
-# 軸タイプに合う脚質から展開馬を選ぶ
-#
-# 第一候補の脚質がいなければ第二候補、
-# それもいなければ全候補へ戻す
-# ==================================================
-
-tenkai_type_priority = {
-    "逃げ": ["逃げ", "先行"],
-    "先行": ["先行", "持続"],
-    "差し": ["差し", "持続"],
-    "持続": ["持続", "差し"],
-    "展開待ち": ["先行", "持続"],
-}
-tenkai_final_candidates = []
-selected_target_type = "全候補"
-
-# ==================================================
-# タイム圧モード
-#
-# 持ちタイムが1.6秒以上抜けた馬がいる場合は、
-# 軸馬との脚質相性を使わない。
-#
-# タイム圧対応条件を通過した馬を、
-# 展開スコア順でそのまま採用する。
-# ==================================================
-
-if time_pressure_mode:
-
-    tenkai_final_candidates = tenkai_base_candidates
-
-    selected_target_type = "タイム圧対応"
-
-# 通常レースだけ、従来の脚質相性を使う
-else:
-
-    preferred_types = tenkai_type_priority.get(
-        kyakushoku_type,
-        []
-    )
-
-    # ==================================================
-    # 1900m以上＋前崩れ濃厚
-    #
-    # 通常の軸脚質相性に加えて、
-    # 距離延長で押し上げ能力を発揮できそうな馬も
-    # 展開代表候補として競わせる。
-    # ==================================================
-
-    if (
-        distance_num >= 1900
-        and front_collapse_score >= 70
-    ):
-
-        long_distance_candidates = [
-            h
-            for h in tenkai_base_candidates
-            if (
-                h.get("候補脚質")
-                in preferred_types
-                or h.get(
-                    "距離延長押上型",
-                    False
-                )
-            )
-        ]
-
-        if long_distance_candidates:
-
-            tenkai_final_candidates = sorted(
-                long_distance_candidates,
-                key=lambda x: x["スコア"],
-                reverse=True
-            )
-
-            selected_target_type = (
-                "前崩れ＋距離延長"
-            )
-
-    # 通常時は今までどおり
-    else:
-
-        # 脚質補正は展開ランキング上位2頭まで
-        top_tenkai_candidates = tenkai_base_candidates[:2]
-
-        for preferred_type in preferred_types:
-
-            same_type_candidates = [
-                h
-                for h in top_tenkai_candidates
-                if h.get(
-                    "候補脚質"
-                ) == preferred_type
-            ]
-
-            if same_type_candidates:
-                tenkai_final_candidates = (
-                    same_type_candidates
-                )
-
-                selected_target_type = (
-                    preferred_type
-                )
-
-                break
-
-
-    # 条件に合う馬がいなければ全候補へ戻す
-    if not tenkai_final_candidates:
-        tenkai_final_candidates = (
-            tenkai_base_candidates
-        )
-
-# 展開馬を最終決定
-tenkai_best = tenkai_final_candidates[0]
-
-tenkai_horse = (
-    f"{tenkai_best['馬番']}番 "
-    f"{tenkai_best['馬名']}"
-)
-# ==================================================
-# 南関＋逃げ・先行軸 特例
-#
-# 浦和・船橋・大井・川崎で、
-# 軸タイプが「逃げ」または「先行」の場合だけ発動。
-#
-# 通常の展開評価より前進気勢を優先し、
-# 前進気勢最上位の相手馬を展開馬にする。
-#
-# ・軸馬自身は飛ばす
-# ・踏ん張り不足は無視
-# ・直近大失速も無視
-#
-# 南関以外、差し・持続・展開待ち軸では発動しない。
-# ==================================================
-nankan_tracks_for_tenkai = {
-    "浦和",
-    "船橋",
-    "大井",
-    "川崎",
-}
-
-if (
-    baba_name in nankan_tracks_for_tenkai
-    and kyakushoku_type in ["逃げ", "先行"]
-):
-
-    nankan_front_tenkai = next(
-        (
-            h
-            for h in nankan_front_candidates
-            if (
-                h["馬番"] != popular_horse_num
-
-                # 大失速減点を戻した状態でも
-                # 前進気勢がある馬だけ
-                and (
-                    h["スコア"]
-                    + h.get("大失速減点", 0)
-                ) > 0
-            )
-        ),
-        None
-    )
-
-    if nankan_front_tenkai is not None:
-
-        tenkai_best = dict(
-            nankan_front_tenkai
-        )
-
-        tenkai_horse = (
-            f"{tenkai_best['馬番']}番 "
-            f"{tenkai_best['馬名']}"
-        )
-# タイム圧馬本人は、
-# 踏ん張り不足判定でも総合代表候補に残す
-
-if time_pressure_mode:
-
-    total_final_candidates = [
-        h for h in total_candidates
-        if (
-            h["馬番"] not in shissoku_heavy_horse_numbers
-            and (
-                h["馬番"] == time_pressure_horse_no
-                or h["馬番"] not in fumbaribuso_horse_numbers
-            )
-        )
-    ]
-
-else:
-
-    total_final_candidates = [
-        h for h in total_candidates
-        if (
-            h["馬番"] not in fumbaribuso_horse_numbers
-            and h["馬番"] not in shissoku_heavy_horse_numbers
-        )
-    ]
-
-# 全馬が対象になった場合のエラー回避
-if not total_final_candidates:
-    total_final_candidates = total_candidates
-
-# 総合馬を最終決定
-total_best = total_final_candidates[0]
+# 総合ランキング1位をそのまま代表馬にする
+# 踏ん張り不足・失速不安だけで代表から消さない。
+total_best = total_candidates[0]
 
 total_best_horse = (
     f"{total_best['馬番']}番 "
     f"{total_best['馬名']}"
 )
+
+
+# ==================================================
+# 展開馬の最終決定
+#
+# 前進TOP5×地力TOP5の共通候補に、
+# 軸タイプへ合う馬がいた場合はその候補を採用。
+#
+# 共通候補が0頭、または軸タイプへ合う馬が0頭なら、
+# 総合ランキング上位から軸馬自身を飛ばして採用する。
+# ==================================================
+
+if tenkai_candidates:
+
+    # 共通TOP5方式で決定
+    for h in tenkai_candidates:
+        h["最終総合順位"] = (
+            final_total_rank_map.get(
+                h["馬番"],
+                99,
+            )
+        )
+
+    tenkai_selection_source = (
+        "前進TOP5×地力TOP5"
+    )
+
+else:
+
+    # --------------------------------------------------
+    # 共通TOP5に適合馬がいない場合だけ総合へフォールバック
+    # --------------------------------------------------
+    tenkai_candidates = []
+
+    for rank, h in enumerate(
+        total_candidates,
+        start=1,
+    ):
+
+        # 軸馬自身は展開馬にしない
+        if h["馬番"] == popular_horse_num:
+            continue
+
+        tenkai_candidates.append({
+            "馬番": h["馬番"],
+            "馬名": h["馬名"],
+            "スコア": h[
+                "総合スコア"
+            ],
+            "前進順位": (
+                front_rank_map_for_tenkai.get(
+                    h["馬番"],
+                    99,
+                )
+            ),
+            "地力順位": (
+                long_rank_map_for_tenkai.get(
+                    h["馬番"],
+                    99,
+                )
+            ),
+            "順位合計": 198,
+            "候補脚質": "総合代替",
+            "平均前半": 99,
+            "平均4角": 99,
+            "押し上げ回数": 0,
+            "選出元": "総合ランキング",
+            "最終総合順位": rank,
+        })
+
+    selected_target_type = (
+        "総合代替"
+    )
+
+    tenkai_selection_source = (
+        "総合ランキング"
+    )
+
+
+if not tenkai_candidates:
+    st.error(
+        "展開馬候補を作成できませんでした"
+    )
+    st.stop()
+
+
+# 展開馬を最終決定
+tenkai_final_candidates = (
+    tenkai_candidates
+)
+
+tenkai_best = (
+    tenkai_final_candidates[0]
+)
+
+tenkai_horse = (
+    f"{tenkai_best['馬番']}番 "
+    f"{tenkai_best['馬名']}"
+)
+
+
+# 三連複Bの繰り下げ候補にも、
+# 最終の展開ランキング順をそのまま使う。
+tenkai_rank_for_trio = [
+    {
+        "馬番": h["馬番"],
+        "馬名": h["馬名"],
+    }
+    for h in tenkai_candidates
+]
+
+
+if debug_mode:
+
+    with st.expander(
+        "🌊 新・展開馬ランキング",
+        expanded=False,
+    ):
+
+        st.write(
+            f"軸タイプ：**{kyakushoku_type}** "
+            f"｜選出元：**{tenkai_selection_source}** "
+            f"｜採用脚質："
+            f"**{selected_target_type or 'なし'}**"
+        )
+
+        st.write(
+            "前進TOP5："
+            + "、".join(
+                f"{h['馬番']}番"
+                for h in front_top5_for_tenkai
+            )
+        )
+
+        st.write(
+            "地力TOP5："
+            + "、".join(
+                f"{h['馬番']}番"
+                for h in long_top5_for_tenkai
+            )
+        )
+
+        common_numbers_text = (
+            "、".join(
+                f"{horse_no}番"
+                for horse_no in sorted(
+                    common_top5_numbers_for_tenkai
+                )
+            )
+            if common_top5_numbers_for_tenkai
+            else "なし"
+        )
+
+        st.write(
+            f"共通TOP5：{common_numbers_text}"
+        )
+
+        for rank, h in enumerate(
+            tenkai_candidates[:5],
+            start=1,
+        ):
+
+            front_rank_text = (
+                h.get("前進順位")
+                if h.get("前進順位", 99) <= 5
+                else "圏外"
+            )
+
+            long_rank_text = (
+                h.get("地力順位")
+                if h.get("地力順位", 99) <= 5
+                else "圏外"
+            )
+
+            st.write(
+                f"{rank}位｜"
+                f"{h['馬番']}番 {h['馬名']} "
+                f"｜脚質 {h.get('候補脚質', '不明')} "
+                f"｜前進 {front_rank_text}位 "
+                f"｜地力 {long_rank_text}位 "
+                f"｜総合 "
+                f"{h.get('最終総合順位', 99)}位 "
+                f"｜選出元 {h.get('選出元', '')}"
+            )
+
 # ==================================================
 # JRA転入馬の2段階警告
 #
@@ -5248,10 +4234,6 @@ if jra_count >= 1:
         tenkai_best["馬番"],
     }
 
-    if time_pressure_horse_no is not None:
-        key_role_numbers.add(
-            time_pressure_horse_no
-        )
 
     jra_key_role_numbers = (
         key_role_numbers
@@ -5733,60 +4715,8 @@ for h in horses:
         h["馬番"],
         h["馬名"]
     )
-# ==================================================
-# 南関＋先行・逃げ軸
-#
-# 南関では前残りを意識して、
-# 軸が先行・逃げタイプなら
-# 抑え1を前進気勢2位以降から優先する
-#
-# 軸・総合・展開・地力・先行代表と被る馬は飛ばす
-# ==================================================
-nankan_tracks = {
-    "浦和",
-    "船橋",
-    "大井",
-    "川崎",
-}
-
-if (
-    baba_name in nankan_tracks
-    and kyakushoku_type in ["先行", "逃げ"]
-):
-
-    main_used_numbers = {
-        popular_horse_num,
-        total_best["馬番"],
-        tenkai_best["馬番"],
-        long_best["馬番"],
-        front_best["馬番"],
-    }
-
-    nankan_osae = next(
-        (
-            h
-            for h in front_candidates[1:]
-            if h["馬番"] not in main_used_numbers
-        ),
-        None
-    )
-
-    if nankan_osae is not None:
-
-        nankan_osae_simple = {
-            "馬番": nankan_osae["馬番"],
-            "馬名": nankan_osae["馬名"],
-        }
-
-        # 前進気勢上位馬を抑え1へ移動
-        # 元の穴候補に同じ馬がいれば重複削除
-        ana_fallback = [
-            nankan_osae_simple
-        ] + [
-            h
-            for h in ana_fallback
-            if h["馬番"] != nankan_osae["馬番"]
-        ]
+# 南関専用の抑え1強制変更は廃止。
+# 抑え馬は通常の抑え候補順位をそのまま使用する。
 
 # 念のため候補0頭なら停止
 if not ana_fallback:
@@ -6048,10 +4978,10 @@ handwritten_bet_templates = {
         ],
         "ワイド": [
             ["A", "B"],
-            ["A", "E"],
+            ["A", "I"],
         ],
         "浮き輪": [
-            ["D", "G"],
+            ["D", "I"],
         ],
     },
     "先行": {
@@ -6061,7 +4991,7 @@ handwritten_bet_templates = {
         ],
         "ワイド": [
             ["A", "B"],
-            ["A", "F"],
+            ["A", "G"],
         ],
         "浮き輪": [
             ["D", "E"],
@@ -6542,6 +5472,19 @@ def make_unique_trio_bets(
     result = []
     used_trio_keys = set()
 
+    # 後詰めFと展開Bが同じ馬なら、
+    # 三連複の重複解消時にその馬を優先して残す
+    protected_fb_number = None
+
+    if (
+        f_pool
+        and b_pool
+        and get_num(f_pool[0]) == get_num(b_pool[0])
+    ):
+        protected_fb_number = get_num(
+            f_pool[0]
+        )
+
     # 三連複1点目のF置き換え専用
     # all_bet_poolは入れず、本当の先行候補だけを使う
     first_trio_front_pool = unique_texts(
@@ -6677,6 +5620,15 @@ def make_unique_trio_bets(
             current_number = get_num(
                 current_horse
             )
+
+            # 後詰めFと展開Bが一致した馬は、
+            # 重複解消でも動かさず優先して残す
+            if (
+                protected_fb_number is not None
+                and current_number
+                == protected_fb_number
+            ):
+                continue
 
             # 現在選ばれている馬が、
             # 候補プールの何番目かを確認
