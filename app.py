@@ -144,6 +144,16 @@ def get_distance_aware_front_data(
                 <= 1000
             )
 
+        elif current_distance == 1100:
+
+            # 門別1100mなど。
+            # 同距離1100mを中心に、1000〜1200mまでを近似帯として扱う。
+            return (
+                1000
+                <= past_distance
+                <= 1200
+            )
+
         elif current_distance <= 1400:
 
             return (
@@ -588,6 +598,23 @@ st.set_page_config(
 st.title("🐎 地方競馬AI")
 debug_mode = st.checkbox("デバッグ表示")
 
+# ==================================================
+# 全R一括検証用の内部状態
+# ※通常分析のUIやURLは触らない
+# ==================================================
+if "batch_mode" not in st.session_state:
+    st.session_state.batch_mode = False
+if "batch_race_no" not in st.session_state:
+    st.session_state.batch_race_no = 1
+if "batch_last_race" not in st.session_state:
+    st.session_state.batch_last_race = 12
+if "batch_results" not in st.session_state:
+    st.session_state.batch_results = []
+if "batch_date" not in st.session_state:
+    st.session_state.batch_date = ""
+if "batch_baba_code" not in st.session_state:
+    st.session_state.batch_baba_code = ""
+
 if "race_url" not in st.session_state:
     st.session_state.race_url = ""
 
@@ -595,6 +622,7 @@ url = st.text_input(
     "出馬表URLを入力してください",
     value=st.session_state.race_url
 )
+
 
 col1, col2 = st.columns(2)
 
@@ -605,15 +633,50 @@ if "analyzed" not in st.session_state:
 with col2:
     clear_url = st.button("🗑 URL削除")
 if analyze:
+    # 通常分析を押した時は、以前の一括検証状態を必ず解除する
+    st.session_state.batch_mode = False
+    st.session_state.batch_race_no = 1
     st.session_state.analyzed = True
 if clear_url:
     st.session_state.race_url = ""
     st.session_state.analyzed = False
+    st.session_state.batch_mode = False
+    st.session_state.batch_race_no = 1
     st.rerun()
 
 st.session_state.race_url = url
 if not st.session_state.analyzed:
     st.stop()
+
+# ==================================================
+# 一括検証実行中だけ内部URLを差し替える
+# 通常の「分析開始」では絶対に差し替えない
+# ==================================================
+if st.session_state.batch_mode:
+
+    if (
+        not st.session_state.batch_date
+        or not st.session_state.batch_baba_code
+    ):
+        # 古いセッション状態などで壊れた一括モードが残った場合は解除
+        st.session_state.batch_mode = False
+        st.session_state.batch_race_no = 1
+
+    else:
+        current_batch_race = st.session_state.batch_race_no
+        batch_date_encoded = (
+            st.session_state.batch_date
+            .replace("/", "%2F")
+        )
+
+        url = (
+            "https://www.keiba.go.jp/"
+            "KeibaWeb/TodayRaceInfo/DebaTable"
+            f"?k_raceDate={batch_date_encoded}"
+            f"&k_raceNo={current_batch_race}"
+            f"&k_babaCode={st.session_state.batch_baba_code}"
+        )
+
 
 if not url:
     st.warning("出馬表URLを入力してください")
@@ -819,7 +882,7 @@ for i, horse in enumerate(real_horses, start=1):
 
         d_match = re.search(
             r"(?:右|左|芝|ダ)\s*"
-            r"(800|820|850|900|920|1000|1200|1230|1300|1400|1500|1580|1600|1650|1700|1800|1870|1900|2000|2100|2200)",
+            r"(800|820|850|900|920|1000|1100|1200|1230|1300|1400|1500|1580|1600|1650|1700|1800|1870|1900|2000|2100|2200)",
             block
         )
         if not d_match:
@@ -1146,6 +1209,12 @@ for i, horse in enumerate(real_horses, start=1):
 
             distance_ok = (
                 800 <= past_distance <= 1000
+            )
+
+        elif distance_num == 1100:
+
+            distance_ok = (
+                1000 <= past_distance <= 1200
             )
 
         elif distance_num <= 1400:
@@ -2359,13 +2428,94 @@ st.info(
     "買い目を表示します。"
 )
 
-popular_horse_num = st.number_input(
-    "軸馬の馬番",
-    min_value=1,
-    max_value=len(real_horses),
-    value=1,
-    step=1
-)
+# ==================================================
+# 軸馬指定
+#
+# 通常：手入力
+# 一括検証：NAR出馬表の「1人気」を自動取得
+# ==================================================
+
+auto_first_favorite_num = None
+
+if st.session_state.batch_mode:
+
+    # 各馬の取得テキスト内にある "(1人気)" を探す
+    for h in horses:
+
+        horse_text_for_popularity = h.get(
+            "取得テキスト",
+            "",
+        )
+
+        if re.search(
+            r"\(\s*1人気\s*\)",
+            horse_text_for_popularity,
+        ):
+            auto_first_favorite_num = h["馬番"]
+            break
+
+    # 表記ゆれ対策：全ページ文字列から馬名近辺も確認
+    if auto_first_favorite_num is None:
+
+        for h in horses:
+
+            horse_name = re.escape(
+                h["馬名"]
+            )
+
+            popularity_pattern = (
+                horse_name
+                + r".{0,250}?"
+                + r"\(\s*1人気\s*\)"
+            )
+
+            if re.search(
+                popularity_pattern,
+                page_text,
+                flags=re.S,
+            ):
+                auto_first_favorite_num = h["馬番"]
+                break
+
+    if auto_first_favorite_num is None:
+
+        st.session_state.batch_results.append({
+            "R": int(race_no),
+            "状態": "失敗",
+            "理由": "1番人気を自動取得できませんでした",
+            "投資": 0,
+            "払戻": 0,
+        })
+
+        if (
+            st.session_state.batch_race_no
+            < st.session_state.batch_last_race
+        ):
+            st.session_state.batch_race_no += 1
+            st.rerun()
+
+        else:
+            st.session_state.batch_mode = False
+            st.rerun()
+
+    popular_horse_num = int(
+        auto_first_favorite_num
+    )
+
+    st.success(
+        f"自動軸：{popular_horse_num}番 "
+        "（NAR 1番人気）"
+    )
+
+else:
+
+    popular_horse_num = st.number_input(
+        "軸馬の馬番",
+        min_value=1,
+        max_value=len(real_horses),
+        value=1,
+        step=1
+    )
 
 # 出走取消・競走除外馬は軸にできない
 active_horse_numbers = {
@@ -3687,6 +3837,263 @@ if (
     # それ以外は後方型として差し
     else:
         kyakushoku_type = "差し"
+
+
+# ==================================================
+# ③ 1番人気 × 持ちタイム上位の「展開待ち」救済
+#
+# 目的：
+# 1番人気で、今回距離の持ちタイムがメンバー上位なのに、
+# 通過順の回数条件だけで「展開待ち」へ落ちる馬を救済する。
+#
+# 重要：
+# ・従来判定で「展開待ち」の時だけ発動
+# ・NAR出馬表で実際に「1人気」と表示される馬だけ
+# ・最高タイムがメンバー2位以内の馬だけ
+# ・どの脚質へ入れるかは、速い時計を出した実走の通過順で決める
+#
+# これにより、
+# 「タイムが速いから全部先行」にするのではなく、
+# 持ち時計は救済資格、脚質は実際の位置取りで判定する。
+# ==================================================
+
+if kyakushoku_type == "展開待ち":
+
+    strong_text = strong_data.get(
+        "取得テキスト",
+        ""
+    )
+
+    # NAR出馬表の「(1人気)」を確認。
+    # 軸番号を手入力しただけの馬には無条件で発動させない。
+    is_first_favorite = bool(
+        re.search(
+            r"\(\s*1人気\s*\)",
+            strong_text
+        )
+    )
+
+    # 今回距離の「最高タイム」ランキング。
+    # NARの最高タイム欄は当距離成績に対応しているため、
+    # 同一レース内では秒数が小さいほど上位とする。
+    valid_best_times = sorted(
+        [
+            (
+                h.get("最高タイム秒"),
+                h["馬番"],
+            )
+            for h in horses
+            if h.get("最高タイム秒") is not None
+        ],
+        key=lambda x: (
+            x[0],
+            x[1],
+        )
+    )
+
+    best_time_rank_map = {
+        horse_no: rank
+        for rank, (_, horse_no) in enumerate(
+            valid_best_times,
+            start=1,
+        )
+    }
+
+    strong_best_time_rank = (
+        best_time_rank_map.get(
+            popular_horse_num,
+            99,
+        )
+    )
+
+    # 最高タイム1〜2位だけ救済対象。
+    is_time_top2 = (
+        strong_best_time_rank <= 2
+    )
+
+    if (
+        is_first_favorite
+        and is_time_top2
+    ):
+
+        # ------------------------------------------
+        # 今回距離に近い過去走から、
+        # 最も速い走破タイムのレースを探す。
+        #
+        # 1100mは1000〜1200mを近似帯、
+        # それ以外は既存距離帯に合わせる。
+        # ------------------------------------------
+        comparable_time_runs = []
+
+        for item in strong_data.get(
+            "距離付きタイム",
+            []
+        ):
+
+            past_distance = item.get(
+                "距離",
+                0,
+            )
+
+            time_text = item.get(
+                "タイム",
+                "",
+            )
+
+            flow = item.get(
+                "通過順",
+                [],
+            )
+
+            finish = item.get(
+                "着順"
+            )
+
+            if (
+                not past_distance
+                or not time_text
+                or len(flow) < 2
+            ):
+                continue
+
+            if distance_num <= 1000:
+
+                time_distance_ok = (
+                    800
+                    <= past_distance
+                    <= 1000
+                )
+
+            elif distance_num == 1100:
+
+                time_distance_ok = (
+                    1000
+                    <= past_distance
+                    <= 1200
+                )
+
+            elif distance_num <= 1400:
+
+                time_distance_ok = (
+                    1200
+                    <= past_distance
+                    <= 1400
+                )
+
+            else:
+
+                time_distance_ok = (
+                    abs(
+                        past_distance
+                        - distance_num
+                    )
+                    <= 300
+                )
+
+            if not time_distance_ok:
+                continue
+
+            time_seconds = (
+                parse_time_to_seconds(
+                    time_text
+                )
+            )
+
+            if time_seconds is None:
+                continue
+
+            comparable_time_runs.append({
+                "タイム秒": time_seconds,
+                "距離": past_distance,
+                "通過順": flow,
+                "着順": finish,
+            })
+
+        if comparable_time_runs:
+
+            best_time_run = min(
+                comparable_time_runs,
+                key=lambda x: x[
+                    "タイム秒"
+                ]
+            )
+
+            best_flow = best_time_run[
+                "通過順"
+            ]
+
+            best_finish = best_time_run[
+                "着順"
+            ]
+
+            best_first = best_flow[0]
+            best_last = best_flow[-1]
+
+            # --------------------------------------
+            # 持ち時計を出したレースの走り方でタイプ分け
+            # --------------------------------------
+
+            # 逃げ：
+            # 速い時計を1番手から出している。
+            if (
+                best_first == 1
+                and best_last <= 2
+            ):
+                kyakushoku_type = "逃げ"
+
+            # 先行：
+            # 速い時計を4番手以内から出し、
+            # 4角でも5番手以内を保っている。
+            elif (
+                best_first <= 4
+                and best_last <= 5
+            ):
+                kyakushoku_type = "先行"
+
+            # 差し：
+            # 中団以降から2つ以上押し上げて
+            # 速い時計を出している。
+            elif (
+                best_first >= 5
+                and best_last
+                    <= best_first - 2
+            ):
+                kyakushoku_type = "差し"
+
+            # 持続：
+            # 3〜7番手付近で大きく位置を変えず
+            # 速い時計を出している。
+            elif (
+                3 <= best_first <= 7
+                and abs(
+                    best_last
+                    - best_first
+                ) <= 1
+            ):
+                kyakushoku_type = "持続"
+
+            # どの型にも明確に入らない場合でも、
+            # 1番人気＋持ち時計上位を展開待ちのままにしない。
+            # 好走実績があれば位置取りに応じて保守的に振り分ける。
+            elif (
+                best_finish is not None
+                and best_finish <= 3
+            ):
+
+                if best_first <= 4:
+                    kyakushoku_type = "先行"
+
+                elif best_last < best_first:
+                    kyakushoku_type = "差し"
+
+                else:
+                    kyakushoku_type = "持続"
+
+            else:
+                # 時計上位でも脚質材料が弱い時は、
+                # 最も中立的な「持続」へ救済する。
+                kyakushoku_type = "持続"
+
 
 if debug_mode:
 
@@ -7598,103 +8005,12 @@ for bet in float_bets:
         f"{bet[0]} - {bet[1]}"
     )
 
-# ==================================================
-# 📋 ChatGPT用コピー
-#
-# 予想ロジックには一切触れず、
-# 最終的に決まった記号・買い目だけを
-# ChatGPTへ貼り付けやすい形で出力する。
-#
-# st.code() の右上に出るコピーボタンから
-# スマホでも一発コピー可能。
-# ==================================================
-
-def bet_to_numbers_text(bet):
-    """買い目の馬名表示を、馬番だけのハイフン区切りへ変換する。"""
-    return "-".join(
-        str(get_num(horse_text))
-        for horse_text in bet
-    )
-
-
-chatgpt_lines = [
-    f"{race_date} {baba_name}{race_no}R",
-    f"軸：{popular_horse_num}番",
-    f"軸タイプ：{kyakushoku_type}",
-    "",
-    "【最終記号】",
-]
-
-# A〜Iのうち、実際に存在する記号だけ出力
-for symbol in ["A", "B", "C", "D", "E", "F", "G", "I"]:
-    horse_text = final_bet_symbols.get(symbol)
-
-    if horse_text:
-        role_name = alphabet_role_names.get(
-            symbol,
-            symbol
-        )
-
-        chatgpt_lines.append(
-            f"{symbol}（{role_name}）="
-            f"{get_num(horse_text)}番"
-        )
-
-chatgpt_lines.extend([
-    "",
-    "【買い目】",
-])
-
-for index, bet in enumerate(
-    trio_bets,
-    start=1
-):
-    chatgpt_lines.append(
-        f"三連複{index}："
-        f"{bet_to_numbers_text(bet)}"
-    )
-
-for index, bet in enumerate(
-    wide_bets,
-    start=1
-):
-    chatgpt_lines.append(
-        f"ワイド{index}："
-        f"{bet_to_numbers_text(bet)}"
-    )
-
-for index, bet in enumerate(
-    float_bets,
-    start=1
-):
-    label = (
-        "浮き輪"
-        if len(float_bets) == 1
-        else f"浮き輪{index}"
-    )
-
-    chatgpt_lines.append(
-        f"{label}："
-        f"{bet_to_numbers_text(bet)}"
-    )
-
-chatgpt_text = "\n".join(
-    chatgpt_lines
-)
-
-st.markdown("### 📋 ChatGPT用コピー")
 st.caption(
-    "右上のコピーボタンを押して、そのままChatGPTへ貼り付けてください。"
+    "※買い目の一例です。最終判断はオッズや馬場を見て調整してください。"
 )
-
-st.code(
-    chatgpt_text,
-    language=None
-)
-
 
 # ==================================================
-# 📊 結果自動取得・回収率計算
+# 📊 公式結果自動取得・回収率計算
 #
 # 出馬表URLの DebaTable を RaceMarkTable に置き換え、
 # 同じ開催日・競馬場・R番号の公式結果ページを自動取得する。
@@ -7714,38 +8030,22 @@ def normalize_bet_numbers(bet):
     )
 
 
-def yen_to_int(text):
-    """1,400円 → 1400"""
-    if not text:
-        return None
-
-    m = re.search(
-        r"([\d,]+)\s*円",
-        text,
-    )
-
-    if not m:
-        return None
-
-    return int(
-        m.group(1).replace(",", "")
-    )
-
-
-def extract_race_result_and_payouts(result_soup):
+def extract_race_result_and_payouts(
+    result_soup
+):
     """
     NAR RaceMarkTable から
     ・1〜3着馬番
-    ・ワイド3通りの払戻
-    ・三連複の払戻
+    ・ワイド払戻
+    ・三連複払戻
     を取得する。
     """
+
+    top3 = {}
 
     # ------------------------------------------
     # 1〜3着
     # ------------------------------------------
-    top3 = {}
-
     for row in result_soup.find_all("tr"):
 
         cells = [
@@ -7758,28 +8058,32 @@ def extract_race_result_and_payouts(result_soup):
             )
         ]
 
-        # 成績表は
-        # 着順 / 枠 / 馬番 / 馬名 ...
         if len(cells) < 4:
             continue
 
+        # 通常の成績表：
+        # 着順 / 枠番 / 馬番 / 馬名 ...
         if (
             cells[0] in {"1", "2", "3"}
             and cells[1].isdigit()
             and cells[2].isdigit()
         ):
-            finish = int(cells[0])
-            horse_no = int(cells[2])
+            finish = int(
+                cells[0]
+            )
+
+            horse_no = int(
+                cells[2]
+            )
 
             if finish not in top3:
-                top3[finish] = horse_no
+                top3[
+                    finish
+                ] = horse_no
 
         if len(top3) == 3:
             break
 
-    # ------------------------------------------
-    # 払戻
-    # ------------------------------------------
     result_text = result_soup.get_text(
         " ",
         strip=True,
@@ -7788,8 +8092,9 @@ def extract_race_result_and_payouts(result_soup):
     wide_payouts = {}
     trio_payouts = {}
 
-    # ワイドは通常3通り。
-    # 「ワイド」から「三連複」までの区間だけを見る。
+    # ------------------------------------------
+    # ワイド
+    # ------------------------------------------
     wide_section_match = re.search(
         r"ワイド\s+(.*?)\s+三連複",
         result_text,
@@ -7819,11 +8124,18 @@ def extract_race_result_and_payouts(result_soup):
             )
 
             if len(nums) == 2:
-                wide_payouts[nums] = int(
-                    payout.replace(",", "")
+                wide_payouts[
+                    nums
+                ] = int(
+                    payout.replace(
+                        ",",
+                        "",
+                    )
                 )
 
+    # ------------------------------------------
     # 三連複
+    # ------------------------------------------
     trio_match = re.search(
         r"三連複\s+"
         r"(\d{1,2}\s*-\s*\d{1,2}\s*-\s*\d{1,2})"
@@ -7844,8 +8156,11 @@ def extract_race_result_and_payouts(result_soup):
         )
 
         if len(nums) == 3:
-            trio_payouts[nums] = int(
-                trio_match.group(2).replace(
+            trio_payouts[
+                nums
+            ] = int(
+                trio_match.group(2)
+                .replace(
                     ",",
                     "",
                 )
@@ -7860,8 +8175,11 @@ def extract_race_result_and_payouts(result_soup):
 
 st.markdown("### 📊 結果・回収率")
 
-check_result = st.button(
-    "🏁 結果を取得して回収率を計算"
+check_result = (
+    st.button(
+        "🏁 結果を取得して回収率を計算"
+    )
+    or st.session_state.batch_mode
 )
 
 if check_result:
@@ -7871,7 +8189,6 @@ if check_result:
         "/RaceMarkTable?",
     )
 
-    # 万一URL形式が少し違う場合も対応
     if result_url == url:
         result_url = url.replace(
             "DebaTable",
@@ -7879,16 +8196,64 @@ if check_result:
         )
 
     try:
-        result_response = requests.get(
-            result_url,
-            timeout=15,
-            headers={
-                "User-Agent": (
-                    "Mozilla/5.0 "
-                    "(compatible; KappaKeibaTool/1.0)"
+
+        # --------------------------------------
+        # 結果ページ取得
+        # 一時的な429/5xxや反映遅延に備えて最大3回まで再試行
+        # --------------------------------------
+        session = requests.Session()
+
+        result_response = None
+        last_error = None
+
+        for retry_index in range(3):
+
+            try:
+                result_response = session.get(
+                    result_url,
+                    timeout=15,
+                    headers={
+                        "User-Agent": (
+                            "Mozilla/5.0 "
+                            "(Windows NT 10.0; Win64; x64) "
+                            "AppleWebKit/537.36 "
+                            "(KHTML, like Gecko) "
+                            "Chrome/151 Safari/537.36"
+                        ),
+                        "Referer": url,
+                    },
                 )
-            },
-        )
+
+                # 一時的な混雑・更新待ちなら少し待って再取得
+                if result_response.status_code in [
+                    429,
+                    500,
+                    502,
+                    503,
+                    504,
+                ]:
+                    import time
+                    time.sleep(
+                        1.5 + retry_index
+                    )
+                    continue
+
+                result_response.raise_for_status()
+                break
+
+            except requests.RequestException as e:
+                last_error = e
+
+                if retry_index < 2:
+                    import time
+                    time.sleep(
+                        1.5 + retry_index
+                    )
+
+        if result_response is None:
+            raise requests.RequestException(
+                f"結果ページ取得失敗: {last_error}"
+            )
 
         result_response.raise_for_status()
 
@@ -7903,43 +8268,64 @@ if check_result:
             )
         )
 
-        top3 = result_data["着順"]
-        wide_payouts = (
-            result_data["ワイド払戻"]
-        )
-        trio_payouts = (
-            result_data["三連複払戻"]
-        )
+        top3 = result_data[
+            "着順"
+        ]
 
-        # 結果がまだ確定していない時
-        if (
-            len(top3) < 3
-            or not wide_payouts
-            or not trio_payouts
-        ):
+        wide_payouts = result_data[
+            "ワイド払戻"
+        ]
+
+        trio_payouts = result_data[
+            "三連複払戻"
+        ]
+
+        if len(top3) < 3:
+
             st.warning(
-                "まだ公式結果・払戻が確定していないか、"
-                "結果ページを正常に読み取れませんでした。"
+                "着順がまだ確定していないか、"
+                "結果ページの着順を正常に読み取れませんでした。"
             )
 
-            with st.expander(
-                "取得状況を確認",
-                expanded=False,
-            ):
-                st.write(
-                    f"結果URL：{result_url}"
-                )
-                st.write(
-                    f"1〜3着：{top3}"
-                )
-                st.write(
-                    f"ワイド払戻："
-                    f"{wide_payouts}"
-                )
-                st.write(
-                    f"三連複払戻："
-                    f"{trio_payouts}"
-                )
+        elif (
+            not wide_payouts
+            or not trio_payouts
+        ):
+
+            st.warning(
+                "着順は取得できましたが、払戻欄がまだ反映途中か、"
+                "払戻表記を正常に読み取れませんでした。"
+            )
+
+            st.info(
+                "数秒後にもう一度 "
+                "『結果を取得して回収率を計算』を押してください。"
+            )
+
+            if debug_mode:
+
+                with st.expander(
+                    "結果取得デバッグ",
+                    expanded=False,
+                ):
+
+                    st.write(
+                        f"結果URL：{result_url}"
+                    )
+
+                    st.write(
+                        f"1〜3着：{top3}"
+                    )
+
+                    st.write(
+                        "ワイド払戻："
+                        f"{wide_payouts}"
+                    )
+
+                    st.write(
+                        "三連複払戻："
+                        f"{trio_payouts}"
+                    )
 
         else:
 
@@ -7956,29 +8342,36 @@ if check_result:
                 f"{finish_order[2]}"
             )
 
-            # --------------------------------------
-            # 各買い目を照合
-            # --------------------------------------
             total_return = 0
             ticket_rows = []
 
+            # --------------------------------------
+            # 三連複2点
+            # --------------------------------------
             for index, bet in enumerate(
                 trio_bets,
                 start=1,
             ):
-                key = normalize_bet_numbers(
-                    bet
+
+                key = (
+                    normalize_bet_numbers(
+                        bet
+                    )
                 )
 
-                payout = trio_payouts.get(
-                    key,
-                    0,
+                payout = (
+                    trio_payouts.get(
+                        key,
+                        0,
+                    )
                 )
 
                 total_return += payout
 
                 ticket_rows.append({
-                    "券種": f"三連複{index}",
+                    "券種": (
+                        f"三連複{index}"
+                    ),
                     "買い目": "-".join(
                         str(x)
                         for x in key
@@ -7987,23 +8380,33 @@ if check_result:
                     "払戻": payout,
                 })
 
+            # --------------------------------------
+            # 通常ワイド2点
+            # --------------------------------------
             for index, bet in enumerate(
                 wide_bets,
                 start=1,
             ):
-                key = normalize_bet_numbers(
-                    bet
+
+                key = (
+                    normalize_bet_numbers(
+                        bet
+                    )
                 )
 
-                payout = wide_payouts.get(
-                    key,
-                    0,
+                payout = (
+                    wide_payouts.get(
+                        key,
+                        0,
+                    )
                 )
 
                 total_return += payout
 
                 ticket_rows.append({
-                    "券種": f"ワイド{index}",
+                    "券種": (
+                        f"ワイド{index}"
+                    ),
                     "買い目": "-".join(
                         str(x)
                         for x in key
@@ -8012,17 +8415,25 @@ if check_result:
                     "払戻": payout,
                 })
 
+            # --------------------------------------
+            # 浮き輪ワイド
+            # --------------------------------------
             for index, bet in enumerate(
                 float_bets,
                 start=1,
             ):
-                key = normalize_bet_numbers(
-                    bet
+
+                key = (
+                    normalize_bet_numbers(
+                        bet
+                    )
                 )
 
-                payout = wide_payouts.get(
-                    key,
-                    0,
+                payout = (
+                    wide_payouts.get(
+                        key,
+                        0,
+                    )
                 )
 
                 total_return += payout
@@ -8049,12 +8460,15 @@ if check_result:
                 + len(float_bets)
             )
 
+            # 1点100円固定
             investment = (
-                ticket_count * 100
+                ticket_count
+                * 100
             )
 
             profit = (
-                total_return - investment
+                total_return
+                - investment
             )
 
             recovery_rate = (
@@ -8065,9 +8479,6 @@ if check_result:
                 else 0.0
             )
 
-            # --------------------------------------
-            # 表示
-            # --------------------------------------
             for row in ticket_rows:
 
                 mark = (
@@ -8094,6 +8505,7 @@ if check_result:
             col_a, col_b = st.columns(2)
 
             with col_a:
+
                 st.metric(
                     "投資",
                     f"{investment:,}円",
@@ -8105,6 +8517,7 @@ if check_result:
                 )
 
             with col_b:
+
                 st.metric(
                     "収支",
                     f"{profit:+,}円",
@@ -8115,23 +8528,56 @@ if check_result:
                     f"{recovery_rate:.1f}%",
                 )
 
-            # ChatGPTへ貼る時にも使える簡易結果
+
+            # --------------------------------------
+            # 📋 結果コピペ用
+            #
+            # 回収率まで計算できた時だけ表示。
+            # st.code() 右上のコピーボタンから
+            # そのままChatGPTやメモへ貼り付けられる。
+            # --------------------------------------
             result_copy_lines = [
-                f"{race_date} "
-                f"{baba_name}{race_no}R",
+                f"{race_date} {baba_name}{race_no}R",
+                f"軸：{popular_horse_num}番",
+                f"軸タイプ：{kyakushoku_type}",
                 "公式結果："
                 f"{finish_order[0]}-"
                 f"{finish_order[1]}-"
                 f"{finish_order[2]}",
-                f"投資：{investment}円",
-                f"払戻：{total_return}円",
-                f"収支：{profit:+d}円",
-                f"回収率："
-                f"{recovery_rate:.1f}%",
+                "",
+                "【検証結果】",
             ]
 
+            for row in ticket_rows:
+
+                mark = (
+                    "的中"
+                    if row["的中"]
+                    else "ハズレ"
+                )
+
+                result_copy_lines.append(
+                    f"{row['券種']}："
+                    f"{row['買い目']} "
+                    f"{mark} "
+                    f"払戻{row['払戻']:,}円"
+                )
+
+            result_copy_lines.extend([
+                "",
+                f"投資：{investment:,}円",
+                f"払戻：{total_return:,}円",
+                f"収支：{profit:+,}円",
+                f"回収率：{recovery_rate:.1f}%",
+            ])
+
             st.markdown(
-                "#### 📋 検証結果コピー"
+                "#### 📋 結果をコピー"
+            )
+
+            st.caption(
+                "右上のコピーボタンを押すと、"
+                "検証結果をそのまま貼り付けできます。"
             )
 
             st.code(
@@ -8141,25 +8587,324 @@ if check_result:
                 language=None,
             )
 
+
+            # ==================================================
+            # 一括検証：このRの結果を保存して次Rへ
+            # ==================================================
+            if st.session_state.batch_mode:
+
+                st.session_state.batch_results.append({
+                    "R": int(race_no),
+                    "状態": "完了",
+                    "軸": int(popular_horse_num),
+                    "軸タイプ": kyakushoku_type,
+                    "結果": "-".join(
+                        str(x)
+                        for x in finish_order
+                    ),
+                    "投資": int(investment),
+                    "払戻": int(total_return),
+                    "収支": int(profit),
+                    "回収率": float(recovery_rate),
+                    "三連複": [
+                        "-".join(
+                            str(x)
+                            for x in normalize_bet_numbers(bet)
+                        )
+                        for bet in trio_bets
+                    ],
+                    "ワイド": [
+                        "-".join(
+                            str(x)
+                            for x in normalize_bet_numbers(bet)
+                        )
+                        for bet in wide_bets
+                    ],
+                    "浮き輪": [
+                        "-".join(
+                            str(x)
+                            for x in normalize_bet_numbers(bet)
+                        )
+                        for bet in float_bets
+                    ],
+                })
+
+                if (
+                    st.session_state.batch_race_no
+                    < st.session_state.batch_last_race
+                ):
+
+                    st.session_state.batch_race_no += 1
+                    st.rerun()
+
+                else:
+
+                    st.session_state.batch_mode = False
+                    st.session_state.batch_race_no = 1
+                    st.rerun()
+
     except requests.RequestException as e:
+
         st.error(
             "公式結果ページの取得に失敗しました。"
         )
 
-        st.caption(
-            f"エラー：{e}"
-        )
+        if debug_mode:
+            st.caption(
+                f"エラー：{e}"
+            )
+
+        if st.session_state.batch_mode:
+
+            st.session_state.batch_results.append({
+                "R": int(race_no),
+                "状態": "失敗",
+                "理由": f"結果取得失敗: {e}",
+                "投資": 0,
+                "払戻": 0,
+            })
+
+            if (
+                st.session_state.batch_race_no
+                < st.session_state.batch_last_race
+            ):
+                st.session_state.batch_race_no += 1
+            else:
+                st.session_state.batch_mode = False
+                st.session_state.batch_race_no = 1
+
+            st.rerun()
 
     except Exception as e:
+
         st.error(
             "結果の解析中にエラーが発生しました。"
         )
 
-        st.caption(
-            f"エラー：{e}"
-        )
+        if debug_mode:
+            st.caption(
+                f"エラー：{e}"
+            )
 
+        if st.session_state.batch_mode:
+
+            st.session_state.batch_results.append({
+                "R": int(race_no),
+                "状態": "失敗",
+                "理由": f"解析失敗: {e}",
+                "投資": 0,
+                "払戻": 0,
+            })
+
+            if (
+                st.session_state.batch_race_no
+                < st.session_state.batch_last_race
+            ):
+                st.session_state.batch_race_no += 1
+            else:
+                st.session_state.batch_mode = False
+                st.session_state.batch_race_no = 1
+
+            st.rerun()
+
+
+# ==================================================
+# 🏇 全R一括検証
+# 通常の1R分析画面の一番下にだけ表示
+# ==================================================
+st.markdown("---")
+st.markdown("## 🏇 全R一括検証")
 
 st.caption(
-    "※買い目の一例です。最終判断はオッズや馬場を見て調整してください。"
+    "現在入力している出馬表URLの開催日・競馬場を使い、"
+    "1Rから最終RまでNARの1番人気を軸に自動検証します。"
 )
+
+bottom_col1, bottom_col2 = st.columns(2)
+
+with bottom_col1:
+    batch_last_race_input = st.number_input(
+        "一括検証の最終R",
+        min_value=1,
+        max_value=12,
+        value=12,
+        step=1,
+        key="batch_last_race_input_bottom",
+    )
+
+with bottom_col2:
+    start_batch = st.button(
+        "🚀 1番人気軸で全R一括検証",
+        use_container_width=True,
+        key="start_batch_bottom",
+    )
+
+if start_batch:
+    batch_query = urlparse(url).query
+    batch_params = parse_qs(batch_query)
+
+    batch_date = batch_params.get("k_raceDate", [""])[0]
+    batch_baba_code = batch_params.get("k_babaCode", [""])[0]
+
+    if not batch_date or not batch_baba_code:
+        st.error(
+            "出馬表URLから開催日または競馬場コードを取得できません。"
+        )
+    else:
+        st.session_state.batch_mode = True
+        st.session_state.batch_race_no = 1
+        st.session_state.batch_last_race = int(batch_last_race_input)
+        st.session_state.batch_results = []
+        st.session_state.batch_date = batch_date
+        st.session_state.batch_baba_code = batch_baba_code
+        st.session_state.analyzed = True
+        st.rerun()
+
+# ==================================================
+# 前回の全R一括検証結果
+# ==================================================
+if (
+    "batch_results" in st.session_state
+    and st.session_state.batch_results
+    and not st.session_state.get(
+        "batch_mode",
+        False,
+    )
+):
+
+    st.markdown("## 📈 全R一括検証結果")
+
+    completed_batch_results = [
+        r
+        for r in st.session_state.batch_results
+        if r.get("状態") == "完了"
+    ]
+
+    failed_batch_results = [
+        r
+        for r in st.session_state.batch_results
+        if r.get("状態") != "完了"
+    ]
+
+    total_batch_investment = sum(
+        r.get("投資", 0)
+        for r in completed_batch_results
+    )
+
+    total_batch_return = sum(
+        r.get("払戻", 0)
+        for r in completed_batch_results
+    )
+
+    total_batch_profit = (
+        total_batch_return
+        - total_batch_investment
+    )
+
+    total_batch_rate = (
+        total_batch_return
+        / total_batch_investment
+        * 100
+        if total_batch_investment > 0
+        else 0.0
+    )
+
+    for r in sorted(
+        completed_batch_results,
+        key=lambda x: x["R"],
+    ):
+
+        st.write(
+            f"**{r['R']}R** "
+            f"｜軸 {r['軸']}番 "
+            f"（{r['軸タイプ']}）"
+            f"｜結果 {r['結果']} "
+            f"｜払戻 {r['払戻']:,}円 "
+            f"｜回収率 {r['回収率']:.1f}%"
+        )
+
+    if failed_batch_results:
+
+        with st.expander(
+            "⚠️ 取得できなかったレース",
+            expanded=False,
+        ):
+
+            for r in sorted(
+                failed_batch_results,
+                key=lambda x: x["R"],
+            ):
+
+                st.write(
+                    f"{r['R']}R｜"
+                    f"{r.get('理由', '不明')}"
+                )
+
+    st.markdown("---")
+
+    total_col1, total_col2 = st.columns(2)
+
+    with total_col1:
+
+        st.metric(
+            "総投資",
+            f"{total_batch_investment:,}円",
+        )
+
+        st.metric(
+            "総払戻",
+            f"{total_batch_return:,}円",
+        )
+
+    with total_col2:
+
+        st.metric(
+            "総収支",
+            f"{total_batch_profit:+,}円",
+        )
+
+        st.metric(
+            "全体回収率",
+            f"{total_batch_rate:.1f}%",
+        )
+
+    batch_copy_lines = [
+        "【全R一括検証】",
+    ]
+
+    for r in sorted(
+        completed_batch_results,
+        key=lambda x: x["R"],
+    ):
+
+        batch_copy_lines.append(
+            f"{r['R']}R｜"
+            f"軸{r['軸']}番 "
+            f"{r['軸タイプ']}｜"
+            f"結果{r['結果']}｜"
+            f"払戻{r['払戻']:,}円｜"
+            f"回収率{r['回収率']:.1f}%"
+        )
+
+    batch_copy_lines.extend([
+        "",
+        f"総投資：{total_batch_investment:,}円",
+        f"総払戻：{total_batch_return:,}円",
+        f"総収支：{total_batch_profit:+,}円",
+        f"全体回収率：{total_batch_rate:.1f}%",
+    ])
+
+    st.markdown("### 📋 全R結果をコピー")
+
+    st.code(
+        "\n".join(
+            batch_copy_lines
+        ),
+        language=None,
+    )
+
+    if st.button(
+        "🗑 一括検証結果をクリア"
+    ):
+        st.session_state.batch_results = []
+        st.rerun()
