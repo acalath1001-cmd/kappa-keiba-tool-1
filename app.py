@@ -615,6 +615,254 @@ if "batch_date" not in st.session_state:
 if "batch_baba_code" not in st.session_state:
     st.session_state.batch_baba_code = ""
 
+# 一括検証の軸モード
+# favorite = NAR1番人気軸
+# backfill = 通常分析で出た後詰めFを軸にして再計算
+if "batch_axis_mode" not in st.session_state:
+    st.session_state.batch_axis_mode = "favorite"
+
+# 後詰め軸モードは1レースを2段階で処理する。
+# 1回目：NAR1番人気をAにして通常分析 → Fを確定
+# 2回目：そのFを新しいAにして買い目を再計算
+if "batch_axis_override_num" not in st.session_state:
+    st.session_state.batch_axis_override_num = None
+
+if "batch_axis_override_race" not in st.session_state:
+    st.session_state.batch_axis_override_race = None
+
+if "batch_original_a" not in st.session_state:
+    st.session_state.batch_original_a = None
+
+if "batch_original_f" not in st.session_state:
+    st.session_state.batch_original_f = None
+
+if "batch_af_match" not in st.session_state:
+    st.session_state.batch_af_match = None
+
+
+# ==================================================
+# 全R一括検証 共通UI / 集計ヘルパー
+# 新馬戦などで分析を途中終了する場合でも、
+# 一括検証ボタンと回収率結果を表示できるようにする。
+# ==================================================
+def reset_batch_axis_temp_state():
+    st.session_state.batch_axis_override_num = None
+    st.session_state.batch_axis_override_race = None
+    st.session_state.batch_original_a = None
+    st.session_state.batch_original_f = None
+    st.session_state.batch_af_match = None
+
+
+def start_batch_validation_for_url(
+    source_url,
+    last_race,
+    axis_mode,
+):
+    batch_query = urlparse(source_url).query
+    batch_params = parse_qs(batch_query)
+
+    batch_date = batch_params.get(
+        "k_raceDate",
+        [""],
+    )[0]
+
+    batch_baba_code = batch_params.get(
+        "k_babaCode",
+        [""],
+    )[0]
+
+    if not batch_date or not batch_baba_code:
+        st.error(
+            "出馬表URLから開催日または競馬場コードを取得できません。"
+        )
+        return
+
+    st.session_state.batch_mode = True
+    st.session_state.batch_axis_mode = axis_mode
+    st.session_state.batch_race_no = 1
+    st.session_state.batch_last_race = int(last_race)
+    st.session_state.batch_results = []
+    st.session_state.batch_date = batch_date
+    st.session_state.batch_baba_code = batch_baba_code
+
+    reset_batch_axis_temp_state()
+
+    st.session_state.analyzed = True
+    st.rerun()
+
+
+def render_batch_results_summary():
+    if not (
+        st.session_state.get("batch_results")
+        and not st.session_state.get("batch_mode", False)
+    ):
+        return
+
+    completed_batch_results = [
+        r
+        for r in st.session_state.batch_results
+        if r.get("状態") in {"完了", "対象外"}
+    ]
+
+    total_batch_investment = sum(
+        r.get("投資", 0)
+        for r in completed_batch_results
+    )
+
+    total_batch_return = sum(
+        r.get("払戻", 0)
+        for r in completed_batch_results
+    )
+
+    total_batch_profit = (
+        total_batch_return
+        - total_batch_investment
+    )
+
+    total_batch_rate = (
+        total_batch_return
+        / total_batch_investment
+        * 100
+        if total_batch_investment > 0
+        else 0.0
+    )
+
+    st.markdown("### 📈 全R一括検証結果")
+
+    total_col1, total_col2 = st.columns(2)
+
+    with total_col1:
+        st.metric(
+            "総投資",
+            f"{total_batch_investment:,}円",
+        )
+        st.metric(
+            "総払戻",
+            f"{total_batch_return:,}円",
+        )
+
+    with total_col2:
+        st.metric(
+            "総収支",
+            f"{total_batch_profit:+,}円",
+        )
+        st.metric(
+            "全体回収率",
+            f"{total_batch_rate:.1f}%",
+        )
+
+    batch_copy_lines = [
+        "【全R一括検証】",
+    ]
+
+    for r in sorted(
+        completed_batch_results,
+        key=lambda x: x["R"],
+    ):
+        if r.get("状態") == "対象外":
+            batch_copy_lines.append(
+                f"{r['R']}R｜"
+                f"新馬戦・対象外｜"
+                f"投資0円｜"
+                f"払戻0円｜"
+                f"回収率0.0%"
+            )
+        elif r.get("検証モード") == "backfill":
+            batch_copy_lines.append(
+                f"{r['R']}R｜"
+                f"後詰め軸{r['軸']}番 "
+                f"{r['軸タイプ']}｜"
+                f"元A{r.get('元A')}番｜"
+                f"元F{r.get('元F')}番｜"
+                f"A-F"
+                f"{'一致' if r.get('AF一致') else '不一致'}｜"
+                f"結果{r['結果']}｜"
+                f"払戻{r['払戻']:,}円｜"
+                f"回収率{r['回収率']:.1f}%"
+            )
+        else:
+            batch_copy_lines.append(
+                f"{r['R']}R｜"
+                f"軸{r['軸']}番 "
+                f"{r['軸タイプ']}｜"
+                f"結果{r['結果']}｜"
+                f"払戻{r['払戻']:,}円｜"
+                f"回収率{r['回収率']:.1f}%"
+            )
+
+    batch_copy_lines.extend([
+        "",
+        f"総投資：{total_batch_investment:,}円",
+        f"総払戻：{total_batch_return:,}円",
+        f"総収支：{total_batch_profit:+,}円",
+        f"全体回収率：{total_batch_rate:.1f}%",
+    ])
+
+    st.markdown("### 📋 全R結果をコピー")
+    st.code(
+        "\n".join(batch_copy_lines),
+        language=None,
+    )
+
+    if st.button(
+        "🗑 一括検証結果をクリア",
+        key="clear_batch_results_shared",
+    ):
+        st.session_state.batch_results = []
+        st.rerun()
+
+
+def render_batch_controls(source_url, key_suffix):
+    st.markdown("---")
+    st.markdown("## 🏇 全R一括検証")
+
+    st.caption(
+        "現在入力している出馬表URLの開催日・競馬場を使い、"
+        "1Rから最終Rまで自動検証します。"
+    )
+
+    batch_last_race_input = st.number_input(
+        "一括検証の最終R",
+        min_value=1,
+        max_value=12,
+        value=12,
+        step=1,
+        key=f"batch_last_race_input_{key_suffix}",
+    )
+
+    batch_button_col1, batch_button_col2 = st.columns(2)
+
+    with batch_button_col1:
+        start_batch = st.button(
+            "🚀 1番人気軸で全R一括検証",
+            use_container_width=True,
+            key=f"start_batch_{key_suffix}",
+        )
+
+    with batch_button_col2:
+        start_backfill_batch = st.button(
+            "⚔️ 後詰め馬軸で全R一括検証",
+            use_container_width=True,
+            key=f"start_backfill_batch_{key_suffix}",
+        )
+
+    if start_batch:
+        start_batch_validation_for_url(
+            source_url,
+            batch_last_race_input,
+            "favorite",
+        )
+
+    if start_backfill_batch:
+        start_batch_validation_for_url(
+            source_url,
+            batch_last_race_input,
+            "backfill",
+        )
+
+    render_batch_results_summary()
+
+
 if "race_url" not in st.session_state:
     st.session_state.race_url = ""
 
@@ -636,12 +884,24 @@ if analyze:
     # 通常分析を押した時は、以前の一括検証状態を必ず解除する
     st.session_state.batch_mode = False
     st.session_state.batch_race_no = 1
+    st.session_state.batch_axis_mode = "favorite"
+    st.session_state.batch_axis_override_num = None
+    st.session_state.batch_axis_override_race = None
+    st.session_state.batch_original_a = None
+    st.session_state.batch_original_f = None
+    st.session_state.batch_af_match = None
     st.session_state.analyzed = True
 if clear_url:
     st.session_state.race_url = ""
     st.session_state.analyzed = False
     st.session_state.batch_mode = False
     st.session_state.batch_race_no = 1
+    st.session_state.batch_axis_mode = "favorite"
+    st.session_state.batch_axis_override_num = None
+    st.session_state.batch_axis_override_race = None
+    st.session_state.batch_original_a = None
+    st.session_state.batch_original_f = None
+    st.session_state.batch_af_match = None
     st.rerun()
 
 st.session_state.race_url = url
@@ -2498,14 +2758,49 @@ if st.session_state.batch_mode:
             st.session_state.batch_mode = False
             st.rerun()
 
-    popular_horse_num = int(
-        auto_first_favorite_num
+    # ------------------------------------------
+    # 一括検証の軸
+    #
+    # 通常一括：
+    #   A = NAR1番人気
+    #
+    # 後詰め軸一括：
+    #   1回目はNAR1番人気をAにしてFを確定。
+    #   2回目はそのFをAにして全ロジックを再計算。
+    # ------------------------------------------
+    use_backfill_override = (
+        st.session_state.batch_axis_mode == "backfill"
+        and st.session_state.batch_axis_override_num is not None
+        and st.session_state.batch_axis_override_race == int(race_no)
     )
 
-    st.success(
-        f"自動軸：{popular_horse_num}番 "
-        "（NAR 1番人気）"
-    )
+    if use_backfill_override:
+
+        popular_horse_num = int(
+            st.session_state.batch_axis_override_num
+        )
+
+        st.success(
+            f"⚔️ 後詰め軸：{popular_horse_num}番 "
+            "（通常分析のFをAとして再計算）"
+        )
+
+    else:
+
+        popular_horse_num = int(
+            auto_first_favorite_num
+        )
+
+        if st.session_state.batch_axis_mode == "backfill":
+            st.info(
+                f"後詰め軸を選定中："
+                f"まずNAR1番人気 {popular_horse_num}番で通常分析します"
+            )
+        else:
+            st.success(
+                f"自動軸：{popular_horse_num}番 "
+                "（NAR 1番人気）"
+            )
 
 else:
 
@@ -2786,6 +3081,54 @@ if not front_candidates:
 
 オッズ・馬体重・騎手を参考にしてください。
         """
+    )
+
+    # 一括検証では新馬戦を買わない扱いにする。
+    # 投資0円・払戻0円・回収率0%として記録し、
+    # 全体の総投資・総払戻・回収率計算から実質的に除外する。
+    if st.session_state.batch_mode:
+
+        st.session_state.batch_results.append({
+            "R": int(race_no),
+            "状態": "対象外",
+            "理由": "新馬戦（過去レースデータなし）",
+            "軸": int(popular_horse_num),
+            "軸タイプ": "新馬戦",
+            "結果": "-",
+            "投資": 0,
+            "払戻": 0,
+            "収支": 0,
+            "回収率": 0.0,
+            "三連複": [],
+            "ワイド": [],
+            "浮き輪": [],
+        })
+
+        # 次Rへ行く前に後詰め軸の一時状態をクリア
+        st.session_state.batch_axis_override_num = None
+        st.session_state.batch_axis_override_race = None
+        st.session_state.batch_original_a = None
+        st.session_state.batch_original_f = None
+        st.session_state.batch_af_match = None
+
+        if (
+            st.session_state.batch_race_no
+            < st.session_state.batch_last_race
+        ):
+            st.session_state.batch_race_no += 1
+            st.rerun()
+
+        else:
+            st.session_state.batch_mode = False
+            st.session_state.batch_race_no = 1
+            st.rerun()
+
+    # 通常表示で新馬戦だった場合でも、ここで一括検証UIを出す。
+    # これにより st.stop() より下にある分析処理へ進まず、
+    # かつ全R回収率計算は実行できる。
+    render_batch_controls(
+        st.session_state.get("race_url", url),
+        "newhorse",
     )
     st.stop()
 
@@ -4437,6 +4780,135 @@ front_weight, long_weight = (
 )
 
 
+# ==================================================
+# 展開馬試験用・同距離タイム比較
+#
+# 目的：
+# ・前進TOP5×地力TOP5で作った展開候補の中で、
+#   「今回と同じ距離で実際に速く走れた馬」を最終比較に使う。
+# ・タイムが無い馬は減点しない。従来順位のまま扱う。
+# ・まず今回競馬場×同距離の実績を最優先する。
+# ・今回競馬場に同距離実績が無い場合だけ、
+#   他場の同距離実績を補助的に使う。
+# ・園田⇔姫路は既存総合評価と同じ5.0秒補正を使用する。
+# ・盛岡⇔水沢、浦和⇔川崎・船橋は、
+#   距離付きタイム作成時点で既存補正済みの値を使う。
+#
+# 今回は「タイムだけで展開馬を決める」のではなく、
+# 軸タイプに合う脚質グループ内の最終タイブレークとして使う。
+# ==================================================
+
+def get_tenkai_same_distance_best_time(horse):
+    same_track_times = []
+    fallback_times = []
+
+    for item in horse.get(
+        "距離付きタイム",
+        [],
+    ):
+        if item.get("距離") != distance_num:
+            continue
+
+        time_text = item.get("タイム", "")
+        past_place = item.get("競馬場", "")
+
+        if not time_text:
+            continue
+
+        try:
+            minutes, seconds = time_text.split(":")
+            total_seconds = (
+                int(minutes) * 60
+                + float(seconds)
+            )
+        except (ValueError, TypeError, AttributeError):
+            continue
+
+        # 園田⇔姫路は既存総合評価と同じ補正を使用。
+        if (
+            baba_name == "園田"
+            and past_place == "姫路"
+        ):
+            total_seconds += 5.0
+
+        elif (
+            baba_name == "姫路"
+            and past_place == "園田"
+        ):
+            total_seconds -= 5.0
+
+        if past_place == baba_name:
+            same_track_times.append(
+                total_seconds
+            )
+        else:
+            fallback_times.append(
+                total_seconds
+            )
+
+    # 今回競馬場×同距離の時計があれば、それだけを使用。
+    if same_track_times:
+        return {
+            "秒": min(same_track_times),
+            "モード": "同競馬場・同距離",
+        }
+
+    # 無い場合だけ他場の同距離時計を補助使用。
+    if fallback_times:
+        return {
+            "秒": min(fallback_times),
+            "モード": "他場・同距離",
+        }
+
+    return {
+        "秒": None,
+        "モード": "同距離タイムなし",
+    }
+
+
+tenkai_same_distance_time_info = {}
+
+for horse in horses:
+    tenkai_same_distance_time_info[
+        horse["馬番"]
+    ] = get_tenkai_same_distance_best_time(
+        horse
+    )
+
+# 有効な同距離タイムだけでメンバー順位を作る。
+# タイムが無い馬は99位扱いだが、減点はしない。
+valid_tenkai_times = sorted(
+    [
+        (
+            info["秒"],
+            horse_no,
+        )
+        for horse_no, info
+        in tenkai_same_distance_time_info.items()
+        if info.get("秒") is not None
+    ],
+    key=lambda x: (x[0], x[1]),
+)
+
+tenkai_time_rank_map = {
+    horse_no: rank
+    for rank, (_, horse_no)
+    in enumerate(
+        valid_tenkai_times,
+        start=1,
+    )
+}
+
+axis_tenkai_time = (
+    tenkai_same_distance_time_info
+    .get(
+        popular_horse_num,
+        {},
+    )
+    .get("秒")
+)
+
+
 # 共通TOP5候補を作る
 tenkai_common_candidates = []
 
@@ -4523,6 +4995,43 @@ for horse_no in sorted(
         "押し上げ回数": style_info[
             "押し上げ回数"
         ],
+
+        # 展開馬試験用の同距離タイム情報。
+        # タイムが無い馬は99位扱いだが、減点はしない。
+        "展開同距離タイム秒": (
+            tenkai_same_distance_time_info
+            .get(horse_no, {})
+            .get("秒")
+        ),
+        "展開タイムモード": (
+            tenkai_same_distance_time_info
+            .get(horse_no, {})
+            .get(
+                "モード",
+                "同距離タイムなし",
+            )
+        ),
+        "展開タイム順位": (
+            tenkai_time_rank_map.get(
+                horse_no,
+                99,
+            )
+        ),
+        "展開軸タイム差": (
+            (
+                tenkai_same_distance_time_info
+                .get(horse_no, {})
+                .get("秒")
+                - axis_tenkai_time
+            )
+            if (
+                axis_tenkai_time is not None
+                and tenkai_same_distance_time_info
+                .get(horse_no, {})
+                .get("秒") is not None
+            )
+            else None
+        ),
         "選出元": "前進TOP5×地力TOP5",
     })
 
@@ -4553,14 +5062,38 @@ def tenkai_candidate_sort_key(h):
         + long_rank
     )
 
+    # --------------------------------------------------
+    # 展開馬タイム試験
+    #
+    # 同距離タイムがメンバー3位以内なら
+    # 同じ優先脚質グループ内で一段上に置く。
+    #
+    # 4位以下・タイムなしは従来ロジックのまま。
+    # タイムが無いこと自体では減点しない。
+    # --------------------------------------------------
+    time_rank = h.get(
+        "展開タイム順位",
+        99,
+    )
+
+    time_trial_bucket = (
+        0
+        if time_rank <= 3
+        else 1
+    )
+
     if kyakushoku_type == "逃げ":
         return (
+            time_trial_bucket,
+            time_rank,
             front_rank,
             long_rank,
         )
 
     if kyakushoku_type == "先行":
         return (
+            time_trial_bucket,
+            time_rank,
             rank_sum,
             front_rank,
             long_rank,
@@ -4568,12 +5101,16 @@ def tenkai_candidate_sort_key(h):
 
     if kyakushoku_type == "持続":
         return (
+            time_trial_bucket,
+            time_rank,
             long_rank,
             front_rank,
         )
 
     if kyakushoku_type == "差し":
         return (
+            time_trial_bucket,
+            time_rank,
             long_rank,
             -h.get(
                 "押し上げ回数",
@@ -4583,6 +5120,8 @@ def tenkai_candidate_sort_key(h):
         )
 
     return (
+        time_trial_bucket,
+        time_rank,
         rank_sum,
         long_rank,
         front_rank,
@@ -5632,6 +6171,74 @@ total_best_horse = (
     f"{total_best['馬番']}番 "
     f"{total_best['馬名']}"
 )
+
+
+# ==================================================
+# ⚔️ 後詰め軸・全R一括検証
+#
+# 思想：
+# ・まず通常どおりNAR1番人気をAにして分析する
+# ・その時点の後詰めF（総合1位）を確定する
+# ・AとFが一致するかどうかを記録する
+# ・A≠Fなら同じRをもう一度走らせ、
+#   Fを新しいAとして全ロジック・買い目を再計算する
+#
+# AとFが一致していても問題なし。
+# 一致時は今の計算結果がそのまま「後詰め軸」の結果になる。
+# ==================================================
+if (
+    st.session_state.batch_mode
+    and st.session_state.batch_axis_mode == "backfill"
+):
+
+    is_second_backfill_pass = (
+        st.session_state.batch_axis_override_num is not None
+        and st.session_state.batch_axis_override_race == int(race_no)
+    )
+
+    if not is_second_backfill_pass:
+
+        original_a_num = int(
+            popular_horse_num
+        )
+
+        original_f_num = int(
+            total_best["馬番"]
+        )
+
+        af_match = (
+            original_a_num
+            == original_f_num
+        )
+
+        st.session_state.batch_original_a = (
+            original_a_num
+        )
+
+        st.session_state.batch_original_f = (
+            original_f_num
+        )
+
+        st.session_state.batch_af_match = (
+            af_match
+        )
+
+        # AとFが違う場合だけ、
+        # FをAへ差し替えて同じレースを最初から再計算する。
+        if not af_match:
+
+            st.session_state.batch_axis_override_num = (
+                original_f_num
+            )
+
+            st.session_state.batch_axis_override_race = (
+                int(race_no)
+            )
+
+            st.rerun()
+
+        # A=Fなら現在の計算がそのまま後詰め軸計算。
+        # overrideは作らず、このまま買い目・回収率まで進む。
 
 
 # ==================================================
@@ -7121,7 +7728,7 @@ handwritten_bet_templates = {
         ],
         "ワイド": [
             ["A", "B"],
-            ["A", "G"],
+            ["A", "E"],
         ],
         "浮き輪": [
             ["D", "E"],
@@ -8596,8 +9203,27 @@ if check_result:
                 st.session_state.batch_results.append({
                     "R": int(race_no),
                     "状態": "完了",
+                    "検証モード": st.session_state.batch_axis_mode,
                     "軸": int(popular_horse_num),
                     "軸タイプ": kyakushoku_type,
+                    "元A": (
+                        int(st.session_state.batch_original_a)
+                        if st.session_state.batch_axis_mode == "backfill"
+                        and st.session_state.batch_original_a is not None
+                        else int(popular_horse_num)
+                    ),
+                    "元F": (
+                        int(st.session_state.batch_original_f)
+                        if st.session_state.batch_axis_mode == "backfill"
+                        and st.session_state.batch_original_f is not None
+                        else None
+                    ),
+                    "AF一致": (
+                        bool(st.session_state.batch_af_match)
+                        if st.session_state.batch_axis_mode == "backfill"
+                        and st.session_state.batch_af_match is not None
+                        else None
+                    ),
                     "結果": "-".join(
                         str(x)
                         for x in finish_order
@@ -8628,6 +9254,13 @@ if check_result:
                         for bet in float_bets
                     ],
                 })
+
+                # このRの後詰め2パス状態をクリア
+                st.session_state.batch_axis_override_num = None
+                st.session_state.batch_axis_override_race = None
+                st.session_state.batch_original_a = None
+                st.session_state.batch_original_f = None
+                st.session_state.batch_af_match = None
 
                 if (
                     st.session_state.batch_race_no
@@ -8664,6 +9297,12 @@ if check_result:
                 "払戻": 0,
             })
 
+            st.session_state.batch_axis_override_num = None
+            st.session_state.batch_axis_override_race = None
+            st.session_state.batch_original_a = None
+            st.session_state.batch_original_f = None
+            st.session_state.batch_af_match = None
+
             if (
                 st.session_state.batch_race_no
                 < st.session_state.batch_last_race
@@ -8696,6 +9335,12 @@ if check_result:
                 "払戻": 0,
             })
 
+            st.session_state.batch_axis_override_num = None
+            st.session_state.batch_axis_override_race = None
+            st.session_state.batch_original_a = None
+            st.session_state.batch_original_f = None
+            st.session_state.batch_af_match = None
+
             if (
                 st.session_state.batch_race_no
                 < st.session_state.batch_last_race
@@ -8710,201 +9355,10 @@ if check_result:
 
 # ==================================================
 # 🏇 全R一括検証
-# 通常の1R分析画面の一番下にだけ表示
+# 通常分析の最後に表示。
+# 新馬戦時は上の早期終了ブロックから同じ共通UIを呼ぶ。
 # ==================================================
-st.markdown("---")
-st.markdown("## 🏇 全R一括検証")
-
-st.caption(
-    "現在入力している出馬表URLの開催日・競馬場を使い、"
-    "1Rから最終RまでNARの1番人気を軸に自動検証します。"
+render_batch_controls(
+    st.session_state.get("race_url", url),
+    "bottom",
 )
-
-bottom_col1, bottom_col2 = st.columns(2)
-
-with bottom_col1:
-    batch_last_race_input = st.number_input(
-        "一括検証の最終R",
-        min_value=1,
-        max_value=12,
-        value=12,
-        step=1,
-        key="batch_last_race_input_bottom",
-    )
-
-with bottom_col2:
-    start_batch = st.button(
-        "🚀 1番人気軸で全R一括検証",
-        use_container_width=True,
-        key="start_batch_bottom",
-    )
-
-if start_batch:
-    batch_query = urlparse(url).query
-    batch_params = parse_qs(batch_query)
-
-    batch_date = batch_params.get("k_raceDate", [""])[0]
-    batch_baba_code = batch_params.get("k_babaCode", [""])[0]
-
-    if not batch_date or not batch_baba_code:
-        st.error(
-            "出馬表URLから開催日または競馬場コードを取得できません。"
-        )
-    else:
-        st.session_state.batch_mode = True
-        st.session_state.batch_race_no = 1
-        st.session_state.batch_last_race = int(batch_last_race_input)
-        st.session_state.batch_results = []
-        st.session_state.batch_date = batch_date
-        st.session_state.batch_baba_code = batch_baba_code
-        st.session_state.analyzed = True
-        st.rerun()
-
-# ==================================================
-# 前回の全R一括検証結果
-# ==================================================
-if (
-    "batch_results" in st.session_state
-    and st.session_state.batch_results
-    and not st.session_state.get(
-        "batch_mode",
-        False,
-    )
-):
-
-    st.markdown("## 📈 全R一括検証結果")
-
-    completed_batch_results = [
-        r
-        for r in st.session_state.batch_results
-        if r.get("状態") == "完了"
-    ]
-
-    failed_batch_results = [
-        r
-        for r in st.session_state.batch_results
-        if r.get("状態") != "完了"
-    ]
-
-    total_batch_investment = sum(
-        r.get("投資", 0)
-        for r in completed_batch_results
-    )
-
-    total_batch_return = sum(
-        r.get("払戻", 0)
-        for r in completed_batch_results
-    )
-
-    total_batch_profit = (
-        total_batch_return
-        - total_batch_investment
-    )
-
-    total_batch_rate = (
-        total_batch_return
-        / total_batch_investment
-        * 100
-        if total_batch_investment > 0
-        else 0.0
-    )
-
-    for r in sorted(
-        completed_batch_results,
-        key=lambda x: x["R"],
-    ):
-
-        st.write(
-            f"**{r['R']}R** "
-            f"｜軸 {r['軸']}番 "
-            f"（{r['軸タイプ']}）"
-            f"｜結果 {r['結果']} "
-            f"｜払戻 {r['払戻']:,}円 "
-            f"｜回収率 {r['回収率']:.1f}%"
-        )
-
-    if failed_batch_results:
-
-        with st.expander(
-            "⚠️ 取得できなかったレース",
-            expanded=False,
-        ):
-
-            for r in sorted(
-                failed_batch_results,
-                key=lambda x: x["R"],
-            ):
-
-                st.write(
-                    f"{r['R']}R｜"
-                    f"{r.get('理由', '不明')}"
-                )
-
-    st.markdown("---")
-
-    total_col1, total_col2 = st.columns(2)
-
-    with total_col1:
-
-        st.metric(
-            "総投資",
-            f"{total_batch_investment:,}円",
-        )
-
-        st.metric(
-            "総払戻",
-            f"{total_batch_return:,}円",
-        )
-
-    with total_col2:
-
-        st.metric(
-            "総収支",
-            f"{total_batch_profit:+,}円",
-        )
-
-        st.metric(
-            "全体回収率",
-            f"{total_batch_rate:.1f}%",
-        )
-
-    batch_copy_lines = [
-        "【全R一括検証】",
-    ]
-
-    for r in sorted(
-        completed_batch_results,
-        key=lambda x: x["R"],
-    ):
-
-        batch_copy_lines.append(
-            f"{r['R']}R｜"
-            f"軸{r['軸']}番 "
-            f"{r['軸タイプ']}｜"
-            f"結果{r['結果']}｜"
-            f"払戻{r['払戻']:,}円｜"
-            f"回収率{r['回収率']:.1f}%"
-        )
-
-    batch_copy_lines.extend([
-        "",
-        f"総投資：{total_batch_investment:,}円",
-        f"総払戻：{total_batch_return:,}円",
-        f"総収支：{total_batch_profit:+,}円",
-        f"全体回収率：{total_batch_rate:.1f}%",
-    ])
-
-    st.markdown("### 📋 全R結果をコピー")
-
-    st.code(
-        "\n".join(
-            batch_copy_lines
-        ),
-        language=None,
-    )
-
-    if st.button(
-        "🗑 一括検証結果をクリア"
-    ):
-        st.session_state.batch_results = []
-        st.rerun()
