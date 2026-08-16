@@ -4384,8 +4384,8 @@ def build_marble_style_profile(
             if tag != "押上"
         ]
 
-    # 表示が長くなりすぎないよう、
-    # 副脚質は能力値の高い順に最大3つ。
+    # 内部判定では副脚質を能力値の高い順に最大3つ保持する。
+    # 画面表示では、この中の最上位1つだけを表示する。
     def secondary_sort_score(tag):
         if tag == "差し":
             return ability_scores.get(
@@ -4415,8 +4415,10 @@ def build_marble_style_profile(
     return {
         "主脚質": primary_type,
         "副脚質": secondary_tags,
+        # 画面表示は副脚質を1つだけ。
+        # 内部の副脚質リスト・脚質タグは従来どおり複数保持する。
         "副脚質表示": (
-            "・".join(secondary_tags)
+            secondary_tags[0]
             if secondary_tags
             else "なし"
         ),
@@ -8739,7 +8741,7 @@ show_card(
 show_card(
     "🌋",
     "地力のある馬",
-    "持続して脚を使えるタイプ・近走前崩れ除外",
+    "持続して脚を使えるタイプ",
     long_spurt_horse,
     "#fff9e8",
     "#f3d58b",
