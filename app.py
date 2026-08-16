@@ -1687,6 +1687,65 @@ for i, horse in enumerate(real_horses, start=1):
         jojo_tare_count >= 2
     )
 
+    # ==================================================
+    # 近走前崩れ判定
+    #
+    # 目的：
+    # 「昔は前で残せた」実績だけで、現在も持続型・展開型として
+    # 高く評価されるのを防ぐ。
+    #
+    # 直近3走のうち、
+    # ・前半4番手以内
+    # ・最終着順までに3つ以上後退
+    # が2回以上あれば「近走前崩れ」とする。
+    #
+    # これは「前へ行ける能力」そのものを消す判定ではない。
+    # そのため先行力Dには残せるが、
+    # ・地力代表C（持続して脚を使える馬）
+    # ・展開馬B
+    # には採用しない。
+    # ==================================================
+    recent_front_break_count = 0
+    recent_front_break_details = []
+
+    recent_front_break_check_count = min(
+        3,
+        len(race_flows),
+        len(finish_positions),
+    )
+
+    for idx in range(
+        recent_front_break_check_count
+    ):
+        flow = race_flows[idx]
+        finish = finish_positions[idx]
+
+        if (
+            finish is None
+            or len(flow) < 1
+        ):
+            continue
+
+        first = flow[0]
+        total_drop = finish - first
+
+        if (
+            first <= 4
+            and total_drop >= 3
+        ):
+            recent_front_break_count += 1
+
+            recent_front_break_details.append({
+                "何走前": idx + 1,
+                "通過順": flow,
+                "着順": finish,
+                "前半から着順の後退": total_drop,
+            })
+
+    is_recent_front_break = (
+        recent_front_break_count >= 2
+    )
+
     # 出走取消・競走除外判定
     is_scratched = any(
         word in horse_text
@@ -1757,6 +1816,12 @@ for i, horse in enumerate(real_horses, start=1):
         "徐々垂れ": is_jojo_tare,
         "徐々垂れ回数": jojo_tare_count,
         "徐々垂れ詳細": jojo_tare_details,
+
+        # 直近3走で前から繰り返し崩れている馬。
+        # 先行力は残すが、地力代表・展開馬からは外す。
+        "近走前崩れ": is_recent_front_break,
+        "近走前崩れ回数": recent_front_break_count,
+        "近走前崩れ詳細": recent_front_break_details,
 
         "取得テキスト": horse_text,
     })
@@ -2599,6 +2664,15 @@ jojo_tare_horse_numbers = {
     )
 }
 
+# 直近3走で前から繰り返し崩れている馬。
+# 前進気勢・先行力Dには残すが、
+# 地力代表Cと展開馬Bには採用しない。
+recent_front_break_horse_numbers = {
+    h["馬番"]
+    for h in horses
+    if h.get("近走前崩れ", False)
+}
+
 if debug_mode:
 
     with st.expander(
@@ -2655,6 +2729,32 @@ if debug_mode:
 
         else:
             st.write("徐々垂れ馬なし")
+
+        if recent_front_break_horse_numbers:
+
+            st.markdown("#### 近走前崩れ")
+
+            for h in horses:
+
+                if not h.get(
+                    "近走前崩れ",
+                    False
+                ):
+                    continue
+
+                st.write(
+                    f"⚠️ {h['馬番']}番 {h['馬名']} "
+                    f"｜直近3走の該当 "
+                    f"{h.get('近走前崩れ回数', 0)}回 "
+                    f"｜地力代表・展開馬から除外"
+                )
+
+                st.caption(
+                    f"{h.get('近走前崩れ詳細', [])}"
+                )
+
+        else:
+            st.write("近走前崩れ馬なし")
 
 # データ不足注意
 low_data_horses = []
@@ -3481,8 +3581,66 @@ for horse in horses:
 
     score += sustained_agari_bonus
 
-    # 複数の失速があっても、
-    # 地力全体を破壊しないよう通常は最大260点
+    # ==================================================
+    # 反復垂れ追加減点
+    #
+    # 目的：
+    # タイムや前進力はあるが、前へ行ったあと何度も止まる馬を、
+    # 安定して好走している馬より上に置きすぎない。
+    #
+    # 条件：
+    # ・地力評価に使っている過去5走が対象
+    # ・前半3番手以内
+    # ・最終着順までに4つ以上順位を落とした
+    # ・このレースが2回以上ある
+    #
+    # 該当2回以上なら、通常の失速減点とは別に追加 -100。
+    # 例：2番手→9着、2番手→10着がある馬。
+    # ==================================================
+    repeat_front_fade_count = 0
+    repeat_front_fade_details = []
+
+    for item in evaluation_pairs:
+
+        flow = item.get(
+            "通過順",
+            []
+        )
+
+        finish = item.get(
+            "着順"
+        )
+
+        if (
+            finish is None
+            or len(flow) < 1
+        ):
+            continue
+
+        first = flow[0]
+        total_drop = finish - first
+
+        if (
+            first <= 3
+            and total_drop >= 4
+        ):
+            repeat_front_fade_count += 1
+
+            repeat_front_fade_details.append({
+                "距離": item.get("距離"),
+                "通過順": flow,
+                "着順": finish,
+                "前半から着順の後退": total_drop,
+            })
+
+    repeat_front_fade_penalty = (
+        100
+        if repeat_front_fade_count >= 2
+        else 0
+    )
+
+    # 複数の通常失速があっても、
+    # 地力全体を破壊しないよう通常部分は最大260点。
     raw_applied_risk_penalty = min(
         risk_penalty,
         260
@@ -3492,10 +3650,11 @@ for horse in horses:
     # 格上の南関での通常失速を40％へ弱め、
     # 最大100点までに抑える。
     #
+    # 反復垂れ追加減点も同じく40％へ弱める。
     # 直近大失速はこの下の別枠減点として残す。
     if is_nankan_transfer_first:
 
-        applied_risk_penalty = min(
+        base_applied_risk_penalty = min(
             round(
                 raw_applied_risk_penalty
                 * NANKAN_TRANSFER_PENALTY_WEIGHT,
@@ -3504,10 +3663,28 @@ for horse in horses:
             NANKAN_TRANSFER_RISK_CAP
         )
 
+        applied_repeat_front_fade_penalty = round(
+            repeat_front_fade_penalty
+            * NANKAN_TRANSFER_PENALTY_WEIGHT,
+            1
+        )
+
     else:
-        applied_risk_penalty = (
+        base_applied_risk_penalty = (
             raw_applied_risk_penalty
         )
+
+        applied_repeat_front_fade_penalty = (
+            repeat_front_fade_penalty
+        )
+
+    # 画面の「失速」には通常失速＋反復垂れをまとめて表示。
+    # これにより、例えば従来 -120 の馬が
+    # 反復垂れ2回なら -220 になる。
+    applied_risk_penalty = (
+        base_applied_risk_penalty
+        + applied_repeat_front_fade_penalty
+    )
 
     score -= applied_risk_penalty
     # 直近大失速は通常の失速減点とは別枠。
@@ -3622,6 +3799,28 @@ for horse in horses:
         "元失速減点": raw_applied_risk_penalty,
         "失速減点": applied_risk_penalty,
         "失速詳細": risk_details,
+
+        # 前半3番手以内から最終着順まで4つ以上後退した
+        # レースが2回以上ある場合の追加減点。
+        "反復垂れ回数": repeat_front_fade_count,
+        "反復垂れ減点": applied_repeat_front_fade_penalty,
+        "反復垂れ詳細": repeat_front_fade_details,
+
+        # 直近3走の前崩れ。
+        # 地力ランキングには残すが、代表Cには採用しない。
+        "近走前崩れ": horse.get(
+            "近走前崩れ",
+            False,
+        ),
+        "近走前崩れ回数": horse.get(
+            "近走前崩れ回数",
+            0,
+        ),
+        "近走前崩れ詳細": horse.get(
+            "近走前崩れ詳細",
+            [],
+        ),
+
         "南関転入初戦": is_nankan_transfer_first,
         "大失速減点": heavy_collapse_long_penalty,
         # 善戦止まり確認用
@@ -3645,8 +3844,12 @@ long_spurt_candidates = [
 # ==================================================
 long_top5_for_tenkai = [
     dict(h)
-    for h in long_spurt_candidates[:5]
-]
+    for h in long_spurt_candidates
+    if not h.get(
+        "近走前崩れ",
+        False,
+    )
+][:5]
 # ==================================================
 # 失速不安が強い馬
 #
@@ -3740,12 +3943,16 @@ if debug_mode:
                 f"{h.get('前成功回数', 0)}回 "
                 f"｜持続上がり "
                 f"{h.get('持続上がり点', 0)} "
-                f"｜失速 "
+                f"｜失速合計 "
                 f"-{h.get('失速減点', 0)} "
+                f"｜うち反復垂れ "
+                f"-{h.get('反復垂れ減点', 0)} "
                 f"｜大失速 "
                 f"-{h.get('大失速減点', 0)} "
                 f"｜決め手不足 "
-                f"-{h.get('決め手不足減点', 0)}"
+                f"-{h.get('決め手不足減点', 0)} "
+                f"｜近走前崩れ "
+                f"{'⚠️' if h.get('近走前崩れ', False) else '-'}"
             )
 
     with st.expander(
@@ -3784,6 +3991,9 @@ if debug_mode:
                 f"-{h.get('前経験減点', 0)} "
                 f"｜失速減点 "
                 f"-{h.get('失速減点', 0)} "
+                f"｜反復垂れ "
+                f"{h.get('反復垂れ回数', 0)}回 "
+                f"(-{h.get('反復垂れ減点', 0)}) "
                 f"｜元減点 "
                 f"-{h.get('元失速減点', 0)} "
                 f"｜南関転入初戦 "
@@ -3796,15 +4006,39 @@ if debug_mode:
                 f"持続上がり詳細："
                 f"{h.get('持続上がり詳細', [])}\n\n"
                 f"失速詳細："
-                f"{h.get('失速詳細', [])}"
+                f"{h.get('失速詳細', [])}\n\n"
+                f"反復垂れ詳細："
+                f"{h.get('反復垂れ詳細', [])}\n\n"
+                f"近走前崩れ："
+                f"{h.get('近走前崩れ', False)} "
+                f"｜該当 "
+                f"{h.get('近走前崩れ回数', 0)}回\n\n"
+                f"近走前崩れ詳細："
+                f"{h.get('近走前崩れ詳細', [])}"
             )
         
 if not long_spurt_candidates:
     st.error("長く脚の評価データが取れていません")
     st.stop()
 
-# 地力ランキング1位をそのまま代表馬にする
-long_best = long_spurt_candidates[0]
+# 地力ランキング自体は評価順を残す。
+# ただし「近走前崩れ」は、前へ行けても現在は持続できていないため
+# 地力代表C（持続して脚を使えるタイプ）には採用しない。
+long_representative_candidates = [
+    h
+    for h in long_spurt_candidates
+    if not h.get(
+        "近走前崩れ",
+        False,
+    )
+]
+
+# 全馬が該当する特殊ケースだけ、ランキング1位へ戻す。
+long_best = (
+    long_representative_candidates[0]
+    if long_representative_candidates
+    else long_spurt_candidates[0]
+)
 
 long_spurt_horse = (
     f"{long_best['馬番']}番 "
@@ -3989,6 +4223,224 @@ def analyze_flow_style(race_flows):
         "押し上げ率": push_rate,
         "後方回数": back_count,
     }
+
+
+def build_marble_style_profile(
+    style,
+    avg_first,
+    avg_last,
+    primary_type,
+    recent_front_break=False,
+):
+    """
+    1頭を1種類の脚質だけに押し込めず、
+    「主脚質＋副脚質」のマーブル脚質として保持する。
+
+    主脚質：従来ロジックで決まった最終脚質。
+    副脚質：過去走で実際に確認できた別の走り方。
+
+    能力タグ
+    ・逃げ   ：1番手を取った経験
+    ・先行   ：1角4番手以内を複数回
+    ・持続   ：前〜中団で位置を保った経験
+    ・押上   ：5番手以下から2つ以上位置を上げた経験
+    ・差し   ：押し上げが複数回、または平均的に明確な前進
+
+    「押上」は差しそのものではなく、
+    先行馬でも持っていることがある副能力として独立させる。
+    """
+
+    valid_count = max(
+        style.get("有効数", 0),
+        1,
+    )
+
+    escape_count = style.get(
+        "逃げ回数",
+        0,
+    )
+
+    front_count = style.get(
+        "前団回数",
+        0,
+    )
+
+    stable_count = style.get(
+        "持続回数",
+        0,
+    )
+
+    push_count = style.get(
+        "押し上げ回数",
+        0,
+    )
+
+    # 0〜100の能力値。
+    # 押上は1回でも展開対応力として価値が高いため、
+    # 1回確認できれば最低55点を与える。
+    ability_scores = {
+        "逃げ": round(
+            escape_count
+            / valid_count
+            * 100,
+            1,
+        ),
+        "先行": round(
+            front_count
+            / valid_count
+            * 100,
+            1,
+        ),
+        "持続": (
+            0.0
+            if recent_front_break
+            else round(
+                stable_count
+                / valid_count
+                * 100,
+                1,
+            )
+        ),
+        "押上": round(
+            max(
+                push_count
+                / valid_count
+                * 100,
+                55 if push_count >= 1 else 0,
+            ),
+            1,
+        ),
+    }
+
+    tags = []
+
+    # 逃げは一度でも実戦で確認できれば副能力として残す。
+    if escape_count >= 1:
+        tags.append("逃げ")
+
+    # 先行は複数回の前団経験を基本条件にする。
+    # 主脚質が先行なら救済判定で決まった場合も必ず残す。
+    if (
+        front_count >= 2
+        or primary_type == "先行"
+    ):
+        tags.append("先行")
+
+    # 持続は1回でも位置維持が確認できれば副能力として残す。
+    # ただし直近3走で前から繰り返し崩れている馬は、
+    # 古い持続実績だけで「現在も持続できる」とは扱わない。
+    if (
+        stable_count >= 1
+        and not recent_front_break
+    ):
+        tags.append("持続")
+
+    # 押し上げは1回でも明確なら残す。
+    if push_count >= 1:
+        tags.append("押上")
+
+    # 差しは「押上の再現性」がある時だけ独立タグにする。
+    is_clear_closer = (
+        push_count >= 2
+        or (
+            push_count >= 1
+            and avg_first >= 4.5
+            and avg_last
+                <= avg_first - 1.5
+        )
+        or primary_type == "差し"
+    )
+
+    if is_clear_closer:
+        tags.append("差し")
+
+    # 主脚質は必ずタグへ残す。
+    if (
+        primary_type
+        not in {"展開待ち"}
+        and primary_type not in tags
+    ):
+        tags.append(primary_type)
+
+    # 重複を消しつつ順序を維持。
+    unique_tags = []
+    for tag in tags:
+        if tag not in unique_tags:
+            unique_tags.append(tag)
+
+    # 副脚質は主脚質以外。
+    # 差しが主脚質の場合、押上は意味がほぼ重なるため
+    # 表示だけは二重に見せない。
+    secondary_tags = [
+        tag
+        for tag in unique_tags
+        if tag != primary_type
+    ]
+
+    if primary_type == "差し":
+        secondary_tags = [
+            tag
+            for tag in secondary_tags
+            if tag != "押上"
+        ]
+
+    # 表示が長くなりすぎないよう、
+    # 副脚質は能力値の高い順に最大3つ。
+    def secondary_sort_score(tag):
+        if tag == "差し":
+            return ability_scores.get(
+                "押上",
+                0,
+            )
+
+        return ability_scores.get(
+            tag,
+            0,
+        )
+
+    secondary_tags = sorted(
+        secondary_tags,
+        key=secondary_sort_score,
+        reverse=True,
+    )[:3]
+
+    # 主＋副で何種類の走り方を持つか。
+    marble_degree = (
+        1
+        + len(secondary_tags)
+        if primary_type != "展開待ち"
+        else len(secondary_tags)
+    )
+
+    return {
+        "主脚質": primary_type,
+        "副脚質": secondary_tags,
+        "副脚質表示": (
+            "・".join(secondary_tags)
+            if secondary_tags
+            else "なし"
+        ),
+        "脚質タグ": unique_tags,
+        "マーブル度": marble_degree,
+        "能力点": ability_scores,
+        "逃げ回数": escape_count,
+        "前団回数": front_count,
+        "持続回数": stable_count,
+        "押し上げ回数": push_count,
+        "近走前崩れ": recent_front_break,
+    }
+
+
+def format_marble_style(profile):
+    """画面表示用の短い主・副脚質表記。"""
+
+    if not profile:
+        return "主：不明｜副：なし"
+
+    return (
+        f"主：{profile.get('主脚質', '不明')}"
+        f"｜副：{profile.get('副脚質表示', 'なし')}"
+    )
 strong_firsts = [flow[0] for flow in strong_flows if len(flow) >= 2]
 strong_lasts = [flow[-1] for flow in strong_flows if len(flow) >= 2]
 
@@ -4438,6 +4890,28 @@ if kyakushoku_type == "展開待ち":
                 kyakushoku_type = "持続"
 
 
+# ==================================================
+# 🎨 軸馬のマーブル脚質
+#
+# 従来の kyakushoku_type は買い目ロジック用の主脚質として維持。
+# そのうえで、逃げ・先行・持続・押上などの副能力を保持する。
+# ==================================================
+axis_marble_profile = build_marble_style_profile(
+    strong_style,
+    strong_avg_first,
+    strong_avg_last,
+    kyakushoku_type,
+    recent_front_break=(
+        strong_data.get(
+            "近走前崩れ",
+            False,
+        )
+        if strong_data
+        else False
+    ),
+)
+
+
 if debug_mode:
 
     with st.expander(
@@ -4447,6 +4921,18 @@ if debug_mode:
 
         st.write(
             f"最終判定：**{kyakushoku_type}**"
+        )
+
+        st.write(
+            f"マーブル脚質：**"
+            f"{format_marble_style(axis_marble_profile)}** "
+            f"｜マーブル度 "
+            f"{axis_marble_profile.get('マーブル度', 0)}"
+        )
+
+        st.caption(
+            f"能力点："
+            f"{axis_marble_profile.get('能力点', {})}"
         )
 
         st.write(
@@ -4617,6 +5103,12 @@ common_top5_numbers_for_tenkai.discard(
     popular_horse_num
 )
 
+# 近走で前から崩れ続けている馬は、
+# 前進TOP5×地力TOP5の共通候補からも外す。
+common_top5_numbers_for_tenkai -= (
+    recent_front_break_horse_numbers
+)
+
 
 def classify_tenkai_candidate(horse):
     """
@@ -4721,14 +5213,267 @@ def classify_tenkai_candidate(horse):
     else:
         target_type = "展開待ち"
 
+    recent_front_break = horse.get(
+        "近走前崩れ",
+        False,
+    )
+
+    # 直近で前から崩れ続けている馬を、
+    # 古い位置維持実績だけで「持続」と分類しない。
+    if (
+        recent_front_break
+        and target_type == "持続"
+    ):
+        if front_count >= 1:
+            target_type = "先行"
+        else:
+            target_type = "展開待ち"
+
+    marble_profile = build_marble_style_profile(
+        style,
+        avg_first,
+        avg_last,
+        target_type,
+        recent_front_break=recent_front_break,
+    )
+
     return {
         "候補脚質": target_type,
+        "主脚質": marble_profile["主脚質"],
+        "副脚質": marble_profile["副脚質"],
+        "副脚質表示": marble_profile["副脚質表示"],
+        "脚質タグ": marble_profile["脚質タグ"],
+        "マーブル度": marble_profile["マーブル度"],
+        "能力点": marble_profile["能力点"],
         "平均前半": avg_first,
         "平均4角": avg_last,
         "逃げ率": escape_rate,
         "前団回数": front_count,
         "持続回数": stable_count,
         "押し上げ回数": push_count,
+        "近走前崩れ": recent_front_break,
+    }
+
+
+def calc_marble_tenkai_fit(
+    axis_profile,
+    candidate_profile,
+):
+    """
+    軸の主・副脚質と、相手の主・副脚質を照合して
+    展開への対応力を数値化する。
+
+    特に逃げ軸では、
+    「前について行けるだけ」の馬より、
+    「先行＋押上」の両方を持つ馬を強く評価する。
+
+    例：
+    逃げ軸7番に対して、
+    5番＝先行のみ
+    10番＝先行＋押上
+    なら10番を展開上位へ持ち上げる。
+    """
+
+    # 近走で前から崩れ続けている馬は、
+    # 前進能力は認めても展開馬には採用しない。
+    if candidate_profile.get(
+        "近走前崩れ",
+        False,
+    ):
+        return {
+            "スコア": -999.0,
+            "理由": [
+                "近走前崩れのため展開対象外"
+            ],
+        }
+
+    axis_type = axis_profile.get(
+        "主脚質",
+        "展開待ち",
+    )
+
+    axis_tags = set(
+        axis_profile.get(
+            "脚質タグ",
+            [],
+        )
+    )
+
+    candidate_tags = set(
+        candidate_profile.get(
+            "脚質タグ",
+            [],
+        )
+    )
+
+    ability = candidate_profile.get(
+        "能力点",
+        {},
+    )
+
+    # 主脚質別に「相手へ欲しい能力」の比率を変える。
+    # 合計は概ね100点前後。
+    fit_weights = {
+        "逃げ": {
+            "先行": 0.35,
+            "押上": 0.45,
+            "持続": 0.20,
+            "逃げ": 0.05,
+        },
+        "先行": {
+            "先行": 0.20,
+            "押上": 0.40,
+            "持続": 0.35,
+            "逃げ": 0.05,
+        },
+        "持続": {
+            "先行": 0.25,
+            "押上": 0.35,
+            "持続": 0.35,
+            "逃げ": 0.05,
+        },
+        "差し": {
+            "先行": 0.20,
+            "押上": 0.40,
+            "持続": 0.35,
+            "逃げ": 0.05,
+        },
+        "展開待ち": {
+            "先行": 0.30,
+            "押上": 0.30,
+            "持続": 0.30,
+            "逃げ": 0.10,
+        },
+    }
+
+    weights = fit_weights.get(
+        axis_type,
+        fit_weights["展開待ち"],
+    )
+
+    fit_score = 0.0
+    reasons = []
+
+    for ability_name, weight in weights.items():
+        ability_value = ability.get(
+            ability_name,
+            0,
+        )
+
+        fit_score += (
+            ability_value
+            * weight
+        )
+
+    # ----------------------------------------------
+    # マーブル組み合わせボーナス
+    # ----------------------------------------------
+    if axis_type == "逃げ":
+
+        # 今回の本命ルール。
+        # 逃げ軸について行ける先行力に加え、
+        # ペースが変わった時に自力で押し上げられる馬を優先。
+        if {"先行", "押上"}.issubset(
+            candidate_tags
+        ):
+            fit_score += 60
+            reasons.append(
+                "逃げ軸×先行＋押上"
+            )
+
+        elif "先行" in candidate_tags:
+            fit_score += 15
+            reasons.append(
+                "逃げ軸×先行"
+            )
+
+    elif axis_type == "先行":
+
+        if {"持続", "押上"}.issubset(
+            candidate_tags
+        ):
+            fit_score += 45
+            reasons.append(
+                "先行軸×持続＋押上"
+            )
+
+        elif {"先行", "持続"}.issubset(
+            candidate_tags
+        ):
+            fit_score += 30
+            reasons.append(
+                "先行軸×先行＋持続"
+            )
+
+    elif axis_type == "持続":
+
+        if {"持続", "押上"}.issubset(
+            candidate_tags
+        ):
+            fit_score += 40
+            reasons.append(
+                "持続軸×持続＋押上"
+            )
+
+        elif {"先行", "持続"}.issubset(
+            candidate_tags
+        ):
+            fit_score += 30
+            reasons.append(
+                "持続軸×先行＋持続"
+            )
+
+    elif axis_type == "差し":
+
+        if {"持続", "押上"}.issubset(
+            candidate_tags
+        ):
+            fit_score += 45
+            reasons.append(
+                "差し軸×持続＋押上"
+            )
+
+        elif "押上" in candidate_tags:
+            fit_score += 20
+            reasons.append(
+                "差し軸×押上"
+            )
+
+    # 軸自身にも押上の副能力がある場合、
+    # 相手にも押上があれば「もう一つの展開」へ対応しやすい。
+    if (
+        "押上" in axis_tags
+        and "押上" in candidate_tags
+    ):
+        fit_score += 25
+        reasons.append(
+            "軸副脚質の押上と一致"
+        )
+
+    # 副脚質が複数ある馬は展開の変化に対応しやすい。
+    marble_degree = candidate_profile.get(
+        "マーブル度",
+        0,
+    )
+
+    if marble_degree >= 4:
+        fit_score += 20
+        reasons.append(
+            "高マーブル度"
+        )
+
+    elif marble_degree >= 3:
+        fit_score += 10
+        reasons.append(
+            "マーブル脚質"
+        )
+
+    return {
+        "スコア": round(
+            fit_score,
+            1,
+        ),
+        "理由": reasons,
     }
 
 
@@ -4736,9 +5481,12 @@ def classify_tenkai_candidate(horse):
 # 最上位の脚質が1頭でもいれば、その脚質内だけで選ぶ。
 tenkai_type_priority = {
     "逃げ": [
-        "逃げ",
+        # 逃げ軸では、同型逃げよりも
+        # 「前について行けて、その後も動ける馬」を先に見る。
         "先行",
         "持続",
+        "差し",
+        "逃げ",
     ],
     "先行": [
         "先行",
@@ -4909,95 +5657,418 @@ axis_tenkai_time = (
 )
 
 
-# 共通TOP5候補を作る
-tenkai_common_candidates = []
+# ==================================================
+# 🌊 展開馬・消去法ベース候補作成
+#
+# ここからは「共通TOP5に入った馬だけを候補」にしない。
+#
+# ① まず全馬から明確な不適合馬を消す
+# ② 残った馬だけに、近況・前進・地力・同距離タイム・
+#    マーブル脚質の適応度を加点する
+# ③ 総合ランキング確定後に最後の総合点を足して決定する
+#
+# 前進TOP5×地力TOP5は「候補資格」ではなく加点材料。
+# マーブル脚質も「最優先条件」ではなく加点材料。
+# ==================================================
 
-for horse_no in sorted(
-    common_top5_numbers_for_tenkai
-):
 
-    horse = next(
-        (
-            h
-            for h in horses
-            if h["馬番"] == horse_no
+def judge_tenkai_elimination(horse):
+    """
+    展開馬をスコア比較する前の消去判定。
+
+    前へ行ける・昔好走した、という能力は否定しない。
+    ただし「今の状態で展開馬として推しづらい」馬を先に落とす。
+
+    強制消去：
+    ① 近走前崩れ
+       直近3走で前半4番手以内→3つ以上後退が2回以上。
+
+    ② 近走低調
+       直近3走のうち8着以下が2回以上、かつ3着以内なし。
+       例：9着→8着→5着。
+
+    ③ 直近2走連続大敗
+       直近2走がともに8着以下。
+
+    ④ 最新走大失速＋大敗
+       最新走の大失速強度が100％で、最新着順も8着以下。
+
+    軸馬自身は別で除外する。
+    """
+
+    reasons = []
+
+    if horse.get("近走前崩れ", False):
+        reasons.append("近走前崩れ")
+
+    recent_finishes = [
+        finish
+        for finish in horse.get("着順", [])[:3]
+        if isinstance(finish, int)
+    ]
+
+    if recent_finishes:
+        bottom8_count = sum(
+            1
+            for finish in recent_finishes
+            if finish >= 8
+        )
+
+        top3_count = sum(
+            1
+            for finish in recent_finishes
+            if finish <= 3
+        )
+
+        if (
+            len(recent_finishes) >= 3
+            and bottom8_count >= 2
+            and top3_count == 0
+        ):
+            reasons.append(
+                "直近3走で8着以下2回以上・3着以内なし"
+            )
+
+        if (
+            len(recent_finishes) >= 2
+            and recent_finishes[0] >= 8
+            and recent_finishes[1] >= 8
+        ):
+            reasons.append(
+                "直近2走連続8着以下"
+            )
+
+        if (
+            horse.get("直近大失速強度", 0) >= 1.0
+            and recent_finishes[0] >= 8
+        ):
+            reasons.append(
+                "最新走大失速＋8着以下"
+            )
+
+    # 同じ理由が重なった時は表示を整理する
+    unique_reasons = []
+    for reason in reasons:
+        if reason not in unique_reasons:
+            unique_reasons.append(reason)
+
+    return {
+        "消去": bool(unique_reasons),
+        "理由": unique_reasons,
+        "直近着順": recent_finishes,
+    }
+
+
+def calc_tenkai_recent_form_score(horse):
+    """
+    展開馬専用の近況点。
+
+    古い好走より、直近の状態を先に見る。
+    最新走ほど強く反映する。
+    """
+
+    recent = [
+        finish
+        for finish in horse.get("着順", [])[:3]
+        if isinstance(finish, int)
+    ]
+
+    point_table = {
+        1: 60,
+        2: 50,
+        3: 40,
+        4: 25,
+        5: 15,
+        6: 5,
+        7: 0,
+        8: -20,
+        9: -30,
+        10: -40,
+        11: -45,
+        12: -50,
+    }
+
+    weights = [
+        1.00,
+        0.70,
+        0.45,
+    ]
+
+    score = 0.0
+
+    for idx, finish in enumerate(recent):
+        base = point_table.get(
+            finish,
+            -50 if finish >= 13 else 0,
+        )
+
+        weight = (
+            weights[idx]
+            if idx < len(weights)
+            else 0.45
+        )
+
+        score += base * weight
+
+    # 直近3走すべて5着以内なら安定感を加点
+    if (
+        len(recent) == 3
+        and all(finish <= 5 for finish in recent)
+    ):
+        score += 25
+
+    # 直近3走で2回以上3着以内なら好調加点
+    if sum(1 for finish in recent if finish <= 3) >= 2:
+        score += 20
+
+    return round(score, 1)
+
+
+def calc_tenkai_rank_bonus(front_rank, long_rank):
+    """
+    前進・地力順位は「候補資格」ではなく加点。
+    圏外でも消さない。
+    """
+
+    front_bonus_table = {
+        1: 55,
+        2: 45,
+        3: 35,
+        4: 25,
+        5: 15,
+    }
+
+    long_bonus_table = {
+        1: 65,
+        2: 52,
+        3: 40,
+        4: 28,
+        5: 18,
+    }
+
+    front_bonus = front_bonus_table.get(
+        front_rank,
+        0,
+    )
+
+    long_bonus = long_bonus_table.get(
+        long_rank,
+        0,
+    )
+
+    common_bonus = (
+        30
+        if (
+            front_rank <= 5
+            and long_rank <= 5
+        )
+        else 0
+    )
+
+    return {
+        "前進加点": front_bonus,
+        "地力加点": long_bonus,
+        "共通TOP5加点": common_bonus,
+        "合計": (
+            front_bonus
+            + long_bonus
+            + common_bonus
         ),
-        None,
-    )
+    }
 
-    if horse is None:
-        continue
 
-    front_rank = (
-        front_rank_map_for_tenkai[
-            horse_no
-        ]
-    )
+def calc_tenkai_type_match_bonus(candidate_profile):
+    """
+    軸の主脚質に対して欲しい相手脚質を軽く加点する。
 
-    long_rank = (
-        long_rank_map_for_tenkai[
-            horse_no
-        ]
-    )
+    ここも絶対条件にはしない。
+    複数タグを持つマーブル馬は、最も高い一致だけ採用する。
+    """
 
-    style_info = (
-        classify_tenkai_candidate(
-            horse
+    candidate_tags = set(
+        candidate_profile.get(
+            "脚質タグ",
+            [],
         )
     )
 
-    # 1位=5点、2位=4点 ... 5位=1点
-    front_rank_point = (
-        6 - front_rank
+    priorities = tenkai_type_priority.get(
+        kyakushoku_type,
+        [],
     )
 
-    long_rank_point = (
-        6 - long_rank
+    bonus_by_order = [
+        35,
+        25,
+        15,
+        8,
+    ]
+
+    for idx, wanted_type in enumerate(priorities):
+        if wanted_type not in candidate_tags:
+            continue
+
+        bonus = (
+            bonus_by_order[idx]
+            if idx < len(bonus_by_order)
+            else 5
+        )
+
+        return {
+            "加点": bonus,
+            "一致脚質": wanted_type,
+        }
+
+    return {
+        "加点": 0,
+        "一致脚質": "なし",
+    }
+
+
+# --------------------------------------------------
+# 全馬を一度候補として見る。
+# 軸馬と消去対象だけを先に落とす。
+# --------------------------------------------------
+tenkai_pre_candidates = []
+tenkai_eliminated_candidates = []
+
+for horse in horses:
+
+    horse_no = horse["馬番"]
+
+    if horse_no == popular_horse_num:
+        continue
+
+    elimination = judge_tenkai_elimination(
+        horse
     )
 
-    # 0〜500程度の比較用スコア
-    rank_score = (
-        front_rank_point
-        * front_weight
-        * 100
-        + long_rank_point
-        * long_weight
-        * 100
+    if elimination["消去"]:
+        tenkai_eliminated_candidates.append({
+            "馬番": horse_no,
+            "馬名": horse["馬名"],
+            "理由": elimination["理由"],
+            "直近着順": elimination["直近着順"],
+        })
+        continue
+
+    style_info = classify_tenkai_candidate(
+        horse
     )
 
-    tenkai_common_candidates.append({
+    marble_fit = calc_marble_tenkai_fit(
+        axis_marble_profile,
+        style_info,
+    )
+
+    front_rank = front_rank_map_for_tenkai.get(
+        horse_no,
+        99,
+    )
+
+    long_rank = long_rank_map_for_tenkai.get(
+        horse_no,
+        99,
+    )
+
+    rank_bonus = calc_tenkai_rank_bonus(
+        front_rank,
+        long_rank,
+    )
+
+    type_match = calc_tenkai_type_match_bonus(
+        style_info
+    )
+
+    recent_form_score = calc_tenkai_recent_form_score(
+        horse
+    )
+
+    # マーブル適応点は上限を付けて50％だけ反映する。
+    # これで「タグが多いだけ」の馬が近況を無視して
+    # 一気に展開1位になるのを防ぐ。
+    raw_marble_fit_score = max(
+        0,
+        marble_fit.get("スコア", 0),
+    )
+
+    marble_bonus = round(
+        min(
+            raw_marble_fit_score,
+            120,
+        )
+        * 0.50,
+        1,
+    )
+
+    time_rank = tenkai_time_rank_map.get(
+        horse_no,
+        99,
+    )
+
+    if time_rank <= 3:
+        time_bonus = 25
+    elif time_rank <= 5:
+        time_bonus = 12
+    else:
+        time_bonus = 0
+
+    # --------------------------------------------------
+    # 強制消去まではしないリスクは減点で扱う。
+    # --------------------------------------------------
+    risk_penalty = 0
+    risk_reasons = []
+
+    if horse_no in shissoku_heavy_horse_numbers:
+        risk_penalty += 45
+        risk_reasons.append("反復失速")
+
+    if horse.get("徐々垂れ", False):
+        risk_penalty += 25
+        risk_reasons.append("徐々垂れ")
+
+    if horse.get("踏ん張り不足", False):
+        risk_penalty += 20
+        risk_reasons.append("踏ん張り不足")
+
+    if horse.get("直近大失速強度", 0) >= 0.6:
+        risk_penalty += 25
+        risk_reasons.append("直近大失速")
+
+    preliminary_score = round(
+        recent_form_score
+        + rank_bonus["合計"]
+        + type_match["加点"]
+        + marble_bonus
+        + time_bonus
+        - risk_penalty,
+        1,
+    )
+
+    tenkai_pre_candidates.append({
         "馬番": horse_no,
         "馬名": horse["馬名"],
-        "スコア": rank_score,
+        "候補脚質": style_info["候補脚質"],
+        "主脚質": style_info["主脚質"],
+        "副脚質": style_info["副脚質"],
+        "副脚質表示": style_info["副脚質表示"],
+        "脚質タグ": style_info["脚質タグ"],
+        "マーブル度": style_info["マーブル度"],
+        "脚質能力点": style_info["能力点"],
+        "展開適応点": raw_marble_fit_score,
+        "展開適応加点": marble_bonus,
+        "展開適応理由": marble_fit.get("理由", []),
         "前進順位": front_rank,
         "地力順位": long_rank,
-        "順位合計": (
-            front_rank + long_rank
-        ),
-        "候補脚質": style_info[
-            "候補脚質"
-        ],
-        "平均前半": style_info[
-            "平均前半"
-        ],
-        "平均4角": style_info[
-            "平均4角"
-        ],
-        "逃げ率": style_info[
-            "逃げ率"
-        ],
-        "前団回数": style_info[
-            "前団回数"
-        ],
-        "持続回数": style_info[
-            "持続回数"
-        ],
-        "押し上げ回数": style_info[
-            "押し上げ回数"
-        ],
-
-        # 展開馬試験用の同距離タイム情報。
-        # タイムが無い馬は99位扱いだが、減点はしない。
+        "順位合計": front_rank + long_rank,
+        "前進加点": rank_bonus["前進加点"],
+        "地力加点": rank_bonus["地力加点"],
+        "共通TOP5加点": rank_bonus["共通TOP5加点"],
+        "脚質一致加点": type_match["加点"],
+        "脚質一致": type_match["一致脚質"],
+        "近況点": recent_form_score,
+        "展開タイム順位": time_rank,
+        "展開タイム加点": time_bonus,
         "展開同距離タイム秒": (
             tenkai_same_distance_time_info
             .get(horse_no, {})
@@ -5009,12 +6080,6 @@ for horse_no in sorted(
             .get(
                 "モード",
                 "同距離タイムなし",
-            )
-        ),
-        "展開タイム順位": (
-            tenkai_time_rank_map.get(
-                horse_no,
-                99,
             )
         ),
         "展開軸タイム差": (
@@ -5032,203 +6097,46 @@ for horse_no in sorted(
             )
             else None
         ),
-        "選出元": "前進TOP5×地力TOP5",
+        "リスク減点": risk_penalty,
+        "リスク理由": risk_reasons,
+        "近走前崩れ": style_info.get(
+            "近走前崩れ",
+            False,
+        ),
+        "平均前半": style_info.get(
+            "平均前半",
+            99,
+        ),
+        "平均4角": style_info.get(
+            "平均4角",
+            99,
+        ),
+        "逃げ率": style_info.get(
+            "逃げ率",
+            0,
+        ),
+        "前団回数": style_info.get(
+            "前団回数",
+            0,
+        ),
+        "持続回数": style_info.get(
+            "持続回数",
+            0,
+        ),
+        "押し上げ回数": style_info.get(
+            "押し上げ回数",
+            0,
+        ),
+        "予備展開点": preliminary_score,
+        "選出元": "消去法＋適応スコア",
     })
 
 
-def tenkai_candidate_sort_key(h):
-    """
-    同じ優先脚質の中での並べ方。
-
-    逃げ：前進順位を最優先
-    先行：前進＋地力のバランス、同点なら前進
-    持続：地力順位を最優先
-    差し：地力順位 → 押し上げ実績 → 前進順位
-    展開待ち：前進＋地力のバランス
-    """
-
-    front_rank = h.get(
-        "前進順位",
-        99,
-    )
-
-    long_rank = h.get(
-        "地力順位",
-        99,
-    )
-
-    rank_sum = (
-        front_rank
-        + long_rank
-    )
-
-    # --------------------------------------------------
-    # 展開馬タイム試験
-    #
-    # 同距離タイムがメンバー3位以内なら
-    # 同じ優先脚質グループ内で一段上に置く。
-    #
-    # 4位以下・タイムなしは従来ロジックのまま。
-    # タイムが無いこと自体では減点しない。
-    # --------------------------------------------------
-    time_rank = h.get(
-        "展開タイム順位",
-        99,
-    )
-
-    time_trial_bucket = (
-        0
-        if time_rank <= 3
-        else 1
-    )
-
-    if kyakushoku_type == "逃げ":
-        return (
-            time_trial_bucket,
-            time_rank,
-            front_rank,
-            long_rank,
-        )
-
-    if kyakushoku_type == "先行":
-        return (
-            time_trial_bucket,
-            time_rank,
-            rank_sum,
-            front_rank,
-            long_rank,
-        )
-
-    if kyakushoku_type == "持続":
-        return (
-            time_trial_bucket,
-            time_rank,
-            long_rank,
-            front_rank,
-        )
-
-    if kyakushoku_type == "差し":
-        return (
-            time_trial_bucket,
-            time_rank,
-            long_rank,
-            -h.get(
-                "押し上げ回数",
-                0,
-            ),
-            front_rank,
-        )
-
-    return (
-        time_trial_bucket,
-        time_rank,
-        rank_sum,
-        long_rank,
-        front_rank,
-    )
-
-
-# --------------------------------------------------
-# 軸タイプに合う馬を、共通TOP5から探す
-# --------------------------------------------------
-preferred_types = (
-    tenkai_type_priority.get(
-        kyakushoku_type,
-        [],
-    )
-)
-
+# 総合ランキング確定後に最終点を加えるため、
+# この段階ではまだ展開馬を確定しない。
+tenkai_candidates = []
 selected_target_type = None
-compatible_common_candidates = []
-
-for preferred_type in preferred_types:
-
-    same_type_candidates = [
-        h
-        for h in tenkai_common_candidates
-        if h.get(
-            "候補脚質"
-        ) == preferred_type
-    ]
-
-    if not same_type_candidates:
-        continue
-
-    compatible_common_candidates = sorted(
-        same_type_candidates,
-        key=tenkai_candidate_sort_key,
-    )
-
-    selected_target_type = (
-        preferred_type
-    )
-
-    break
-
-
-# 共通TOP5の中に軸タイプ適合馬がいる場合は、
-# 採用脚質を先頭にし、その後ろも軸タイプの脚質優先順で並べる。
-# これで三連複Bが被って繰り下がる時も、
-# なるべく軸タイプに合う相手から順番に使える。
-if compatible_common_candidates:
-
-    ranked_common_candidates = []
-    ranked_common_numbers = set()
-
-    for preferred_type in preferred_types:
-
-        type_group = sorted(
-            [
-                h
-                for h in tenkai_common_candidates
-                if (
-                    h.get("候補脚質")
-                    == preferred_type
-                    and h["馬番"]
-                    not in ranked_common_numbers
-                )
-            ],
-            key=tenkai_candidate_sort_key,
-        )
-
-        ranked_common_candidates.extend(
-            type_group
-        )
-
-        ranked_common_numbers.update(
-            h["馬番"]
-            for h in type_group
-        )
-
-    # 優先脚質に入らなかった馬は最後尾へ
-    leftover_candidates = sorted(
-        [
-            h
-            for h in tenkai_common_candidates
-            if h["馬番"]
-            not in ranked_common_numbers
-        ],
-        key=tenkai_candidate_sort_key,
-    )
-
-    tenkai_candidates = (
-        ranked_common_candidates
-        + leftover_candidates
-    )
-
-    tenkai_selection_source = (
-        "前進TOP5×地力TOP5"
-    )
-
-else:
-
-    # 総合ランキングがまだ未確定なので、
-    # ここでは空のまま待つ。
-    tenkai_candidates = []
-
-    tenkai_selection_source = (
-        "総合ランキング待ち"
-    )
+tenkai_selection_source = "消去法＋適応スコア"
 
 # 総合力1位を裏側で判定
 front_score_map = {h["馬番"]: h["スコア"] for h in front_candidates}
@@ -5338,6 +6246,34 @@ else:
     # 0頭または1頭なら比較できないため、
     # 全馬の総合タイム点を0にする
     fastest_same_distance_average_time = None
+
+# ==================================================
+# 総合タイム評価用・NAR最高タイム救済の準備
+#
+# 過去走の同距離タイム評価が弱い／0点でも、
+# NAR出馬表に表示される当距離の「最高タイム」を
+# 補助評価として使えるようにする。
+#
+# ・最高タイムを持つ馬が2頭以上いる時だけ有効
+# ・最も遅い最高タイムを0点基準
+# ・1秒速いごとに70点
+# ・最大70点
+#
+# 通常の同距離タイム点と比較し、高い方だけを採用する。
+# 二重加点はしない。
+# ==================================================
+display_best_time_map = {
+    h["馬番"]: h.get("最高タイム秒")
+    for h in horses
+    if h.get("最高タイム秒") is not None
+}
+
+if len(display_best_time_map) >= 2:
+    slowest_display_best_time = max(
+        display_best_time_map.values()
+    )
+else:
+    slowest_display_best_time = None
 # ==================================================
 # 同距離・逃げ切り警戒馬
 #
@@ -5673,6 +6609,66 @@ for horse in horses:
         debug_total_parts[
             "持ちタイム"
         ] += time_score
+
+    # ==================================================
+    # NAR最高タイムによる持ちタイム救済
+    #
+    # 通常の同距離タイム点とNAR最高タイム点を比較し、
+    # 高い方を最終的な「持ちタイム」評価として採用する。
+    #
+    # すでに通常タイム点を加算している場合は、
+    # 最高タイム点との差額だけを追加して二重加点を防ぐ。
+    # ==================================================
+    if slowest_display_best_time is not None:
+
+        display_best_time = (
+            display_best_time_map.get(
+                horse_no
+            )
+        )
+
+        if display_best_time is not None:
+
+            # 最も遅い最高タイムとの差。
+            # 秒数が小さいほど速いので、差が大きいほど高評価。
+            display_time_advantage = max(
+                0,
+                slowest_display_best_time
+                - display_best_time
+            )
+
+            # 1秒速いごとに70点。
+            # 最高タイムだけで総合を壊さないよう最大70点。
+            display_time_score = min(
+                70,
+                display_time_advantage * 70
+            )
+
+            # 通常タイム点より最高タイム点の方が高い場合だけ、
+            # 差額を加えて最終タイム点を置き換える。
+            if display_time_score > time_score:
+
+                extra_time_score = (
+                    display_time_score
+                    - time_score
+                )
+
+                total_score += extra_time_score
+
+                debug_total_parts[
+                    "持ちタイム"
+                ] += extra_time_score
+
+                time_score = display_time_score
+                best_time = display_best_time
+                time_weight = 1.0
+                time_diff = (
+                    -display_time_advantage
+                )
+                used_times = [
+                    display_best_time
+                ]
+
     # ==================================================
     # 総合評価に使う地方実績を決める
     #
@@ -6242,80 +7238,171 @@ if (
 
 
 # ==================================================
-# 展開馬の最終決定
+# 🌊 展開馬の最終決定・消去法一本化
 #
-# 前進TOP5×地力TOP5の共通候補に、
-# 軸タイプへ合う馬がいた場合はその候補を採用。
-#
-# 共通候補が0頭、または軸タイプへ合う馬が0頭なら、
-# 総合ランキング上位から軸馬自身を飛ばして採用する。
+# ① 事前消去を通過した馬だけを対象
+# ② 予備展開点に総合順位を加える
+# ③ マーブルは加点材料の1つに留める
+# ④ 最終点の高い順に展開馬を決める
 # ==================================================
 
-if tenkai_candidates:
+tenkai_candidates = []
 
-    # 共通TOP5方式で決定
-    for h in tenkai_candidates:
-        h["最終総合順位"] = (
-            final_total_rank_map.get(
-                h["馬番"],
-                99,
+for candidate in tenkai_pre_candidates:
+
+    horse_no = candidate["馬番"]
+
+    total_rank = final_total_rank_map.get(
+        horse_no,
+        99,
+    )
+
+    # 総合も候補資格ではなく加点。
+    # 1〜5位だけ段階的に評価する。
+    total_rank_bonus_table = {
+        1: 55,
+        2: 45,
+        3: 35,
+        4: 25,
+        5: 15,
+    }
+
+    total_rank_bonus = total_rank_bonus_table.get(
+        total_rank,
+        0,
+    )
+
+    final_tenkai_score = round(
+        candidate["予備展開点"]
+        + total_rank_bonus,
+        1,
+    )
+
+    candidate = dict(candidate)
+
+    candidate["最終総合順位"] = total_rank
+    candidate["総合順位加点"] = total_rank_bonus
+    candidate["展開最終点"] = final_tenkai_score
+
+    # 既存の後段処理は "スコア" を参照するため、
+    # ここで最終展開点を統一スコアとして入れる。
+    candidate["スコア"] = final_tenkai_score
+
+    tenkai_candidates.append(
+        candidate
+    )
+
+
+# 高い順。
+# 同点なら近況 → 地力順位 → 前進順位 → 総合順位で決める。
+tenkai_candidates = sorted(
+    tenkai_candidates,
+    key=lambda h: (
+        -h.get("展開最終点", -9999),
+        -h.get("近況点", -9999),
+        h.get("地力順位", 99),
+        h.get("前進順位", 99),
+        h.get("最終総合順位", 99),
+        h.get("馬番", 99),
+    ),
+)
+
+
+# 万一、消去条件が厳しすぎて全馬消えた時だけ、
+# 強制消去を緩めて「近走前崩れ」以外から救済する。
+# 通常時には発動しない安全網。
+if not tenkai_candidates:
+
+    emergency_candidates = []
+
+    for horse in horses:
+
+        horse_no = horse["馬番"]
+
+        if horse_no == popular_horse_num:
+            continue
+
+        # 近走前崩れだけは最後まで展開馬へ戻さない。
+        if horse.get("近走前崩れ", False):
+            continue
+
+        style_info = classify_tenkai_candidate(
+            horse
+        )
+
+        marble_fit = calc_marble_tenkai_fit(
+            axis_marble_profile,
+            style_info,
+        )
+
+        total_rank = final_total_rank_map.get(
+            horse_no,
+            99,
+        )
+
+        front_rank = front_rank_map_for_tenkai.get(
+            horse_no,
+            99,
+        )
+
+        long_rank = long_rank_map_for_tenkai.get(
+            horse_no,
+            99,
+        )
+
+        rescue_score = (
+            calc_tenkai_recent_form_score(horse)
+            + max(
+                0,
+                min(
+                    marble_fit.get("スコア", 0),
+                    100,
+                )
+                * 0.30,
+            )
+            + (
+                30
+                if total_rank <= 3
+                else 15
+                if total_rank <= 5
+                else 0
             )
         )
 
-    tenkai_selection_source = (
-        "前進TOP5×地力TOP5"
-    )
-
-else:
-
-    # --------------------------------------------------
-    # 共通TOP5に適合馬がいない場合だけ総合へフォールバック
-    # --------------------------------------------------
-    tenkai_candidates = []
-
-    for rank, h in enumerate(
-        total_candidates,
-        start=1,
-    ):
-
-        # 軸馬自身は展開馬にしない
-        if h["馬番"] == popular_horse_num:
-            continue
-
-        tenkai_candidates.append({
-            "馬番": h["馬番"],
-            "馬名": h["馬名"],
-            "スコア": h[
-                "総合スコア"
-            ],
-            "前進順位": (
-                front_rank_map_for_tenkai.get(
-                    h["馬番"],
-                    99,
-                )
-            ),
-            "地力順位": (
-                long_rank_map_for_tenkai.get(
-                    h["馬番"],
-                    99,
-                )
-            ),
-            "順位合計": 198,
-            "候補脚質": "総合代替",
-            "平均前半": 99,
-            "平均4角": 99,
-            "押し上げ回数": 0,
-            "選出元": "総合ランキング",
-            "最終総合順位": rank,
+        emergency_candidates.append({
+            "馬番": horse_no,
+            "馬名": horse["馬名"],
+            "スコア": round(rescue_score, 1),
+            "展開最終点": round(rescue_score, 1),
+            "候補脚質": style_info.get("候補脚質", "展開待ち"),
+            "主脚質": style_info.get("主脚質", "展開待ち"),
+            "副脚質": style_info.get("副脚質", []),
+            "副脚質表示": style_info.get("副脚質表示", "なし"),
+            "脚質タグ": style_info.get("脚質タグ", []),
+            "マーブル度": style_info.get("マーブル度", 0),
+            "脚質能力点": style_info.get("能力点", {}),
+            "展開適応点": marble_fit.get("スコア", 0),
+            "展開適応加点": 0,
+            "展開適応理由": marble_fit.get("理由", []),
+            "前進順位": front_rank,
+            "地力順位": long_rank,
+            "順位合計": front_rank + long_rank,
+            "近況点": calc_tenkai_recent_form_score(horse),
+            "最終総合順位": total_rank,
+            "押し上げ回数": style_info.get("押し上げ回数", 0),
+            "選出元": "緊急救済",
         })
 
-    selected_target_type = (
-        "総合代替"
+    tenkai_candidates = sorted(
+        emergency_candidates,
+        key=lambda h: (
+            -h.get("展開最終点", -9999),
+            h.get("最終総合順位", 99),
+            h.get("地力順位", 99),
+        ),
     )
 
-    tenkai_selection_source = (
-        "総合ランキング"
-    )
+    tenkai_selection_source = "緊急救済"
 
 
 if not tenkai_candidates:
@@ -6326,18 +7413,71 @@ if not tenkai_candidates:
 
 
 # 展開馬を最終決定
-tenkai_final_candidates = (
-    tenkai_candidates
-)
+tenkai_final_candidates = tenkai_candidates
 
-tenkai_best = (
-    tenkai_final_candidates[0]
+tenkai_best = tenkai_final_candidates[0]
+
+selected_target_type = tenkai_best.get(
+    "主脚質",
+    tenkai_best.get(
+        "候補脚質",
+        "不明",
+    ),
 )
 
 tenkai_horse = (
     f"{tenkai_best['馬番']}番 "
     f"{tenkai_best['馬名']}"
 )
+
+
+# デバッグ時は「誰を消したか」と「残った馬の点数内訳」を見せる。
+if debug_mode:
+
+    with st.expander(
+        "🧹 展開馬・消去法チェック",
+        expanded=False,
+    ):
+
+        if tenkai_eliminated_candidates:
+
+            st.markdown("#### 消去馬")
+
+            for h in tenkai_eliminated_candidates:
+                st.write(
+                    f"❌ {h['馬番']}番 {h['馬名']} "
+                    f"｜直近 {h.get('直近着順', [])} "
+                    f"｜{', '.join(h.get('理由', []))}"
+                )
+
+        else:
+            st.write("消去馬なし")
+
+        st.markdown("#### 残存候補")
+
+        for rank, h in enumerate(
+            tenkai_candidates[:8],
+            start=1,
+        ):
+            st.write(
+                f"{rank}位｜{h['馬番']}番 {h['馬名']} "
+                f"｜最終 {round(h.get('展開最終点', 0), 1)} "
+                f"｜近況 {round(h.get('近況点', 0), 1)} "
+                f"｜前進+{h.get('前進加点', 0)} "
+                f"｜地力+{h.get('地力加点', 0)} "
+                f"｜共通+{h.get('共通TOP5加点', 0)} "
+                f"｜脚質+{h.get('脚質一致加点', 0)} "
+                f"｜マーブル+{h.get('展開適応加点', 0)} "
+                f"｜タイム+{h.get('展開タイム加点', 0)} "
+                f"｜総合+{h.get('総合順位加点', 0)} "
+                f"｜リスク-{h.get('リスク減点', 0)}"
+            )
+
+            st.caption(
+                f"{format_marble_style(h)} "
+                f"｜適応理由：{h.get('展開適応理由', [])} "
+                f"｜リスク理由：{h.get('リスク理由', [])}"
+            )
 
 
 # 三連複Bの繰り下げ候補にも、
@@ -6360,8 +7500,9 @@ if debug_mode:
 
         st.write(
             f"軸タイプ：**{kyakushoku_type}** "
+            f"｜{format_marble_style(axis_marble_profile)} "
             f"｜選出元：**{tenkai_selection_source}** "
-            f"｜採用脚質："
+            f"｜採用能力："
             f"**{selected_target_type or 'なし'}**"
         )
 
@@ -6416,13 +7557,25 @@ if debug_mode:
             st.write(
                 f"{rank}位｜"
                 f"{h['馬番']}番 {h['馬名']} "
-                f"｜脚質 {h.get('候補脚質', '不明')} "
+                f"｜主 {h.get('主脚質', h.get('候補脚質', '不明'))} "
+                f"｜副 {h.get('副脚質表示', 'なし')} "
+                f"｜適応 {round(h.get('展開適応点', 0), 1)} "
                 f"｜前進 {front_rank_text}位 "
                 f"｜地力 {long_rank_text}位 "
                 f"｜総合 "
                 f"{h.get('最終総合順位', 99)}位 "
                 f"｜選出元 {h.get('選出元', '')}"
             )
+
+            if h.get(
+                "展開適応理由"
+            ):
+                st.caption(
+                    f"適応理由："
+                    f"{h.get('展開適応理由', [])} "
+                    f"｜能力点："
+                    f"{h.get('脚質能力点', {})}"
+                )
 
 # ==================================================
 # JRA転入馬の2段階警告
@@ -6530,7 +7683,9 @@ if debug_mode:
             st.write(
                 f"{rank}位｜"
                 f"{h['馬番']}番 {h['馬名']} "
-                f"｜{h.get('候補脚質', '不明')} "
+                f"｜主 {h.get('主脚質', h.get('候補脚質', '不明'))} "
+                f"｜副 {h.get('副脚質表示', 'なし')} "
+                f"｜適応 {round(h.get('展開適応点', 0), 1)} "
                 f"｜展開 "
                 f"{round(h['スコア'], 1)} "
                 f"｜総合 "
@@ -7549,7 +8704,9 @@ def show_card(icon, title, subtitle, horse_text, bg_color, border_color, title_c
 show_card(
     "🎯",
     "軸馬",
-    f"脚色タイプ：{kyakushoku_type}",
+    format_marble_style(
+        axis_marble_profile
+    ),
     popular_horse_label,
     "#fff1f2",
     "#f5b5c0",
@@ -7569,7 +8726,10 @@ if total_best["馬番"] != popular_horse_num:
 show_card(
     "🌊",
     "展開の向く馬",
-    "相手候補",
+    (
+        f"主：{tenkai_best.get('主脚質', tenkai_best.get('候補脚質', '不明'))}"
+        f"｜副：{tenkai_best.get('副脚質表示', 'なし')}"
+    ),
     tenkai_horse,
     "#e0f2fe",
     "#7dd3fc",
@@ -7579,7 +8739,7 @@ show_card(
 show_card(
     "🌋",
     "地力のある馬",
-    "持続して脚を使えるタイプ",
+    "持続して脚を使えるタイプ・近走前崩れ除外",
     long_spurt_horse,
     "#fff9e8",
     "#f3d58b",
@@ -7728,7 +8888,7 @@ handwritten_bet_templates = {
         ],
         "ワイド": [
             ["A", "B"],
-            ["A", "E"],
+            ["A", "I"],
         ],
         "浮き輪": [
             ["D", "E"],
@@ -7737,7 +8897,7 @@ handwritten_bet_templates = {
     "持続": {
         "三連複": [
             ["A", "B", "C"],
-            ["A", "C", "E"],
+            ["A", "C", "G"],
         ],
         "ワイド": [
             ["A", "B"],
@@ -7824,7 +8984,25 @@ if (
         "D",
         "E",
     ]
+# ==================================================
+# 三連複2点目：Aと後詰めFが別馬なら
+# Aの次に後詰めFを入れる
+# ==================================================
+if int(total_best["馬番"]) != int(popular_horse_num):
 
+    # 元テンプレートを壊さないようコピー
+    current_bet_template = {
+        bet_type: [
+            bet[:] for bet in bets
+        ]
+        for bet_type, bets
+        in current_bet_template.items()
+    }
+
+    # 三連複2点目のAの次をFに変更
+    current_bet_template[
+        "三連複"
+    ][1][1] = "F"
 # --------------------------------------------------
 # 買い目専用の候補プール
 #
@@ -8245,6 +9423,10 @@ def make_unique_trio_bets(
 
     2点目以降のFには影響させない。
     軸Aは固定する。
+
+    さらに、AとFが別馬のため2点目がA-F-○になり、
+    1点目と同じ3頭になった場合は、
+    本来の抑え候補を3頭目として優先する。
     """
 
     excluded_numbers = set(
@@ -8371,6 +9553,75 @@ def make_unique_trio_bets(
 
         resolved_bet = None
 
+        # ==================================================
+        # 三連複2点目 A-F-○ の重複対策
+        #
+        # Aと後詰めFが別馬のため2点目を A-F-○ にした結果、
+        # 1点目と同じ3頭になった場合は、
+        # ○を「本来の抑え候補」へ差し替える。
+        #
+        # ここでは ana_candidates だけを使い、
+        # 穴2・穴3や全出走馬への補充は行わない。
+        # 抑え候補で有効な3頭目を作れなかった場合だけ、
+        # 下の従来の重複解消ロジックへ進む。
+        # ==================================================
+        if (
+            bet_index == 1
+            and len(symbol_list) >= 2
+            and symbol_list[0] == "A"
+            and symbol_list[1] == "F"
+            and bet_key in used_trio_keys
+            and ana_candidates
+        ):
+            second_trio_osae_pool = unique_texts(
+                [
+                    horse_text(h)
+                    for h in ana_candidates
+                ]
+            )
+
+            for candidate in second_trio_osae_pool:
+
+                candidate_number = get_num(candidate)
+
+                if candidate_number in excluded_numbers:
+                    continue
+
+                test_bet = [
+                    bet[0],
+                    bet[1],
+                    candidate,
+                ]
+
+                test_numbers = [
+                    get_num(horse_name)
+                    for horse_name in test_bet
+                ]
+
+                # A・F・抑えの3頭がすべて別馬であること
+                if len(set(test_numbers)) != 3:
+                    continue
+
+                test_key = frozenset(test_numbers)
+
+                # 1点目と同じ3頭なら次の抑え候補へ
+                if test_key in used_trio_keys:
+                    continue
+
+                resolved_bet = test_bet
+                break
+
+            # 抑え候補で解決できた場合は、
+            # 後続のCや穴候補への繰り下げ処理を行わず確定する。
+            if resolved_bet is not None:
+                result.append(resolved_bet)
+                used_trio_keys.add(
+                    frozenset(
+                        get_num(horse_name)
+                        for horse_name in resolved_bet
+                    )
+                )
+                continue
         # 右側の記号から順番に次候補を探す。
         # Aは軸なので変更しない。
         for change_index in range(
