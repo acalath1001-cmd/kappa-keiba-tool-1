@@ -4970,91 +4970,294 @@ if kyakushoku_type == "差し" and front_best["馬番"] == popular_horse_num:
             break
 
 # ==================================================
-# 地力Cと先行Dだけは同じ馬にしない
+# 地力C × 先行D 被り調整（脚質で役割を分ける）
 #
-# 展開Bと地力Cの重複は許可する。
-# 展開Bと先行Dの重複も許可する。
+# 基本方針：
+# ・C（地力＝持続役）とD（先行役）が同じ馬になった時だけ調整する。
+# ・その馬の主脚質または表示上の副脚質が
+#   「先行」「逃げ」なら、先行Dを優先してその馬を残す。
+#   → 地力Cは地力ランキングの次点へ繰り下げる。
+# ・それ以外は従来どおり地力Cを残し、
+#   → 先行Dを前進気勢ランキングの次点へ繰り下げる。
 #
-# ただし、
-# 「地力1位」と「先行代表」が同じ馬になった場合だけ、
-# 先行代表Dを前進気勢ランキングの次点へずらす。
-#
-# 次点選出では
-# ・地力代表C
-# ・軸馬A
-# を除外する。
-#
-# 例：
-# 前進 1位=11、2位=4(軸)、3位=9
-# 地力 1位=11
-# → 先行Dは9番になる。
-#
-# 地力評価や前進ランキング自体は変更しない。
-# あくまで「先行代表D」だけを繰り下げる。
+# 重要：
+# ・軸Aと先行Dの重複は許可する。
+#   例：軸9番が「主：先行｜副：逃げ」で前進1位なら、
+#       Dも9番のままでよい。
+# ・ランキングそのものは変更しない。
+#   あくまで画面の代表C/Dだけを役割に合わせて振り分ける。
 # ==================================================
 
-cd_overlap_shifted = False
-cd_overlap_original_front = None
+def get_cd_overlap_profile(horse_no):
+    """
+    CとDが被った馬の「主脚質＋表示上の副脚質」を取得する。
+
+    軸馬なら、すでに確定済みのaxis_marble_profileをそのまま使う。
+    軸馬以外なら、軸判定と同じ通過順ベースの考え方で
+    仮の主脚質を作り、マーブル脚質を組み立てる。
+    """
+
+    if horse_no == popular_horse_num:
+        return axis_marble_profile
+
+    horse_data = next(
+        (
+            h
+            for h in horses
+            if h["馬番"] == horse_no
+        ),
+        None,
+    )
+
+    if horse_data is None:
+        return {
+            "主脚質": "不明",
+            "副脚質": [],
+            "副脚質表示": "なし",
+            "脚質タグ": [],
+        }
+
+    race_flows = horse_data.get(
+        "通過順",
+        [],
+    )
+
+    style = analyze_flow_style(
+        race_flows
+    )
+
+    firsts = [
+        flow[0]
+        for flow in race_flows
+        if len(flow) >= 2
+    ]
+
+    lasts = [
+        flow[-1]
+        for flow in race_flows
+        if len(flow) >= 2
+    ]
+
+    avg_first = avg_nonzero(
+        firsts
+    )
+
+    avg_last = avg_nonzero(
+        lasts
+    )
+
+    escape_rate_for_cd = style.get(
+        "逃げ率",
+        0,
+    )
+
+    front_count_for_cd = style.get(
+        "前団回数",
+        0,
+    )
+
+    stable_count_for_cd = style.get(
+        "持続回数",
+        0,
+    )
+
+    push_count_for_cd = style.get(
+        "押し上げ回数",
+        0,
+    )
+
+    # 軸馬・展開候補と同じ順序で主脚質を仮判定する。
+    if escape_rate_for_cd >= 0.5:
+        primary_type_for_cd = "逃げ"
+
+    elif front_count_for_cd >= 2:
+        primary_type_for_cd = "先行"
+
+    elif (
+        stable_count_for_cd >= 2
+        and stable_count_for_cd
+            >= push_count_for_cd
+    ):
+        primary_type_for_cd = "持続"
+
+    elif push_count_for_cd >= 2:
+        primary_type_for_cd = "差し"
+
+    elif (
+        push_count_for_cd >= 1
+        and avg_first >= 4.5
+        and avg_last
+            <= avg_first - 1.5
+    ):
+        primary_type_for_cd = "差し"
+
+    elif (
+        stable_count_for_cd >= 1
+        and 3 <= avg_first <= 6
+        and abs(
+            avg_last
+            - avg_first
+        ) <= 1.0
+    ):
+        primary_type_for_cd = "持続"
+
+    elif (
+        front_count_for_cd >= 1
+        and avg_first <= 4
+        and avg_last <= 5
+    ):
+        primary_type_for_cd = "先行"
+
+    else:
+        primary_type_for_cd = "展開待ち"
+
+    return build_marble_style_profile(
+        style,
+        avg_first,
+        avg_last,
+        primary_type_for_cd,
+        recent_front_break=horse_data.get(
+            "近走前崩れ",
+            False,
+        ),
+    )
+
+
+cd_overlap_adjusted = False
+cd_overlap_original = None
+cd_overlap_action = "なし"
+cd_overlap_profile = None
 
 if (
     front_best["馬番"]
     == long_best["馬番"]
 ):
-    cd_overlap_original_front = {
-        "馬番": front_best["馬番"],
+    overlap_no = front_best["馬番"]
+
+    cd_overlap_original = {
+        "馬番": overlap_no,
         "馬名": front_best["馬名"],
     }
 
-    for h in front_candidates:
+    cd_overlap_profile = get_cd_overlap_profile(
+        overlap_no
+    )
 
-        # 地力代表Cとは被らせない
-        if h["馬番"] == long_best["馬番"]:
-            continue
+    overlap_primary = cd_overlap_profile.get(
+        "主脚質",
+        "不明",
+    )
 
-        # 軸馬Aとも被らせない
-        if h["馬番"] == popular_horse_num:
-            continue
+    overlap_secondary = cd_overlap_profile.get(
+        "副脚質表示",
+        "なし",
+    )
 
-        front_best = h
+    # 主または表示上の副が「先行・逃げ」なら、
+    # この馬はD（先行代表）として残す。
+    prefer_front_d = (
+        overlap_primary in {
+            "先行",
+            "逃げ",
+        }
+        or overlap_secondary in {
+            "先行",
+            "逃げ",
+        }
+    )
 
-        front_horse = (
-            f"{front_best['馬番']}番 "
-            f"{front_best['馬名']}"
-        )
+    if prefer_front_d:
 
-        cd_overlap_shifted = True
-        break
+        # ------------------------------------------
+        # Dを残して、Cを地力ランキング次点へ
+        # ------------------------------------------
+        for h in long_representative_candidates:
+
+            if h["馬番"] == overlap_no:
+                continue
+
+            long_best = h
+
+            long_spurt_horse = (
+                f"{long_best['馬番']}番 "
+                f"{long_best['馬名']}"
+            )
+
+            cd_overlap_adjusted = True
+            cd_overlap_action = (
+                "先行Dを維持・地力Cを次点へ"
+            )
+            break
+
+    else:
+
+        # ------------------------------------------
+        # Cを残して、Dを前進ランキング次点へ
+        #
+        # 軸AとDの重複は許可するため、
+        # popular_horse_numは除外しない。
+        # ------------------------------------------
+        for h in front_candidates:
+
+            if h["馬番"] == long_best["馬番"]:
+                continue
+
+            front_best = h
+
+            front_horse = (
+                f"{front_best['馬番']}番 "
+                f"{front_best['馬名']}"
+            )
+
+            cd_overlap_adjusted = True
+            cd_overlap_action = (
+                "地力Cを維持・先行Dを次点へ"
+            )
+            break
 
 
-if debug_mode and cd_overlap_original_front is not None:
+if debug_mode and cd_overlap_original is not None:
 
     with st.expander(
         "☄️ 地力C × 先行D 被り調整",
-        expanded=False
+        expanded=False,
     ):
 
-        if cd_overlap_shifted:
+        st.write(
+            f"重複馬："
+            f"{cd_overlap_original['馬番']}番 "
+            f"{cd_overlap_original['馬名']}"
+        )
+
+        if cd_overlap_profile is not None:
+            st.write(
+                f"判定脚質："
+                f"主 "
+                f"{cd_overlap_profile.get('主脚質', '不明')} "
+                f"｜副 "
+                f"{cd_overlap_profile.get('副脚質表示', 'なし')}"
+            )
+
+        if cd_overlap_adjusted:
 
             st.write(
-                f"地力Cと先行Dが "
-                f"{cd_overlap_original_front['馬番']}番 "
-                f"{cd_overlap_original_front['馬名']} "
-                f"で重複したため、"
+                f"調整：{cd_overlap_action}"
             )
 
             st.write(
-                f"先行Dを "
+                f"最終C："
+                f"{long_best['馬番']}番 "
+                f"{long_best['馬名']} "
+                f"｜最終D："
                 f"{front_best['馬番']}番 "
-                f"{front_best['馬名']} "
-                f"へ繰り下げました。"
+                f"{front_best['馬名']}"
             )
 
         else:
 
             st.write(
-                "地力Cと先行Dが重複しましたが、"
-                "軸馬・地力馬以外の有効な先行候補がないため、"
-                "重複を維持しました。"
+                "有効な次点候補がないため、"
+                "CとDの重複を維持しました。"
             )
 
 # ==================================================
@@ -8886,7 +9089,7 @@ handwritten_bet_templates = {
     "先行": {
         "三連複": [
             ["A", "B", "F"],
-            ["A", "E", "C"],
+            ["A", "C", "G"],
         ],
         "ワイド": [
             ["A", "B"],
@@ -8943,34 +9146,16 @@ current_bet_template = handwritten_bet_templates.get(
 )
 
 # ==================================================
-# 1580m以下・先行軸専用の三連複2点目
+# 先行軸・三連複2点目を A-C-G に固定
 #
-# 浦和800mの検証から、
-# 先行軸では
-#
-# A：軸
-# D：先行
-# E：抑え
-#
-# の組み合わせを2点目で拾う。
-#
-# 通常の先行軸：
+# 先行軸は距離に関係なく、
 #   1点目 A-B-F
-#   2点目 A-E-C
+#   2点目 A-C-G
+# とする。
 #
-# 1580m以下・先行軸：
-#   1点目 A-B-F
-#   2点目 A-D-E
-#
-# ワイド・浮き輪は変更しない。
-# 特に浮き輪 D-E は従来どおり残す。
+# 以前の「1580m以下なら A-D-E」への上書きは廃止。
 # ==================================================
-if (
-    distance_num <= 1580
-    and kyakushoku_type == "先行"
-):
-    # 元テンプレート本体を直接変更しないように、
-    # 買い目配列をコピーしてから1580m以下専用形へ変更する。
+if kyakushoku_type == "先行":
     current_bet_template = {
         bet_type: [
             bet[:] for bet in bets
@@ -8983,14 +9168,18 @@ if (
         "三連複"
     ][1] = [
         "A",
-        "D",
-        "E",
+        "C",
+        "G",
     ]
+
 # ==================================================
 # 三連複2点目：Aと後詰めFが別馬なら
 # Aの次に後詰めFを入れる
 # ==================================================
-if int(total_best["馬番"]) != int(popular_horse_num):
+if (
+    int(total_best["馬番"]) != int(popular_horse_num)
+    and kyakushoku_type != "先行"
+):
 
     # 元テンプレートを壊さないようコピー
     current_bet_template = {
@@ -9329,24 +9518,10 @@ def select_bet_alphabet_horses(
         for symbol in alphabet_priority
         if symbol in required_symbols
     ]
-    # B＝展開、F＝後詰めを同じ買い目で使う場合は、
-    # 展開馬を優先して先に確定する。
-    #
-    # 例：A-B-FでBとFが同じ8番なら、
-    # B＝展開1位の8番を残し、
-    # F＝総合2位へ繰り下げる。
-    if (
-        "B" in selection_order
-        and "F" in selection_order
-    ):
-        selection_order.remove("B")
-
-        f_index = selection_order.index("F")
-
-        selection_order.insert(
-            f_index,
-            "B",
-        )
+    # アルファベット優先順位は
+    # A → F → C → E → D → B → G → I をそのまま使う。
+    # B（展開）とF（後詰め）が同じ馬でも、
+    # Fを先に確定し、後から処理されるBを次候補へ繰り下げる。
     for symbol in selection_order:
 
         selected_horse = choose_alphabet_horse(
