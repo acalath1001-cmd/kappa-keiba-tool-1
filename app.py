@@ -1,6 +1,6 @@
 import streamlit as st
 import re
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse, parse_qs, urlencode
 def expand_flow_to_four(flow):
     """
     2地点・3地点の通過順を、評価用の4地点に補完する。
@@ -527,6 +527,353 @@ def parse_time_to_seconds(time_text):
         return None
 
 
+
+# ==================================================
+# 🌊 展開馬専用・クラス補正
+#
+# 目的：
+# 下級条件で積んだ「近況・前進・地力・共通TOP5」の点を、
+# 今回クラスでもそのまま100％信用しすぎないようにする。
+#
+# 重要：
+# ・総合Fには入れない
+# ・地力Cには入れない
+# ・先行Dには入れない
+# ・抑えEにも入れない
+# ・展開馬Bの候補スコアだけに使用する
+#
+# 今回よりかなり下のクラス中心なら、
+# 近況・前進・地力・共通TOP5のプラス点だけを割り引く。
+#
+# 今回と同格以上を複数回経験していれば100％評価。
+# ==================================================
+
+CLASS_LETTER_BASE = {
+    "A": 0,
+    "B": 30,
+    "C": 60,
+}
+
+
+def normalize_race_class_text(text):
+    """
+    全角のＡＢＣ・数字・ハイフンを半角へ寄せる。
+    """
+    if not text:
+        return ""
+
+    translation = str.maketrans(
+        {
+            "Ａ": "A",
+            "Ｂ": "B",
+            "Ｃ": "C",
+            "０": "0",
+            "１": "1",
+            "２": "2",
+            "３": "3",
+            "４": "4",
+            "５": "5",
+            "６": "6",
+            "７": "7",
+            "８": "8",
+            "９": "9",
+            "－": "-",
+            "ー": "-",
+        }
+    )
+
+    return text.translate(
+        translation
+    )
+
+
+def extract_race_class_from_text(text):
+    """
+    NARの表記から A1 / B5 / C1 / C12 などを拾う。
+
+    例：
+      入道雲特別Ｃ１－１ → C1
+      Ｂ５組             → B5
+      Ｃ１２組           → C12
+
+    「C級セレクション」のように数字が無いものは
+    無理に判定せずNoneにする。
+    """
+    normalized = normalize_race_class_text(
+        text
+    )
+
+    match = re.search(
+        r"(?<![A-Z0-9])"
+        r"([ABC])"
+        r"\s*"
+        r"(\d{1,2})"
+        r"(?:\s*-\s*\d{1,2})?",
+        normalized,
+    )
+
+    if not match:
+        return None
+
+    letter = match.group(1)
+    number = int(
+        match.group(2)
+    )
+
+    return {
+        "記号": letter,
+        "番号": number,
+        "表示": f"{letter}{number}",
+    }
+
+
+def get_race_class_value(class_info):
+    """
+    数字が小さいほど強い値にする。
+
+    A > B > C を大きな帯で分け、
+    同じ記号内では数字が小さい方を強く扱う。
+
+    例：
+      B5  → 35
+      C1  → 61
+      C12 → 72
+
+    値が小さいほど上位クラス。
+    """
+    if not class_info:
+        return None
+
+    letter = class_info.get(
+        "記号"
+    )
+
+    number = class_info.get(
+        "番号"
+    )
+
+    if (
+        letter not in CLASS_LETTER_BASE
+        or not isinstance(number, int)
+    ):
+        return None
+
+    return (
+        CLASS_LETTER_BASE[letter]
+        + number
+    )
+
+
+def apply_positive_class_factor(
+    score,
+    factor,
+):
+    """
+    クラス倍率はプラス点だけに適用する。
+
+    マイナスの近況点まで0.6倍すると、
+    下級で負けている馬の減点まで軽くなってしまうため、
+    マイナス点はそのまま残す。
+    """
+    if score > 0:
+        return round(
+            score * factor,
+            1,
+        )
+
+    return score
+
+
+def calc_tenkai_class_adjustment(
+    horse,
+    current_class,
+):
+    """
+    展開馬だけに使うクラス補正。
+
+    基本ロジック：
+    ① 今回よりかなり下級のレース中心
+       → 近況・前進・地力・共通TOP5のプラス点を割引
+
+    ② 今回と同格以上を1回経験
+       → 最低90％は残す
+
+    ③ 今回と同格以上を2回以上経験
+       → 100％評価
+
+    ④ 同格以上の経験数に応じて小さな経験加点
+       1回：+8
+       2回以上：+15
+
+    クラス情報が取れない馬は、
+    従来ロジックを壊さないため100％評価・加点0。
+    """
+
+    current_value = get_race_class_value(
+        current_class
+    )
+
+    if current_value is None:
+        return {
+            "係数": 1.0,
+            "経験加点": 0,
+            "同格以上回数": 0,
+            "平均クラス差": None,
+            "過去クラス": [],
+            "判定": "今回クラス判定なし",
+        }
+
+    class_records = []
+
+    # 距離付きタイムには、
+    # 過去走ごとのクラス情報を保存している。
+    for item in horse.get(
+        "距離付きタイム",
+        []
+    )[:5]:
+
+        past_class = item.get(
+            "クラス"
+        )
+
+        past_value = get_race_class_value(
+            past_class
+        )
+
+        if past_value is None:
+            continue
+
+        class_records.append({
+            "クラス": past_class,
+            "値": past_value,
+            "差": (
+                past_value
+                - current_value
+            ),
+            "着順": item.get(
+                "着順"
+            ),
+        })
+
+    if not class_records:
+        return {
+            "係数": 1.0,
+            "経験加点": 0,
+            "同格以上回数": 0,
+            "平均クラス差": None,
+            "過去クラス": [],
+            "判定": "過去クラス判定なし",
+        }
+
+    # 最新走ほど少し重くする。
+    recent_weights = [
+        1.00,
+        0.85,
+        0.70,
+        0.55,
+        0.40,
+    ]
+
+    weighted_gap_sum = 0.0
+    weight_sum = 0.0
+
+    for idx, record in enumerate(
+        class_records
+    ):
+        weight = (
+            recent_weights[idx]
+            if idx < len(recent_weights)
+            else 0.40
+        )
+
+        weighted_gap_sum += (
+            record["差"]
+            * weight
+        )
+
+        weight_sum += weight
+
+    average_gap = (
+        weighted_gap_sum
+        / weight_sum
+        if weight_sum > 0
+        else 0.0
+    )
+
+    same_or_stronger_count = sum(
+        1
+        for record in class_records
+        if record["差"] <= 0
+    )
+
+    # ----------------------------------------------
+    # 基本倍率
+    #
+    # 今回より下級中心であるほど、
+    # そこで積んだプラス材料を弱く見る。
+    # ----------------------------------------------
+    if average_gap <= 1:
+        factor = 1.00
+        judgement = "ほぼ同格"
+
+    elif average_gap <= 3:
+        factor = 0.95
+        judgement = "少し下級"
+
+    elif average_gap <= 5:
+        factor = 0.85
+        judgement = "下級寄り"
+
+    elif average_gap <= 9:
+        factor = 0.70
+        judgement = "明確な下級"
+
+    else:
+        factor = 0.60
+        judgement = "大幅な下級"
+
+    # 今回と同格以上を経験している馬は、
+    # 下級戦も混ざっているだけで過剰に落とさない。
+    if same_or_stronger_count >= 2:
+        factor = 1.00
+        experience_bonus = 15
+        judgement = "同格以上を複数回経験"
+
+    elif same_or_stronger_count == 1:
+        factor = max(
+            factor,
+            0.90,
+        )
+        experience_bonus = 8
+        judgement += "＋同格以上経験あり"
+
+    else:
+        experience_bonus = 0
+
+    return {
+        "係数": round(
+            factor,
+            2,
+        ),
+        "経験加点": experience_bonus,
+        "同格以上回数": (
+            same_or_stronger_count
+        ),
+        "平均クラス差": round(
+            average_gap,
+            2,
+        ),
+        "過去クラス": [
+            record["クラス"].get(
+                "表示",
+                ""
+            )
+            for record in class_records
+        ],
+        "判定": judgement,
+    }
+
+
 def extract_display_best_time(horse_row):
     """
     NAR出馬表の「最高タイム」欄から、
@@ -866,45 +1213,330 @@ def render_batch_controls(source_url, key_suffix):
 if "race_url" not in st.session_state:
     st.session_state.race_url = ""
 
+if "race_url_input" not in st.session_state:
+    st.session_state.race_url_input = (
+        st.session_state.race_url
+    )
+
+if "analyzed" not in st.session_state:
+    st.session_state.analyzed = False
+
+if "race_nav_message" not in st.session_state:
+    st.session_state.race_nav_message = ""
+
+
+# ==================================================
+# 通常分析用・一括検証状態リセット
+# ==================================================
+def reset_normal_analysis_state():
+    st.session_state.batch_mode = False
+    st.session_state.batch_race_no = 1
+    st.session_state.batch_axis_mode = "favorite"
+    st.session_state.batch_axis_override_num = None
+    st.session_state.batch_axis_override_race = None
+    st.session_state.batch_original_a = None
+    st.session_state.batch_original_f = None
+    st.session_state.batch_af_match = None
+
+
+# ==================================================
+# URLから現在のレース番号を取得
+# ==================================================
+def get_race_no_from_url(source_url):
+    if not source_url:
+        return None
+
+    try:
+        parsed = urlparse(
+            source_url.strip()
+        )
+
+        params = parse_qs(
+            parsed.query
+        )
+
+        race_no_value = params.get(
+            "k_raceNo",
+            [None]
+        )[0]
+
+        if race_no_value is None:
+            return None
+
+        return int(race_no_value)
+
+    except (
+        ValueError,
+        TypeError,
+        AttributeError,
+    ):
+        return None
+
+
+# ==================================================
+# URLのレース番号を前後へ変更
+# ==================================================
+def make_race_url(
+    source_url,
+    move,
+):
+    if not source_url:
+        return (
+            None,
+            None,
+            "出馬表URLを入力してください"
+        )
+
+    try:
+        parsed = urlparse(
+            source_url.strip()
+        )
+
+        params = parse_qs(
+            parsed.query,
+            keep_blank_values=True
+        )
+
+        if "k_raceNo" not in params:
+            return (
+                None,
+                None,
+                "URLからレース番号を取得できません"
+            )
+
+        current_race = int(
+            params["k_raceNo"][0]
+        )
+
+        new_race = (
+            current_race
+            + move
+        )
+
+        if new_race < 1:
+            return (
+                None,
+                current_race,
+                "1Rより前には移動できません"
+            )
+
+        if new_race > 12:
+            return (
+                None,
+                current_race,
+                "12Rより先には移動できません"
+            )
+
+        params["k_raceNo"] = [
+            str(new_race)
+        ]
+
+        new_query = urlencode(
+            params,
+            doseq=True
+        )
+
+        new_url = parsed._replace(
+            query=new_query
+        ).geturl()
+
+        return (
+            new_url,
+            new_race,
+            ""
+        )
+
+    except (
+        ValueError,
+        TypeError,
+        AttributeError,
+    ):
+        return (
+            None,
+            None,
+            "URLの変更に失敗しました"
+        )
+
+
+# ==================================================
+# 通常の「分析開始」
+# ==================================================
+def start_normal_analysis():
+    current_url = (
+        st.session_state
+        .race_url_input
+        .strip()
+    )
+
+    if not current_url:
+        st.session_state.race_nav_message = (
+            "出馬表URLを入力してください"
+        )
+        st.session_state.analyzed = False
+        return
+
+    st.session_state.race_url = (
+        current_url
+    )
+
+    st.session_state.race_nav_message = ""
+
+    reset_normal_analysis_state()
+
+    st.session_state.analyzed = True
+
+
+# ==================================================
+# 前のR / 次のR
+#
+# ボタンを押す
+# ↓
+# URLのk_raceNoを変更
+# ↓
+# そのまま自動分析
+# ==================================================
+def move_race(move):
+    current_url = (
+        st.session_state
+        .race_url_input
+        .strip()
+    )
+
+    (
+        new_url,
+        new_race,
+        message,
+    ) = make_race_url(
+        current_url,
+        move,
+    )
+
+    if not new_url:
+        st.session_state.race_nav_message = (
+            message
+        )
+        return
+
+    st.session_state.race_url_input = (
+        new_url
+    )
+
+    st.session_state.race_url = (
+        new_url
+    )
+
+    if move > 0:
+        st.session_state.race_nav_message = (
+            f"➡ {new_race}Rへ移動しました"
+        )
+    else:
+        st.session_state.race_nav_message = (
+            f"⬅ {new_race}Rへ移動しました"
+        )
+
+    # 一括検証中だった場合は通常分析へ戻す
+    reset_normal_analysis_state()
+
+    # 前R・次Rボタンだけで自動分析
+    st.session_state.analyzed = True
+
+
+# ==================================================
+# URL削除
+# ==================================================
+def clear_race_url():
+    st.session_state.race_url = ""
+    st.session_state.race_url_input = ""
+    st.session_state.analyzed = False
+    st.session_state.race_nav_message = ""
+
+    reset_normal_analysis_state()
+
+
+# ==================================================
+# URL入力
+# ==================================================
 url = st.text_input(
     "出馬表URLを入力してください",
-    value=st.session_state.race_url
+    key="race_url_input"
 )
 
 
-col1, col2 = st.columns(2)
+# ==================================================
+# 現在のRを表示
+# ==================================================
+current_race_no = get_race_no_from_url(
+    url
+)
+
+if current_race_no is not None:
+    st.caption(
+        f"🏇 現在 {current_race_no}R"
+    )
+
+
+# ==================================================
+# 操作ボタン
+# ==================================================
+col1, col2, col3, col4 = st.columns(
+    [1.35, 1, 1, 1.15]
+)
 
 with col1:
-    analyze = st.button("🔍 分析開始")
-if "analyzed" not in st.session_state:
-    st.session_state.analyzed = False
+    st.button(
+        "🔍 分析開始",
+        on_click=start_normal_analysis,
+        use_container_width=True
+    )
+
 with col2:
-    clear_url = st.button("🗑 URL削除")
-if analyze:
-    # 通常分析を押した時は、以前の一括検証状態を必ず解除する
-    st.session_state.batch_mode = False
-    st.session_state.batch_race_no = 1
-    st.session_state.batch_axis_mode = "favorite"
-    st.session_state.batch_axis_override_num = None
-    st.session_state.batch_axis_override_race = None
-    st.session_state.batch_original_a = None
-    st.session_state.batch_original_f = None
-    st.session_state.batch_af_match = None
-    st.session_state.analyzed = True
-if clear_url:
-    st.session_state.race_url = ""
-    st.session_state.analyzed = False
-    st.session_state.batch_mode = False
-    st.session_state.batch_race_no = 1
-    st.session_state.batch_axis_mode = "favorite"
-    st.session_state.batch_axis_override_num = None
-    st.session_state.batch_axis_override_race = None
-    st.session_state.batch_original_a = None
-    st.session_state.batch_original_f = None
-    st.session_state.batch_af_match = None
-    st.rerun()
+    st.button(
+        "⬅ 前のR",
+        on_click=move_race,
+        args=(-1,),
+        use_container_width=True
+    )
+
+with col3:
+    st.button(
+        "次のR ➡",
+        on_click=move_race,
+        args=(1,),
+        use_container_width=True
+    )
+
+with col4:
+    st.button(
+        "🗑 URL削除",
+        on_click=clear_race_url,
+        use_container_width=True
+    )
+
+
+# ==================================================
+# 前R / 次Rメッセージ
+# ==================================================
+if st.session_state.race_nav_message:
+    st.caption(
+        st.session_state.race_nav_message
+    )
+
+
+# ==================================================
+# 通常分析用URLを同期
+# ==================================================
+url = (
+    st.session_state
+    .race_url_input
+    .strip()
+)
 
 st.session_state.race_url = url
+
+
+# ==================================================
+# 分析開始前は停止
+# ==================================================
 if not st.session_state.analyzed:
     st.stop()
 
@@ -1006,6 +1638,31 @@ soup = BeautifulSoup(response.text, "html.parser")
 
 print("ページ取得成功")
 page_text = soup.get_text(" ", strip=True)
+
+# ==================================================
+# 今回レースのクラス
+#
+# ページ上部のレース名から、
+# A1 / B5 / C1 などを取得する。
+# 取得できない競馬場・レースではNoneのままにして、
+# 展開馬クラス補正は自動的に無効化する。
+# ==================================================
+current_race_class = extract_race_class_from_text(
+    page_text[:1200]
+)
+
+if debug_mode:
+    st.caption(
+        "展開馬クラス補正｜今回クラス："
+        + (
+            current_race_class.get(
+                "表示",
+                "不明",
+            )
+            if current_race_class
+            else "判定なし"
+        )
+    )
 # 馬場状態を自動判定
 baba_match = re.search(r"馬場[:：]\s*(良|稍重|重|不良)", page_text)
 
@@ -1131,6 +1788,10 @@ for i, horse in enumerate(real_horses, start=1):
     valid_distances = []
     valid_places = []
 
+    # 展開馬クラス補正用。
+    # 日付ブロックごとに、その過去走のA/B/Cクラスを保持する。
+    valid_classes = []
+
     date_blocks = re.split(
         r"(?=(?:取消|除外|中止|競走除外|出走取消|出走除外)?\s*\d{2}\.\d{2}\.\d{2})",
         horse_text
@@ -1153,6 +1814,14 @@ for i, horse in enumerate(real_horses, start=1):
         )
         valid_distances.append(int(d_match.group(1)))
         valid_places.append(place_match.group(1) if place_match else "")
+
+        # この日付ブロックに含まれるレースクラス。
+        # 例：C1 / C12 / B5
+        valid_classes.append(
+            extract_race_class_from_text(
+                block
+            )
+        )
 
     # ② タイム＋通過順＋上がり3Fを
     # horse_text全体から順番に取得
@@ -1258,6 +1927,12 @@ for i, horse in enumerate(real_horses, start=1):
         past_distance = valid_distances[idx]
         past_place = valid_places[idx]
 
+        past_class = (
+            valid_classes[idx]
+            if idx < len(valid_classes)
+            else None
+        )
+
         adjusted_time_text = time_text
         time_adjustment = 0.0
 
@@ -1320,6 +1995,11 @@ for i, horse in enumerate(real_horses, start=1):
             "タイム": adjusted_time_text,
             "元タイム": time_text,
             "競馬場": past_place,
+
+            # 展開馬専用クラス補正で使用。
+            # 総合・地力・先行・抑えには使わない。
+            "クラス": past_class,
+
             "タイム補正": time_adjustment,
 
             # NAR出馬表に表示されている
@@ -5877,7 +6557,10 @@ axis_tenkai_time = (
 # ==================================================
 
 
-def judge_tenkai_elimination(horse):
+def judge_tenkai_elimination(
+    horse,
+    long_distance_info=None,
+):
     """
     展開馬をスコア比較する前の消去判定。
 
@@ -5925,8 +6608,23 @@ def judge_tenkai_elimination(horse):
             if finish <= 3
         )
 
+        long_distance_elimination_rescue = bool(
+            long_distance_info
+            and long_distance_info.get(
+                "消去救済",
+                False,
+            )
+        )
+
+        # 1900m以上で同距離好走歴が強い馬は、
+        # 1600〜1800mなど近走着順の悪さだけで
+        # 展開候補から即消去しない。
+        #
+        # ただし「近走前崩れ」と
+        # 「最新走大失速＋大敗」は別問題なので残す。
         if (
-            len(recent_finishes) >= 3
+            not long_distance_elimination_rescue
+            and len(recent_finishes) >= 3
             and bottom8_count >= 2
             and top3_count == 0
         ):
@@ -5935,7 +6633,8 @@ def judge_tenkai_elimination(horse):
             )
 
         if (
-            len(recent_finishes) >= 2
+            not long_distance_elimination_rescue
+            and len(recent_finishes) >= 2
             and recent_finishes[0] >= 8
             and recent_finishes[1] >= 8
         ):
@@ -5962,6 +6661,261 @@ def judge_tenkai_elimination(horse):
         "理由": unique_reasons,
         "直近着順": recent_finishes,
     }
+
+
+
+# ==================================================
+# 🛤️ 1900m以上専用・長距離適性救済
+#
+# 目的：
+# 2200mなどの特殊な長距離では、
+# 1600〜1800mの近走着順だけで評価を落としすぎず、
+# 「今回と同じ距離を実際に走れた実績」を強く見る。
+#
+# 発動：
+# ・今回1900m以上のみ
+#
+# 主な評価：
+# ① 同距離3着以内歴あり
+#    → 強加点
+#
+# ② 同距離5着以内
+#    ＋今回と同格以上のクラスで走っている
+#    → 強加点
+#
+# ③ 同距離好走歴がある馬は、
+#    近走の悪い着順による展開馬近況減点を弱める。
+#
+# 重要：
+# ・通常距離では一切発動しない
+# ・総合F / 地力C / 先行Dそのものは変更しない
+# ・展開Bと抑えEの救済材料として使う
+# ==================================================
+
+def calc_long_distance_special_info(
+    horse,
+    current_distance,
+    current_class,
+):
+    """
+    1900m以上のレースだけで使う長距離適性情報。
+
+    戻り値：
+      発動
+      加点
+      近況減点倍率
+      消去救済
+      同距離3着以内回数
+      同距離5着以内回数
+      同距離・同格以上5着以内回数
+      同距離実績
+      判定
+    """
+
+    default_result = {
+        "発動": False,
+        "加点": 0,
+        "近況減点倍率": 1.0,
+        "消去救済": False,
+        "同距離3着以内回数": 0,
+        "同距離5着以内回数": 0,
+        "同距離同格以上5着以内回数": 0,
+        "同距離実績": [],
+        "判定": "対象外",
+    }
+
+    if current_distance < 1900:
+        return default_result
+
+    current_class_value = get_race_class_value(
+        current_class
+    )
+
+    exact_distance_runs = []
+
+    for item in horse.get(
+        "距離付きタイム",
+        [],
+    ):
+        if item.get("距離") != current_distance:
+            continue
+
+        finish = item.get(
+            "着順"
+        )
+
+        if not isinstance(
+            finish,
+            int
+        ):
+            continue
+
+        past_class = item.get(
+            "クラス"
+        )
+
+        past_class_value = get_race_class_value(
+            past_class
+        )
+
+        exact_distance_runs.append({
+            "着順": finish,
+            "競馬場": item.get(
+                "競馬場",
+                ""
+            ),
+            "クラス": past_class,
+            "クラス値": past_class_value,
+            "タイム": item.get(
+                "タイム",
+                ""
+            ),
+            "通過順": item.get(
+                "通過順",
+                []
+            ),
+        })
+
+    if not exact_distance_runs:
+        return {
+            **default_result,
+            "発動": True,
+            "判定": "同距離実績なし",
+        }
+
+    top3_count = sum(
+        1
+        for item in exact_distance_runs
+        if item["着順"] <= 3
+    )
+
+    top5_count = sum(
+        1
+        for item in exact_distance_runs
+        if item["着順"] <= 5
+    )
+
+    same_or_higher_top5_count = 0
+
+    if current_class_value is not None:
+
+        same_or_higher_top5_count = sum(
+            1
+            for item in exact_distance_runs
+            if (
+                item["着順"] <= 5
+                and item["クラス値"] is not None
+                and item["クラス値"]
+                    <= current_class_value
+            )
+        )
+
+    # ----------------------------------------------
+    # 長距離専用加点
+    #
+    # 同距離3着以内を最優先。
+    # 複数回なら再現性としてさらに強く評価。
+    #
+    # 同距離5着以内＋同格以上クラスも強く救済。
+    # ----------------------------------------------
+    long_bonus = 0
+    recent_negative_factor = 1.0
+    elimination_rescue = False
+    judgement_parts = []
+
+    if top3_count >= 2:
+        long_bonus = 150
+        recent_negative_factor = 0.30
+        elimination_rescue = True
+        judgement_parts.append(
+            "同距離3着以内を複数回"
+        )
+
+    elif top3_count == 1:
+        long_bonus = 115
+        recent_negative_factor = 0.40
+        elimination_rescue = True
+        judgement_parts.append(
+            "同距離3着以内あり"
+        )
+
+    elif same_or_higher_top5_count >= 1:
+        long_bonus = 95
+        recent_negative_factor = 0.50
+        elimination_rescue = True
+        judgement_parts.append(
+            "同距離5着以内＋同格以上"
+        )
+
+    elif top5_count >= 1:
+        long_bonus = 55
+        recent_negative_factor = 0.70
+        judgement_parts.append(
+            "同距離5着以内あり"
+        )
+
+    else:
+        judgement_parts.append(
+            "同距離好走なし"
+        )
+
+    # 同格以上の同距離5着以内が複数回ある場合は、
+    # 上位クラスでの再現性として追加で少し評価。
+    if same_or_higher_top5_count >= 2:
+        long_bonus += 25
+        judgement_parts.append(
+            "同格以上で複数回"
+        )
+
+    # 上限を付けて既存ロジックを壊しすぎない。
+    long_bonus = min(
+        long_bonus,
+        175
+    )
+
+    return {
+        "発動": True,
+        "加点": long_bonus,
+        "近況減点倍率": recent_negative_factor,
+        "消去救済": elimination_rescue,
+        "同距離3着以内回数": top3_count,
+        "同距離5着以内回数": top5_count,
+        "同距離同格以上5着以内回数": (
+            same_or_higher_top5_count
+        ),
+        "同距離実績": exact_distance_runs,
+        "判定": "・".join(
+            judgement_parts
+        ),
+    }
+
+
+def apply_long_distance_recent_relief(
+    recent_score,
+    long_distance_info,
+):
+    """
+    長距離好走歴がある馬について、
+    展開馬の「負の近況点」だけを弱める。
+
+    プラスの近況点はそのまま。
+    これにより、近走1600〜1800mで負けた馬を
+    2200m実績だけで過剰加点するのではなく、
+    「悪い近況を少し割り引いて見る」形にする。
+    """
+
+    if recent_score >= 0:
+        return recent_score
+
+    factor = long_distance_info.get(
+        "近況減点倍率",
+        1.0,
+    )
+
+    return round(
+        recent_score * factor,
+        1,
+    )
 
 
 def calc_tenkai_recent_form_score(horse):
@@ -6144,8 +7098,17 @@ for horse in horses:
     if horse_no == popular_horse_num:
         continue
 
+    long_distance_info = (
+        calc_long_distance_special_info(
+            horse,
+            distance_num,
+            current_race_class,
+        )
+    )
+
     elimination = judge_tenkai_elimination(
-        horse
+        horse,
+        long_distance_info=long_distance_info,
     )
 
     if elimination["消去"]:
@@ -6187,6 +7150,15 @@ for horse in horses:
 
     recent_form_score = calc_tenkai_recent_form_score(
         horse
+    )
+
+    # 1900m以上で同距離好走歴がある場合だけ、
+    # 負の近況点を弱める。
+    long_distance_recent_score = (
+        apply_long_distance_recent_relief(
+            recent_form_score,
+            long_distance_info,
+        )
     )
 
     # マーブル適応点は上限を付けて50％だけ反映する。
@@ -6240,12 +7212,99 @@ for horse in horses:
         risk_penalty += 25
         risk_reasons.append("直近大失速")
 
+    # ==================================================
+    # 🌊 展開馬専用クラス補正
+    #
+    # クラス差で直接馬を消さない。
+    #
+    # 今回より下級中心の馬だけ、
+    # ・近況
+    # ・前進順位加点
+    # ・地力順位加点
+    # ・共通TOP5加点
+    #
+    # の「プラス材料」を割り引く。
+    #
+    # 脚質・マーブル・同距離タイム・リスクは
+    # クラス補正の対象外。
+    #
+    # これにより展開馬Bだけを調整し、
+    # 総合F・地力C・先行D・抑えEは変えない。
+    # ==================================================
+    class_adjustment = (
+        calc_tenkai_class_adjustment(
+            horse,
+            current_race_class,
+        )
+    )
+
+    class_factor = (
+        class_adjustment[
+            "係数"
+        ]
+    )
+
+    class_experience_bonus = (
+        class_adjustment[
+            "経験加点"
+        ]
+    )
+
+    adjusted_recent_form_score = (
+        apply_positive_class_factor(
+            long_distance_recent_score,
+            class_factor,
+        )
+    )
+
+    adjusted_front_bonus = (
+        apply_positive_class_factor(
+            rank_bonus[
+                "前進加点"
+            ],
+            class_factor,
+        )
+    )
+
+    adjusted_long_bonus = (
+        apply_positive_class_factor(
+            rank_bonus[
+                "地力加点"
+            ],
+            class_factor,
+        )
+    )
+
+    adjusted_common_bonus = (
+        apply_positive_class_factor(
+            rank_bonus[
+                "共通TOP5加点"
+            ],
+            class_factor,
+        )
+    )
+
+    adjusted_rank_bonus_total = (
+        adjusted_front_bonus
+        + adjusted_long_bonus
+        + adjusted_common_bonus
+    )
+
+    long_distance_bonus = (
+        long_distance_info.get(
+            "加点",
+            0,
+        )
+    )
+
     preliminary_score = round(
-        recent_form_score
-        + rank_bonus["合計"]
+        adjusted_recent_form_score
+        + adjusted_rank_bonus_total
         + type_match["加点"]
         + marble_bonus
         + time_bonus
+        + class_experience_bonus
+        + long_distance_bonus
         - risk_penalty,
         1,
     )
@@ -6266,12 +7325,63 @@ for horse in horses:
         "前進順位": front_rank,
         "地力順位": long_rank,
         "順位合計": front_rank + long_rank,
-        "前進加点": rank_bonus["前進加点"],
-        "地力加点": rank_bonus["地力加点"],
-        "共通TOP5加点": rank_bonus["共通TOP5加点"],
+        # クラス補正後に実際に使った点
+        "前進加点": adjusted_front_bonus,
+        "地力加点": adjusted_long_bonus,
+        "共通TOP5加点": adjusted_common_bonus,
+        "近況点": adjusted_recent_form_score,
+
+        # デバッグ確認用の補正前点
+        "前進元加点": rank_bonus["前進加点"],
+        "地力元加点": rank_bonus["地力加点"],
+        "共通元加点": rank_bonus["共通TOP5加点"],
+        "近況元点": recent_form_score,
+        "長距離補正前近況点": recent_form_score,
+        "長距離補正後近況点": long_distance_recent_score,
+
+        # 1900m以上専用・同距離適性
+        "長距離適性加点": long_distance_bonus,
+        "長距離適性判定": long_distance_info.get(
+            "判定",
+            "対象外",
+        ),
+        "長距離同距離3着以内回数": long_distance_info.get(
+            "同距離3着以内回数",
+            0,
+        ),
+        "長距離同距離5着以内回数": long_distance_info.get(
+            "同距離5着以内回数",
+            0,
+        ),
+        "長距離同距離同格以上5着以内回数": (
+            long_distance_info.get(
+                "同距離同格以上5着以内回数",
+                0,
+            )
+        ),
+        "長距離同距離実績": long_distance_info.get(
+            "同距離実績",
+            [],
+        ),
+
+        # 展開馬専用クラス補正
+        "クラス係数": class_factor,
+        "クラス経験加点": class_experience_bonus,
+        "クラス同格以上回数": class_adjustment[
+            "同格以上回数"
+        ],
+        "クラス平均差": class_adjustment[
+            "平均クラス差"
+        ],
+        "過去クラス": class_adjustment[
+            "過去クラス"
+        ],
+        "クラス判定": class_adjustment[
+            "判定"
+        ],
+
         "脚質一致加点": type_match["加点"],
         "脚質一致": type_match["一致脚質"],
-        "近況点": recent_form_score,
         "展開タイム順位": time_rank,
         "展開タイム加点": time_bonus,
         "展開同距離タイム秒": (
@@ -7555,8 +8665,30 @@ if not tenkai_candidates:
             99,
         )
 
+        rescue_class_adjustment = (
+            calc_tenkai_class_adjustment(
+                horse,
+                current_race_class,
+            )
+        )
+
+        rescue_recent_score = (
+            calc_tenkai_recent_form_score(
+                horse
+            )
+        )
+
+        rescue_recent_score = (
+            apply_positive_class_factor(
+                rescue_recent_score,
+                rescue_class_adjustment[
+                    "係数"
+                ],
+            )
+        )
+
         rescue_score = (
-            calc_tenkai_recent_form_score(horse)
+            rescue_recent_score
             + max(
                 0,
                 min(
@@ -7572,6 +8704,9 @@ if not tenkai_candidates:
                 if total_rank <= 5
                 else 0
             )
+            + rescue_class_adjustment[
+                "経験加点"
+            ]
         )
 
         emergency_candidates.append({
@@ -7592,7 +8727,18 @@ if not tenkai_candidates:
             "前進順位": front_rank,
             "地力順位": long_rank,
             "順位合計": front_rank + long_rank,
-            "近況点": calc_tenkai_recent_form_score(horse),
+            "近況点": rescue_recent_score,
+            "近況元点": calc_tenkai_recent_form_score(horse),
+            "クラス係数": rescue_class_adjustment["係数"],
+            "クラス経験加点": rescue_class_adjustment["経験加点"],
+            "クラス同格以上回数": rescue_class_adjustment[
+                "同格以上回数"
+            ],
+            "クラス平均差": rescue_class_adjustment[
+                "平均クラス差"
+            ],
+            "過去クラス": rescue_class_adjustment["過去クラス"],
+            "クラス判定": rescue_class_adjustment["判定"],
             "最終総合順位": total_rank,
             "押し上げ回数": style_info.get("押し上げ回数", 0),
             "選出元": "緊急救済",
@@ -7674,12 +8820,25 @@ if debug_mode:
                 f"｜脚質+{h.get('脚質一致加点', 0)} "
                 f"｜マーブル+{h.get('展開適応加点', 0)} "
                 f"｜タイム+{h.get('展開タイム加点', 0)} "
+                f"｜クラス×{h.get('クラス係数', 1.0)} "
+                f"+{h.get('クラス経験加点', 0)} "
+                f"｜長距離+{h.get('長距離適性加点', 0)} "
                 f"｜総合+{h.get('総合順位加点', 0)} "
                 f"｜リスク-{h.get('リスク減点', 0)}"
             )
 
             st.caption(
                 f"{format_marble_style(h)} "
+                f"｜クラス：{h.get('クラス判定', '判定なし')} "
+                f"｜過去クラス：{h.get('過去クラス', [])} "
+                f"｜長距離：{h.get('長距離適性判定', '対象外')} "
+                f"｜同距離3着内{h.get('長距離同距離3着以内回数', 0)}回 "
+                f"｜同距離5着内{h.get('長距離同距離5着以内回数', 0)}回 "
+                f"｜補正前 "
+                f"近況{h.get('近況元点', h.get('近況点', 0))} "
+                f"前進+{h.get('前進元加点', h.get('前進加点', 0))} "
+                f"地力+{h.get('地力元加点', h.get('地力加点', 0))} "
+                f"共通+{h.get('共通元加点', h.get('共通TOP5加点', 0))} "
                 f"｜適応理由：{h.get('展開適応理由', [])} "
                 f"｜リスク理由：{h.get('リスク理由', [])}"
             )
@@ -7855,7 +9014,9 @@ if jra_count >= 1:
             "地方馬とのタイム・通過順を"
             "単純比較できない場合があります。\n\n"
             "展開・タイム評価の信頼度が"
-            "通常より下がります。"
+            "通常より下がります。\n\n"
+            "※JRA転入馬への軸替えでハマる場合がありますので"
+            "買い目の確認を推奨しています。"
         )
 
     # 影響が限定的なら軽い案内
@@ -8077,6 +9238,41 @@ for h in ana_base_candidates:
     ana_score = h["スコア"]
 
     # --------------------------------------------------
+    # 1900m以上専用・長距離適性
+    #
+    # 展開Bだけでなく、主要5役から漏れた長距離巧者を
+    # 抑えE側でも拾えるようにする。
+    # --------------------------------------------------
+    ana_long_distance_info = (
+        calc_long_distance_special_info(
+            target_horse,
+            distance_num,
+            current_race_class,
+        )
+        if target_horse
+        else {
+            "加点": 0,
+            "判定": "対象外",
+            "同距離3着以内回数": 0,
+            "同距離5着以内回数": 0,
+            "同距離同格以上5着以内回数": 0,
+        }
+    )
+
+    # 抑えでは展開馬ほど強くしすぎないよう、
+    # 長距離適性点の80％を使用する。
+    ana_long_distance_bonus = round(
+        ana_long_distance_info.get(
+            "加点",
+            0,
+        )
+        * 0.80,
+        1,
+    )
+
+    ana_score += ana_long_distance_bonus
+
+    # --------------------------------------------------
     # 地力TOP5を抑えスコアへ反映
     # --------------------------------------------------
     ana_long_rank = long_rank_map_for_ana.get(
@@ -8247,6 +9443,32 @@ for h in ana_base_candidates:
             else None
         ),
         "抑え地力加点": ana_long_bonus,
+
+        # 1900m以上専用・長距離適性
+        "抑え長距離適性加点": ana_long_distance_bonus,
+        "抑え長距離適性判定": ana_long_distance_info.get(
+            "判定",
+            "対象外",
+        ),
+        "抑え長距離同距離3着以内回数": (
+            ana_long_distance_info.get(
+                "同距離3着以内回数",
+                0,
+            )
+        ),
+        "抑え長距離同距離5着以内回数": (
+            ana_long_distance_info.get(
+                "同距離5着以内回数",
+                0,
+            )
+        ),
+        "抑え長距離同格以上5着以内回数": (
+            ana_long_distance_info.get(
+                "同距離同格以上5着以内回数",
+                0,
+            )
+        ),
+
         "抑え失速減点": ana_fade_penalty_total,
         "抑え失速詳細": ana_fade_details,
     })
@@ -8301,6 +9523,147 @@ if len(ana_candidates) < 3:
             break
 
         ana_candidates.append(h)
+
+# ==================================================
+# 1900m以上・長距離適性馬を抑え候補へ救済
+#
+# 同距離3着以内、
+# または同距離5着以内＋同格以上経験がある馬が、
+# 主要5役に出ず通常抑え候補からも漏れた時に復活させる。
+#
+# これにより2200mなどで、
+# 近走1600〜1800mの着順が悪いだけの長距離巧者を
+# 完全に消さない。
+# ==================================================
+
+long_distance_special_watch_numbers = set()
+long_distance_special_watch_info = {}
+
+if distance_num >= 1900:
+
+    for horse in horses:
+
+        horse_no = horse["馬番"]
+
+        info = calc_long_distance_special_info(
+            horse,
+            distance_num,
+            current_race_class,
+        )
+
+        is_strong_long_watch = (
+            info.get(
+                "同距離3着以内回数",
+                0,
+            ) >= 1
+            or info.get(
+                "同距離同格以上5着以内回数",
+                0,
+            ) >= 1
+        )
+
+        if not is_strong_long_watch:
+            continue
+
+        long_distance_special_watch_numbers.add(
+            horse_no
+        )
+
+        long_distance_special_watch_info[
+            horse_no
+        ] = info
+
+        # 主要5役に出ている馬は、
+        # その役割を優先して抑えへ重複させない。
+        if horse_no in used_for_ana:
+            continue
+
+        existing_long_candidate = next(
+            (
+                candidate
+                for candidate in ana_candidates
+                if candidate["馬番"] == horse_no
+            ),
+            None,
+        )
+
+        rescue_score = round(
+            info.get(
+                "加点",
+                0,
+            )
+            * 0.80,
+            1,
+        )
+
+        if existing_long_candidate is not None:
+
+            # すでに抑え候補にいる場合は、
+            # 長距離救済印と加点だけ追加。
+            existing_long_candidate[
+                "長距離適性救済"
+            ] = True
+
+            existing_long_candidate[
+                "抑え長距離適性加点"
+            ] = max(
+                existing_long_candidate.get(
+                    "抑え長距離適性加点",
+                    0,
+                ),
+                rescue_score,
+            )
+
+            existing_long_candidate[
+                "抑え長距離適性判定"
+            ] = info.get(
+                "判定",
+                "長距離適性",
+            )
+
+        else:
+
+            ana_candidates.append({
+                "馬番": horse_no,
+                "馬名": horse["馬名"],
+                "スコア": rescue_score,
+                "長距離適性救済": True,
+                "抑え長距離適性加点": rescue_score,
+                "抑え長距離適性判定": info.get(
+                    "判定",
+                    "長距離適性",
+                ),
+                "抑え長距離同距離3着以内回数": (
+                    info.get(
+                        "同距離3着以内回数",
+                        0,
+                    )
+                ),
+                "抑え長距離同距離5着以内回数": (
+                    info.get(
+                        "同距離5着以内回数",
+                        0,
+                    )
+                ),
+                "抑え長距離同格以上5着以内回数": (
+                    info.get(
+                        "同距離同格以上5着以内回数",
+                        0,
+                    )
+                ),
+            })
+
+# 既存候補にも救済印を統一して付ける
+for candidate in ana_candidates:
+
+    candidate["長距離適性救済"] = (
+        candidate["馬番"]
+        in long_distance_special_watch_numbers
+        and candidate["馬番"]
+        not in used_for_ana
+    )
+
+
 # ==================================================
 # 850m以下・最高タイム警戒馬を抑え候補へ残す
 #
@@ -8635,6 +9998,12 @@ ana_candidates = sorted(
         # 850m以下の最高タイム警戒を最優先
         x.get(
             "超短距離最高タイム警戒",
+            False
+        ),
+
+        # 1900m以上では同距離長距離適性救済を優先
+        x.get(
+            "長距離適性救済",
             False
         ),
 
@@ -9057,7 +10426,7 @@ popular = (
 # I：穴2
 #
 # 異なる記号が同じ馬になった場合の優先順位：
-# A → F → C → E → D → B → G → I
+# A → B → F → C → E → D → G → I
 #
 # 先に確定した記号を残し、
 # 後から確定する記号だけ自分の候補2位以降へ移動する。
@@ -9088,7 +10457,7 @@ handwritten_bet_templates = {
     },
     "先行": {
         "三連複": [
-            ["A", "B", "F"],
+            ["A", "B", "D"],
             ["A", "C", "G"],
         ],
         "ワイド": [
@@ -9146,14 +10515,22 @@ current_bet_template = handwritten_bet_templates.get(
 )
 
 # ==================================================
-# 先行軸・三連複2点目を A-C-G に固定
+# 先行軸・三連複のマーブル脚質分岐
 #
-# 先行軸は距離に関係なく、
-#   1点目 A-B-F
-#   2点目 A-C-G
-# とする。
+# 基本：
+#   主：先行｜副：逃げ → 1点目 A-B-D
+#   主：先行｜副：なし → 1点目 A-B-D
 #
-# 以前の「1580m以下なら A-D-E」への上書きは廃止。
+# 軸自身に持続・差しの幅がある時：
+#   主：先行｜副：持続 → 1点目 A-B-E
+#   主：先行｜副：差し → 1点目 A-B-E
+#
+# 2点目は従来どおり A-C-G に固定。
+#
+# これにより、
+# 純粋な前型は「展開B＋先行D」、
+# 持続・差しも持つ先行軸は「展開B＋抑えE」
+# で役割を分ける。
 # ==================================================
 if kyakushoku_type == "先行":
     current_bet_template = {
@@ -9164,6 +10541,51 @@ if kyakushoku_type == "先行":
         in current_bet_template.items()
     }
 
+    axis_secondary_for_trio = (
+        axis_marble_profile.get(
+            "副脚質表示",
+            "なし",
+        )
+    )
+
+    # 園田だけは会場別例外。
+    # 副脚質に関係なく、先行軸1点目は A-B-D。
+    if baba_name == "園田":
+        current_bet_template[
+            "三連複"
+        ][0] = [
+            "A",
+            "B",
+            "D",
+        ]
+
+    # 園田以外：
+    # 先行＋持続 / 先行＋差し
+    # → 最後は抑えE
+    elif axis_secondary_for_trio in {
+        "持続",
+        "差し",
+    }:
+        current_bet_template[
+            "三連複"
+        ][0] = [
+            "A",
+            "B",
+            "E",
+        ]
+
+    # 先行＋逃げ / 先行のみ
+    # → 最後は先行D
+    else:
+        current_bet_template[
+            "三連複"
+        ][0] = [
+            "A",
+            "B",
+            "D",
+        ]
+
+    # 先行軸の2点目は固定
     current_bet_template[
         "三連複"
     ][1] = [
@@ -9305,11 +10727,11 @@ alphabet_role_names = {
 
 alphabet_priority = [
     "A",
+    "B",
     "F",
     "C",
     "E",
     "D",
-    "B",
     "G",
     "I",
 ]
@@ -9333,18 +10755,29 @@ def collect_required_symbols(template):
 
 def build_symbol_conflicts(template):
     """
-    同じ買い目内に出る記号同士を保存する。
+    同じ「1つの買い目」の中に出る記号同士だけを競合扱いにする。
 
-    さらに、同じ軸を共有するワイド2点では、
-    相手記号同士も同じ馬にならないようにする。
+    重要：
+    ワイド2点が同じ軸を共有していても、
+    それぞれの相手記号同士は競合扱いにしない。
 
-    例：A-B / A-E の場合はBとEも競合扱いにする。
-    これにより、A-BとA-Eが同じワイドになるのを防ぐ。
+    例：
+      ワイド A-B / A-C
+      B＝1番、C＝1番
+
+    この場合でもBやCそのものは動かさない。
+    三連複で使うアルファベットの役割を優先する。
+
+    ワイド2点が同じ組み合わせになった場合だけ、
+    後段の make_unique_wide_bets() で
+    ワイド専用に次候補へずらす。
     """
 
     conflicts = {}
 
-    # 同じ1つの買い目内に出る記号同士
+    # 同じ1つの買い目内に出る記号同士だけ競合。
+    # 三連複・ワイド・浮き輪それぞれの
+    # 「1点の中」で同じ馬にならないための最低限の制約。
     for bet_group in template.values():
         for symbol_list in bet_group:
             for symbol in symbol_list:
@@ -9359,68 +10792,17 @@ def build_symbol_conflicts(template):
                     if other_symbol != symbol
                 )
 
-    # 同じ軸を共有するワイド同士の重複を防ぐ。
-    # 例：A-B / A-Eなら、BとEを別馬にする。
-    wide_templates = [
-        symbol_list
-        for symbol_list in template.get(
-            "ワイド",
-            [],
-        )
-        if len(symbol_list) == 2
-    ]
-
-    for first_index in range(
-        len(wide_templates)
-    ):
-        for second_index in range(
-            first_index + 1,
-            len(wide_templates),
-        ):
-            first_pair = wide_templates[
-                first_index
-            ]
-            second_pair = wide_templates[
-                second_index
-            ]
-
-            shared_symbols = (
-                set(first_pair)
-                & set(second_pair)
-            )
-
-            # 1つの記号を共通で使うワイドだけ対象
-            if len(shared_symbols) != 1:
-                continue
-
-            shared_symbol = next(
-                iter(shared_symbols)
-            )
-
-            first_other = next(
-                symbol
-                for symbol in first_pair
-                if symbol != shared_symbol
-            )
-
-            second_other = next(
-                symbol
-                for symbol in second_pair
-                if symbol != shared_symbol
-            )
-
-            conflicts.setdefault(
-                first_other,
-                set(),
-            ).add(second_other)
-
-            conflicts.setdefault(
-                second_other,
-                set(),
-            ).add(first_other)
+    # 以前はここで、
+    # A-B / A-C のようなワイド2点について
+    # BとCも競合扱いにしていた。
+    #
+    # その処理だとワイドの重複回避のために
+    # B（展開）そのものが次候補へ動き、
+    # 三連複まで変わってしまうため廃止。
+    #
+    # ワイドの重複はワイド生成時だけ解消する。
 
     return conflicts
-
 
 required_symbols = collect_required_symbols(
     current_bet_template
@@ -9580,6 +10962,205 @@ def make_bets_from_symbols(
         )
 
     return result
+
+def make_unique_wide_bets(
+    symbol_templates,
+    selected_symbols,
+    excluded_numbers=None,
+):
+    """
+    ワイドを上から順番に作る。
+
+    最優先：
+    三連複用に確定したアルファベットは変更しない。
+
+    例：
+      B（展開）＝1番
+      C（地力）＝1番
+      ワイド ＝ A-B / A-C
+
+    この場合、
+    BやCのアルファベット本体を動かすのではなく、
+
+      1点目 A-B はそのまま
+      2点目 A-C だけ、Cの次候補へワイド専用でずらす
+
+    という処理を行う。
+
+    そのため三連複では、
+    B＝1番をそのまま使用できる。
+    """
+
+    excluded_numbers = set(
+        excluded_numbers or set()
+    )
+
+    result = []
+    used_wide_keys = set()
+
+    for symbol_list in symbol_templates:
+
+        if len(symbol_list) != 2:
+            continue
+
+        if not all(
+            symbol in selected_symbols
+            for symbol in symbol_list
+        ):
+            continue
+
+        # アルファベット本体は変更しない。
+        bet = [
+            selected_symbols[symbol]
+            for symbol in symbol_list
+        ]
+
+        bet_numbers = [
+            get_num(horse_name)
+            for horse_name in bet
+        ]
+
+        bet_key = frozenset(
+            bet_numbers
+        )
+
+        # 2頭が別馬で、
+        # まだ出していないワイドならそのまま確定。
+        if (
+            len(set(bet_numbers)) == 2
+            and bet_key not in used_wide_keys
+        ):
+            result.append(
+                bet
+            )
+
+            used_wide_keys.add(
+                bet_key
+            )
+
+            continue
+
+        # --------------------------------------------------
+        # 同じワイドがすでに出ている、
+        # または同一馬同士になってしまった場合だけ
+        # 「このワイド内」で次候補へずらす。
+        #
+        # 後ろの記号から変更する。
+        # A（軸）は固定。
+        # --------------------------------------------------
+        resolved_bet = None
+
+        for change_index in range(
+            len(symbol_list) - 1,
+            -1,
+            -1,
+        ):
+
+            change_symbol = symbol_list[
+                change_index
+            ]
+
+            # 軸Aは絶対に動かさない
+            if change_symbol == "A":
+                continue
+
+            candidate_pool = (
+                alphabet_candidate_pools.get(
+                    change_symbol,
+                    all_bet_pool,
+                )
+            )
+
+            current_horse = (
+                selected_symbols[
+                    change_symbol
+                ]
+            )
+
+            current_number = get_num(
+                current_horse
+            )
+
+            current_pool_index = next(
+                (
+                    index
+                    for index, candidate
+                    in enumerate(candidate_pool)
+                    if get_num(candidate)
+                    == current_number
+                ),
+                -1,
+            )
+
+            # 現在馬より下位の候補だけを試す。
+            # これで各アルファベット本来の優先順位を守る。
+            next_candidates = (
+                candidate_pool[
+                    current_pool_index + 1:
+                ]
+                if current_pool_index >= 0
+                else candidate_pool
+            )
+
+            for candidate in next_candidates:
+
+                candidate_number = get_num(
+                    candidate
+                )
+
+                if (
+                    candidate_number
+                    in excluded_numbers
+                ):
+                    continue
+
+                test_bet = bet[:]
+
+                test_bet[
+                    change_index
+                ] = candidate
+
+                test_numbers = [
+                    get_num(horse_name)
+                    for horse_name in test_bet
+                ]
+
+                # ワイド内で同じ馬は不可
+                if len(set(test_numbers)) != 2:
+                    continue
+
+                test_key = frozenset(
+                    test_numbers
+                )
+
+                # すでに出したワイドと同じ組み合わせも不可
+                if test_key in used_wide_keys:
+                    continue
+
+                resolved_bet = (
+                    test_bet
+                )
+                break
+
+            if resolved_bet is not None:
+                break
+
+        if resolved_bet is not None:
+
+            result.append(
+                resolved_bet
+            )
+
+            used_wide_keys.add(
+                frozenset(
+                    get_num(horse_name)
+                    for horse_name
+                    in resolved_bet
+                )
+            )
+
+    return result
+
 def make_unique_trio_bets(
     symbol_templates,
     selected_symbols,
@@ -9938,9 +11519,10 @@ trio_bets = make_unique_trio_bets(
     excluded_numbers=kirisute_horse_numbers,
 )
 
-wide_bets = make_bets_from_symbols(
+wide_bets = make_unique_wide_bets(
     current_bet_template["ワイド"],
     final_bet_symbols,
+    excluded_numbers=kirisute_horse_numbers,
 )
 
 float_bets = make_bets_from_symbols(
@@ -9957,7 +11539,7 @@ if len(trio_bets) < 2:
     )
 
 if len(wide_bets) < 2:
-    wide_bets = make_bets_from_symbols(
+    wide_bets = make_unique_wide_bets(
         current_bet_template["ワイド"],
         normal_bet_symbols,
     )
@@ -9978,11 +11560,25 @@ if debug_mode:
 
         st.write(
             "優先順位："
-            "A → F → C → E → D → B → G → I"
+            "A → B → F → C → E → D → G → I"
         )
 
         st.write(
             f"軸タイプ：{kyakushoku_type}"
+        )
+
+        if kyakushoku_type == "先行":
+            st.write(
+                "先行軸マーブル分岐："
+                f"副＝{axis_marble_profile.get('副脚質表示', 'なし')} "
+                f"｜三連複1点目＝"
+                f"{'-'.join(current_bet_template['三連複'][0])}"
+            )
+
+        st.caption(
+            "三連複優先：ワイド2点が同じ組み合わせになる場合でも、"
+            "B・Cなどのアルファベット本体は動かさず、"
+            "ワイド側だけ次候補へ補正します。"
         )
 
         for symbol in alphabet_priority:
