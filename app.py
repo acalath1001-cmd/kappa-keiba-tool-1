@@ -7918,6 +7918,14 @@ for horse in horses:
             time_weight = 0.85
 
         time_score *= time_weight
+        # ==================================================
+        # 高知限定・持ちタイム強化
+        #
+        # 高知は同距離の持ち時計を通常の1.25倍で評価する。
+        # 他会場には一切影響しない。
+        # ==================================================
+        if baba_name == "高知":
+            time_score *= 1.25
 
         total_score += time_score
 
@@ -10424,9 +10432,10 @@ popular = (
 # F：後詰め
 # G：穴3
 # I：穴2
+# J：前進気勢3位（南関10頭以上の三連複3点目専用）
 #
 # 異なる記号が同じ馬になった場合の優先順位：
-# A → B → F → C → E → D → G → I
+# A → B → F → C → E → D → G → I → J
 #
 # 先に確定した記号を残し、
 # 後から確定する記号だけ自分の候補2位以降へ移動する。
@@ -10462,7 +10471,7 @@ handwritten_bet_templates = {
         ],
         "ワイド": [
             ["A", "B"],
-            ["A", "I"],
+            ["A", "E"],
         ],
         "浮き輪": [
             ["D", "E"],
@@ -10515,41 +10524,58 @@ current_bet_template = handwritten_bet_templates.get(
 )
 
 # ==================================================
-# 先行軸・三連複のマーブル脚質分岐
+# 会場別ルールを安全に適用するため、
+# 元テンプレートを直接変更しないよう最初にコピーする。
+# ==================================================
+current_bet_template = {
+    bet_type: [
+        bet[:] for bet in bets
+    ]
+    for bet_type, bets
+    in current_bet_template.items()
+}
+
+axis_secondary_for_bet = (
+    axis_marble_profile.get(
+        "副脚質表示",
+        "なし",
+    )
+)
+
+# ==================================================
+# 南関10頭以上
 #
-# 基本：
-#   主：先行｜副：逃げ → 1点目 A-B-D
-#   主：先行｜副：なし → 1点目 A-B-D
+# 浦和・船橋・大井・川崎
+# ＋ 出走馬10頭以上
 #
-# 軸自身に持続・差しの幅がある時：
-#   主：先行｜副：持続 → 1点目 A-B-E
-#   主：先行｜副：差し → 1点目 A-B-E
+# 三連複3点目 A-B-J を追加する。
+# J＝前進気勢3位から下位へ順送り。
+# ==================================================
+is_nankan_large_field = (
+    baba_name in {
+        "浦和",
+        "船橋",
+        "大井",
+        "川崎",
+    }
+    and len(horses) >= 10
+)
+
+# ==================================================
+# 先行軸・三連複の会場別／マーブル分岐
 #
-# 2点目は従来どおり A-C-G に固定。
+# 【1点目】
+# 園田                  → A-B-D
+# 先行＋押上            → A-B-C
+# 先行＋持続／差し      → A-B-E
+# 先行＋逃げ／なし      → A-B-D
 #
-# これにより、
-# 純粋な前型は「展開B＋先行D」、
-# 持続・差しも持つ先行軸は「展開B＋抑えE」
-# で役割を分ける。
+# 【2点目】
+# 笠松・園田            → A-E-G
+# その他                → A-C-G
 # ==================================================
 if kyakushoku_type == "先行":
-    current_bet_template = {
-        bet_type: [
-            bet[:] for bet in bets
-        ]
-        for bet_type, bets
-        in current_bet_template.items()
-    }
 
-    axis_secondary_for_trio = (
-        axis_marble_profile.get(
-            "副脚質表示",
-            "なし",
-        )
-    )
-
-    # 園田だけは会場別例外。
-    # 副脚質に関係なく、先行軸1点目は A-B-D。
     if baba_name == "園田":
         current_bet_template[
             "三連複"
@@ -10559,10 +10585,16 @@ if kyakushoku_type == "先行":
             "D",
         ]
 
-    # 園田以外：
-    # 先行＋持続 / 先行＋差し
-    # → 最後は抑えE
-    elif axis_secondary_for_trio in {
+    elif axis_secondary_for_bet == "押上":
+        current_bet_template[
+            "三連複"
+        ][0] = [
+            "A",
+            "B",
+            "C",
+        ]
+
+    elif axis_secondary_for_bet in {
         "持続",
         "差し",
     }:
@@ -10574,8 +10606,6 @@ if kyakushoku_type == "先行":
             "E",
         ]
 
-    # 先行＋逃げ / 先行のみ
-    # → 最後は先行D
     else:
         current_bet_template[
             "三連複"
@@ -10585,37 +10615,113 @@ if kyakushoku_type == "先行":
             "D",
         ]
 
-    # 先行軸の2点目は固定
+    if baba_name in {
+        "笠松",
+        "園田",
+    }:
+        current_bet_template[
+            "三連複"
+        ][1] = [
+            "A",
+            "E",
+            "G",
+        ]
+
+    else:
+        current_bet_template[
+            "三連複"
+        ][1] = [
+            "A",
+            "C",
+            "G",
+        ]
+
+# ==================================================
+# 三連複2点目
+#
+# Aと後詰めFが別馬なら、
+# 先行軸以外は2点目の2文字目をFへ変更する。
+#
+# 園田「逃げ＋先行」はこの後で専用ルールを
+# 上書きするため、A-D-Gが最終的に必ず残る。
+# ==================================================
+if (
+    int(total_best["馬番"])
+    != int(popular_horse_num)
+    and kyakushoku_type != "先行"
+):
+    current_bet_template[
+        "三連複"
+    ][1][1] = "F"
+
+# ==================================================
+# 園田限定
+# 主：逃げ｜副：先行
+#
+# 三連複
+# 1点目 A-B-I
+# 2点目 A-D-G
+#
+# 上のA-F変更より後で上書きする。
+# ==================================================
+is_sonoda_escape_senko = (
+    baba_name == "園田"
+    and kyakushoku_type == "逃げ"
+    and axis_secondary_for_bet == "先行"
+)
+
+if is_sonoda_escape_senko:
+    current_bet_template[
+        "三連複"
+    ][0] = [
+        "A",
+        "B",
+        "I",
+    ]
+
     current_bet_template[
         "三連複"
     ][1] = [
         "A",
-        "C",
+        "D",
         "G",
     ]
 
 # ==================================================
-# 三連複2点目：Aと後詰めFが別馬なら
-# Aの次に後詰めFを入れる
+# 園田限定・差し軸
+#
+# ワイド
+# 1点目 A-B はそのまま
+# 2点目 A-E
 # ==================================================
 if (
-    int(total_best["馬番"]) != int(popular_horse_num)
-    and kyakushoku_type != "先行"
+    baba_name == "園田"
+    and kyakushoku_type == "差し"
 ):
+    current_bet_template[
+        "ワイド"
+    ][1] = [
+        "A",
+        "E",
+    ]
 
-    # 元テンプレートを壊さないようコピー
-    current_bet_template = {
-        bet_type: [
-            bet[:] for bet in bets
-        ]
-        for bet_type, bets
-        in current_bet_template.items()
-    }
-
-    # 三連複2点目のAの次をFに変更
+# ==================================================
+# 南関10頭以上
+#
+# 通常の三連複2点を残したまま、
+# 3点目だけ A-B-J を追加する。
+# ==================================================
+if is_nankan_large_field:
     current_bet_template[
         "三連複"
-    ][1][1] = "F"
+    ].append(
+        [
+            "A",
+            "B",
+            "J",
+        ]
+    )
+
 # --------------------------------------------------
 # 買い目専用の候補プール
 #
@@ -10703,6 +10809,33 @@ i_pool = [
     if get_num(item) != hole3_number_for_i
 ]
 
+# ==================================================
+# J＝前進気勢3位
+#
+# 画面に出している前進気勢ランキングと同じ、
+# 「スコア0より上」の元ランキングを使用する。
+#
+# 3位から候補を開始し、
+# A・Bなどと被れば4位 → 5位 → …へ繰り下げる。
+#
+# Jは南関10頭以上のA-B-Jでだけ使用する。
+# ==================================================
+front_ranking_for_j = [
+    h
+    for h in nankan_front_candidates
+    if h.get(
+        "スコア",
+        0,
+    ) > 0
+]
+
+j_pool = unique_texts(
+    [
+        horse_text(h)
+        for h in front_ranking_for_j[2:]
+    ]
+)
+
 alphabet_candidate_pools = {
     "A": [popular],
     "F": f_pool,
@@ -10712,6 +10845,7 @@ alphabet_candidate_pools = {
     "B": b_pool,
     "G": g_pool,
     "I": i_pool,
+    "J": j_pool,
 }
 
 alphabet_role_names = {
@@ -10723,8 +10857,11 @@ alphabet_role_names = {
     "B": "展開",
     "G": "穴3",
     "I": "穴2",
+    "J": "前進3位",
 }
 
+# Jは最後に確定する。
+# 既存A〜Iの選出結果をJ追加で動かさないため。
 alphabet_priority = [
     "A",
     "B",
@@ -10734,6 +10871,7 @@ alphabet_priority = [
     "D",
     "G",
     "I",
+    "J",
 ]
 
 
@@ -10879,8 +11017,8 @@ def select_bet_alphabet_horses(
 ):
     """
     今回使う記号だけを、
-    A → F → C → E → D → B → G → I
-    の順で確定する。
+    alphabet_priority の順で確定する。
+    現在は A → B → F → C → E → D → G → I → J。
 
     別の買い目に出る記号同士は、
     同じ馬を使用してもよい。
@@ -10901,7 +11039,7 @@ def select_bet_alphabet_horses(
         if symbol in required_symbols
     ]
     # アルファベット優先順位は
-    # A → F → C → E → D → B → G → I をそのまま使う。
+    # alphabet_priority をそのまま使う。
     # B（展開）とF（後詰め）が同じ馬でも、
     # Fを先に確定し、後から処理されるBを次候補へ繰り下げる。
     for symbol in selection_order:
@@ -11532,7 +11670,16 @@ float_bets = make_bets_from_symbols(
 
 # 必要な買い目を作れなかった場合は、
 # 斬り捨て前の通常選出へ戻す。
-if len(trio_bets) < 2:
+#
+# 通常は三連複2点。
+# 南関10頭以上はA-B-J追加で三連複3点。
+required_trio_count = len(
+    current_bet_template[
+        "三連複"
+    ]
+)
+
+if len(trio_bets) < required_trio_count:
     trio_bets = make_unique_trio_bets(
         current_bet_template["三連複"],
         normal_bet_symbols,
@@ -11560,12 +11707,56 @@ if debug_mode:
 
         st.write(
             "優先順位："
-            "A → B → F → C → E → D → G → I"
+            + " → ".join(
+                alphabet_priority
+            )
         )
 
         st.write(
             f"軸タイプ：{kyakushoku_type}"
         )
+
+        if is_sonoda_escape_senko:
+            st.write(
+                "🟢 園田・逃げ＋先行："
+                "三連複 A-B-I / A-D-G"
+            )
+
+        if (
+            baba_name == "園田"
+            and kyakushoku_type == "差し"
+        ):
+            st.write(
+                "🟢 園田・差し軸："
+                "ワイド2点目 A-E"
+            )
+
+        if (
+            baba_name in {
+                "笠松",
+                "園田",
+            }
+            and kyakushoku_type == "先行"
+        ):
+            st.write(
+                "🟢 笠松・園田の先行軸："
+                "三連複2点目 A-E-G"
+            )
+
+        if is_nankan_large_field:
+            st.write(
+                "🏙 南関10頭以上："
+                "三連複3点目 A-B-J"
+            )
+
+            st.write(
+                "J候補："
+                + (
+                    " → ".join(j_pool)
+                    if j_pool
+                    else "候補なし"
+                )
+            )
 
         if kyakushoku_type == "先行":
             st.write(
@@ -11615,7 +11806,9 @@ if debug_mode:
 # ==================================================
 # 最終表示
 # ==================================================
-st.subheader("おすすめの三連複 2点")
+st.subheader(
+    f"おすすめの三連複 {len(trio_bets)}点"
+)
 
 for bet in trio_bets:
     st.write(
