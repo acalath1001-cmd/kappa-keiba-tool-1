@@ -627,6 +627,54 @@ def extract_race_class_from_text(text):
     }
 
 
+def extract_all_race_classes_from_text(text):
+    """
+    1頭分の出馬表テキストから、過去走クラスを表示順にすべて拾う。
+
+    NARの出馬表は、
+    「前走〜5走前の日付・距離」の行と
+    「前走〜5走前のレース名（クラス）」の行が分かれている。
+
+    そのため日付でテキストを分割してクラスを取ると、
+    各過去走とクラスの列がずれてしまう。
+
+    ここでは馬ごとのhorse_text全体から
+    A1 / B5 / C2 などを表示順に抜き出し、
+    過去走の1列目→2列目→…とそのまま対応させる。
+    """
+    if not text:
+        return []
+
+    normalized = normalize_race_class_text(
+        text
+    )
+
+    matches = re.finditer(
+        r"(?<![A-Z0-9])"
+        r"([ABC])"
+        r"\s*"
+        r"(\d{1,2})"
+        r"(?:\s*-\s*\d{1,2})?",
+        normalized,
+    )
+
+    classes = []
+
+    for match in matches:
+        letter = match.group(1)
+        number = int(
+            match.group(2)
+        )
+
+        classes.append({
+            "記号": letter,
+            "番号": number,
+            "表示": f"{letter}{number}",
+        })
+
+    return classes
+
+
 def get_race_class_value(class_info):
     """
     数字が小さいほど強い値にする。
@@ -687,26 +735,28 @@ def apply_positive_class_factor(
 def calc_tenkai_class_adjustment(
     horse,
     current_class,
+    current_distance=None,
 ):
     """
-    展開馬だけに使うクラス補正。
+    展開馬Bだけに使うクラス補正。
 
-    基本ロジック：
-    ① 今回よりかなり下級のレース中心
-       → 近況・前進・地力・共通TOP5のプラス点を割引
+    方針：
+    ・下級戦で積んだプラス材料は従来どおり割り引く。
+    ・今回と同格以上の経験があれば過剰に割り引かない。
+    ・特に「今回より1段上」「2段以上上」の経験を明確に評価する。
+    ・格上経験が今回と同距離ならさらに加点する。
 
-    ② 今回と同格以上を1回経験
-       → 最低90％は残す
+    格上経験加点：
+      1段上      +20
+      2段以上上  +30
+      格上＋同距離 +10
+      最大 +40
 
-    ③ 今回と同格以上を2回以上経験
-       → 100％評価
+    同格経験だけの場合：
+      1回 +5
+      2回以上 +10
 
-    ④ 同格以上の経験数に応じて小さな経験加点
-       1回：+8
-       2回以上：+15
-
-    クラス情報が取れない馬は、
-    従来ロジックを壊さないため100％評価・加点0。
+    ※総合F・地力C・先行D・抑えEには使わない。
     """
 
     current_value = get_race_class_value(
@@ -718,6 +768,9 @@ def calc_tenkai_class_adjustment(
             "係数": 1.0,
             "経験加点": 0,
             "同格以上回数": 0,
+            "格上回数": 0,
+            "格上同距離回数": 0,
+            "最上位クラス差": None,
             "平均クラス差": None,
             "過去クラス": [],
             "判定": "今回クラス判定なし",
@@ -725,8 +778,6 @@ def calc_tenkai_class_adjustment(
 
     class_records = []
 
-    # 距離付きタイムには、
-    # 過去走ごとのクラス情報を保存している。
     for item in horse.get(
         "距離付きタイム",
         []
@@ -750,105 +801,182 @@ def calc_tenkai_class_adjustment(
                 past_value
                 - current_value
             ),
+            "距離": item.get(
+                "距離"
+            ),
             "着順": item.get(
                 "着順"
             ),
         })
 
-    if not class_records:
-        return {
-            "係数": 1.0,
-            "経験加点": 0,
-            "同格以上回数": 0,
-            "平均クラス差": None,
-            "過去クラス": [],
-            "判定": "過去クラス判定なし",
-        }
-
-    # 最新走ほど少し重くする。
-    recent_weights = [
-        1.00,
-        0.85,
-        0.70,
-        0.55,
-        0.40,
-    ]
-
-    weighted_gap_sum = 0.0
-    weight_sum = 0.0
-
-    for idx, record in enumerate(
-        class_records
-    ):
-        weight = (
-            recent_weights[idx]
-            if idx < len(recent_weights)
-            else 0.40
-        )
-
-        weighted_gap_sum += (
-            record["差"]
-            * weight
-        )
-
-        weight_sum += weight
-
-    average_gap = (
-        weighted_gap_sum
-        / weight_sum
-        if weight_sum > 0
-        else 0.0
-    )
-
-    same_or_stronger_count = sum(
-        1
-        for record in class_records
-        if record["差"] <= 0
-    )
-
-    # ----------------------------------------------
+    # --------------------------------------------------
     # 基本倍率
-    #
-    # 今回より下級中心であるほど、
-    # そこで積んだプラス材料を弱く見る。
-    # ----------------------------------------------
-    if average_gap <= 1:
-        factor = 1.00
-        judgement = "ほぼ同格"
+    # --------------------------------------------------
+    if class_records:
 
-    elif average_gap <= 3:
-        factor = 0.95
-        judgement = "少し下級"
+        recent_weights = [
+            1.00,
+            0.85,
+            0.70,
+            0.55,
+            0.40,
+        ]
 
-    elif average_gap <= 5:
-        factor = 0.85
-        judgement = "下級寄り"
+        weighted_gap_sum = 0.0
+        weight_sum = 0.0
 
-    elif average_gap <= 9:
-        factor = 0.70
-        judgement = "明確な下級"
+        for idx, record in enumerate(
+            class_records
+        ):
+            weight = (
+                recent_weights[idx]
+                if idx < len(recent_weights)
+                else 0.40
+            )
+
+            weighted_gap_sum += (
+                record["差"]
+                * weight
+            )
+            weight_sum += weight
+
+        average_gap = (
+            weighted_gap_sum
+            / weight_sum
+            if weight_sum > 0
+            else 0.0
+        )
+
+        if average_gap <= 1:
+            factor = 1.00
+            judgement = "ほぼ同格"
+
+        elif average_gap <= 3:
+            factor = 0.95
+            judgement = "少し下級"
+
+        elif average_gap <= 5:
+            factor = 0.85
+            judgement = "下級寄り"
+
+        elif average_gap <= 9:
+            factor = 0.70
+            judgement = "明確な下級"
+
+        else:
+            factor = 0.60
+            judgement = "大幅な下級"
 
     else:
-        factor = 0.60
-        judgement = "大幅な下級"
+        # クラスが取れない場合は能力点を落とさない。
+        factor = 1.00
+        average_gap = None
+        judgement = "過去クラス判定なし"
 
-    # 今回と同格以上を経験している馬は、
-    # 下級戦も混ざっているだけで過剰に落とさない。
+    same_or_stronger_records = [
+        record
+        for record in class_records
+        if record["差"] <= 0
+    ]
+
+    stronger_records = [
+        record
+        for record in class_records
+        if record["差"] < 0
+    ]
+
+    same_class_records = [
+        record
+        for record in class_records
+        if record["差"] == 0
+    ]
+
+    same_or_stronger_count = len(
+        same_or_stronger_records
+    )
+
+    stronger_count = len(
+        stronger_records
+    )
+
+    # 同格以上経験がある馬は、
+    # 下級戦が混ざっていても倍率を落としすぎない。
     if same_or_stronger_count >= 2:
         factor = 1.00
-        experience_bonus = 15
-        judgement = "同格以上を複数回経験"
 
     elif same_or_stronger_count == 1:
         factor = max(
             factor,
             0.90,
         )
-        experience_bonus = 8
-        judgement += "＋同格以上経験あり"
 
-    else:
-        experience_bonus = 0
+    best_class_gap = (
+        min(
+            record["差"]
+            for record in class_records
+        )
+        if class_records
+        else None
+    )
+
+    # --------------------------------------------------
+    # 格上経験を展開Bへ明確に加点
+    # --------------------------------------------------
+    experience_bonus = 0
+    experience_reasons = []
+
+    if best_class_gap is not None:
+
+        if best_class_gap <= -2:
+            experience_bonus = 30
+            experience_reasons.append(
+                "2段以上上のクラス経験"
+            )
+
+        elif best_class_gap == -1:
+            experience_bonus = 20
+            experience_reasons.append(
+                "1段上のクラス経験"
+            )
+
+        elif same_class_records:
+            experience_bonus = (
+                10
+                if len(same_class_records) >= 2
+                else 5
+            )
+            experience_reasons.append(
+                "同格経験"
+            )
+
+    stronger_same_distance_count = 0
+
+    if current_distance is not None:
+        stronger_same_distance_count = sum(
+            1
+            for record in stronger_records
+            if record.get("距離")
+                == current_distance
+        )
+
+    if stronger_same_distance_count >= 1:
+        experience_bonus += 10
+        experience_reasons.append(
+            "格上＋今回同距離"
+        )
+
+    experience_bonus = min(
+        experience_bonus,
+        40,
+    )
+
+    if experience_reasons:
+        judgement += (
+            "＋"
+            + "・".join(
+                experience_reasons
+            )
+        )
 
     return {
         "係数": round(
@@ -859,9 +987,17 @@ def calc_tenkai_class_adjustment(
         "同格以上回数": (
             same_or_stronger_count
         ),
-        "平均クラス差": round(
-            average_gap,
-            2,
+        "格上回数": stronger_count,
+        "格上同距離回数": (
+            stronger_same_distance_count
+        ),
+        "最上位クラス差": (
+            best_class_gap
+        ),
+        "平均クラス差": (
+            round(average_gap, 2)
+            if average_gap is not None
+            else None
         ),
         "過去クラス": [
             record["クラス"].get(
@@ -1119,8 +1255,8 @@ def render_batch_results_summary():
                 f"{r['R']}R｜"
                 f"後詰め軸{r['軸']}番 "
                 f"{r['軸タイプ']}｜"
-                f"元A{r.get('元A')}番｜"
-                f"元F{r.get('元F')}番｜"
+                f"1番人気A{r.get('元A')}番｜"
+                f"後詰めF{r.get('元F')}番｜"
                 f"A-F"
                 f"{'一致' if r.get('AF一致') else '不一致'}｜"
                 f"結果{r['結果']}｜"
@@ -1789,7 +1925,11 @@ for i, horse in enumerate(real_horses, start=1):
     valid_places = []
 
     # 展開馬クラス補正用。
-    # 日付ブロックごとに、その過去走のA/B/Cクラスを保持する。
+    #
+    # NAR出馬表では、前走〜5走前の
+    # 「日付・距離」と「レース名（クラス）」が別行に並ぶ。
+    # 日付ブロック内からクラスを探す方式だと列ズレが起きるため、
+    # クラスだけはhorse_text全体から表示順に抜き出して後で対応させる。
     valid_classes = []
 
     date_blocks = re.split(
@@ -1815,11 +1955,28 @@ for i, horse in enumerate(real_horses, start=1):
         valid_distances.append(int(d_match.group(1)))
         valid_places.append(place_match.group(1) if place_match else "")
 
-        # この日付ブロックに含まれるレースクラス。
-        # 例：C1 / C12 / B5
-        valid_classes.append(
-            extract_race_class_from_text(
-                block
+    # 前走→前々走→3走前→4走前→5走前の順で
+    # クラス行も同じ列順に並んでいるため、そのまま対応させる。
+    ordered_class_history = (
+        extract_all_race_classes_from_text(
+            horse_text
+        )
+    )
+
+    valid_classes = (
+        ordered_class_history[
+            :len(valid_distances)
+        ]
+    )
+
+    # クラス表記が無い列が混じる競馬場では、
+    # 距離数に足りない分だけNoneで埋める。
+    if len(valid_classes) < len(valid_distances):
+        valid_classes.extend(
+            [None]
+            * (
+                len(valid_distances)
+                - len(valid_classes)
             )
         )
 
@@ -3850,6 +4007,487 @@ if debug_mode:
                 f"{h.get('前進距離倍率', 1.0)} "
                 f"｜{h.get('前進距離モード', '')}"
             )
+
+
+# ==================================================
+# 🚀 2〜4角・押上ランキング（デバッグ専用）
+#
+# 目的：
+# 「差し」「押上」という脚質名だけではなく、
+# 実際にどの勝負所で位置を上げたかを見る。
+#
+# ランキング：
+# ① 2角 → 3角
+# ② 3角 → 4角
+# ③ 2角 → 4角
+#
+# 重要：
+# ・補完後の「通過順」は使わない。
+# ・必ず「元通過順」を使う。
+# ・通常会場は元通過順が4地点ある過去走だけを対象にする。
+# ・盛岡だけは2地点・3地点が多いため、既存の4地点補完後「通過順」を使う。
+# ・今回距離帯を最優先。
+# ・該当距離がない馬だけ、最も近い距離を弱く評価する。
+# ・最新走ほど少し強く評価する。
+#
+# ※デバッグ表示だけで、買い目・B〜J選出には一切影響しない。
+# ==================================================
+
+
+def corner_push_distance_is_match(
+    past_distance,
+    current_distance,
+):
+    """押上評価で今回距離と比較可能か判定する。"""
+
+    if current_distance <= 1000:
+        return 800 <= past_distance <= 1000
+
+    if current_distance == 1100:
+        return 1000 <= past_distance <= 1200
+
+    if current_distance <= 1400:
+        return 1200 <= past_distance <= 1400
+
+    return (
+        abs(
+            past_distance
+            - current_distance
+        ) <= 300
+    )
+
+
+def get_corner_push_runs(
+    horse,
+    current_distance,
+):
+    """
+    押上ランキングに使う過去走を返す。
+
+    通常会場：
+      元通過順が4地点ある走だけを対象にする。
+
+    盛岡だけ：
+      2地点・3地点の通過順が多いため、
+      既存の expand_flow_to_four() で補完済みの
+      「通過順」を押上ランキングにも使用する。
+
+      例：10-5 → 10-10-5-5
+      この場合、2角→4角は 10→5 なので5頭押上として評価。
+
+    今回距離帯があればその走だけを100％評価し、
+    今回距離帯が1走もない場合だけ、
+    最も近い距離の走を弱く評価する。
+    """
+
+    valid_runs = []
+
+    recent_weights = [
+        1.00,
+        0.85,
+        0.70,
+        0.55,
+        0.40,
+    ]
+
+    for idx, item in enumerate(
+        horse.get(
+            "距離付きタイム",
+            [],
+        )[:5]
+    ):
+        raw_flow = item.get(
+            "元通過順",
+            [],
+        )
+
+        # 盛岡だけは、2地点・3地点を4地点へ補完済みの
+        # 評価用通過順を押上ランキングにも使う。
+        # 他会場は従来どおり「元通過順4地点のみ」。
+        if baba_name == "盛岡":
+            push_flow = item.get(
+                "通過順",
+                [],
+            )
+        else:
+            push_flow = raw_flow
+
+        past_distance = item.get(
+            "距離",
+            0,
+        )
+
+        if (
+            not past_distance
+            or len(push_flow) < 4
+        ):
+            continue
+
+        valid_runs.append({
+            "何走前": idx + 1,
+            "距離": past_distance,
+            "競馬場": item.get(
+                "競馬場",
+                "",
+            ),
+            # 下流の押上計算はこのキーを参照しているため、
+            # キー名は維持し、中身だけ盛岡では補完後通過順にする。
+            "元通過順": push_flow[:4],
+            "着順": item.get(
+                "着順"
+            ),
+            "新しさ倍率": (
+                recent_weights[idx]
+                if idx < len(recent_weights)
+                else 0.40
+            ),
+        })
+
+    if not valid_runs:
+        return {
+            "走": [],
+            "距離倍率": 0.0,
+            "モード": "4地点データなし",
+            "最短距離差": None,
+        }
+
+    matched_runs = [
+        run
+        for run in valid_runs
+        if corner_push_distance_is_match(
+            run["距離"],
+            current_distance,
+        )
+    ]
+
+    if matched_runs:
+        return {
+            "走": matched_runs,
+            "距離倍率": 1.0,
+            "モード": "今回距離帯",
+            "最短距離差": min(
+                abs(
+                    run["距離"]
+                    - current_distance
+                )
+                for run in matched_runs
+            ),
+        }
+
+    nearest_gap = min(
+        abs(
+            run["距離"]
+            - current_distance
+        )
+        for run in valid_runs
+    )
+
+    nearest_runs = [
+        run
+        for run in valid_runs
+        if abs(
+            run["距離"]
+            - current_distance
+        ) == nearest_gap
+    ]
+
+    if nearest_gap <= 200:
+        distance_weight = 0.50
+
+    elif nearest_gap <= 400:
+        distance_weight = 0.30
+
+    elif nearest_gap <= 600:
+        distance_weight = 0.20
+
+    else:
+        distance_weight = 0.10
+
+    return {
+        "走": nearest_runs,
+        "距離倍率": distance_weight,
+        "モード": "近似距離フォールバック",
+        "最短距離差": nearest_gap,
+    }
+
+
+def calc_corner_push_ranking(
+    horse_list,
+    current_distance,
+    start_index,
+    end_index,
+    point_per_head,
+):
+    """
+    指定区間の押上ランキングを作る。
+
+    start_index / end_index
+      1 = 2角
+      2 = 3角
+      3 = 4角
+
+    位置番号は小さくなるほど前進なので、
+    start_position - end_position がプラスなら押上。
+    """
+
+    ranking = []
+
+    for horse in horse_list:
+        target = get_corner_push_runs(
+            horse,
+            current_distance,
+        )
+
+        target_runs = target[
+            "走"
+        ]
+
+        distance_weight = target[
+            "距離倍率"
+        ]
+
+        if not target_runs:
+            continue
+
+        score = 0.0
+        push_count = 0
+        total_gain = 0
+        max_gain = 0
+        details = []
+
+        for run in target_runs:
+            flow = run[
+                "元通過順"
+            ]
+
+            start_position = flow[
+                start_index
+            ]
+
+            end_position = flow[
+                end_index
+            ]
+
+            gain = (
+                start_position
+                - end_position
+            )
+
+            # 順位を上げた走だけ加点。
+            if gain <= 0:
+                continue
+
+            base_score = (
+                gain
+                * point_per_head
+            )
+
+            # 勝負所で前まで取り付いた価値を追加。
+            position_bonus = 0
+
+            if end_index == 2:
+                # 3角時点
+                if end_position <= 3:
+                    position_bonus = 15
+                elif end_position <= 5:
+                    position_bonus = 10
+
+            elif end_index == 3:
+                # 4角時点
+                if end_position <= 3:
+                    position_bonus = 30
+                elif end_position <= 5:
+                    position_bonus = 20
+
+            applied_score = round(
+                (
+                    base_score
+                    + position_bonus
+                )
+                * run[
+                    "新しさ倍率"
+                ]
+                * distance_weight,
+                1,
+            )
+
+            score += applied_score
+            push_count += 1
+            total_gain += gain
+            max_gain = max(
+                max_gain,
+                gain,
+            )
+
+            details.append({
+                "何走前": run[
+                    "何走前"
+                ],
+                "距離": run[
+                    "距離"
+                ],
+                "競馬場": run[
+                    "競馬場"
+                ],
+                "通過順": flow,
+                "区間": (
+                    f"{start_position}→"
+                    f"{end_position}"
+                ),
+                "押上": gain,
+                "加点": applied_score,
+            })
+
+        if score <= 0:
+            continue
+
+        ranking.append({
+            "馬番": horse[
+                "馬番"
+            ],
+            "馬名": horse[
+                "馬名"
+            ],
+            "スコア": round(
+                score,
+                1,
+            ),
+            "押上回数": push_count,
+            "合計押上頭数": total_gain,
+            "最大押上頭数": max_gain,
+            "距離倍率": distance_weight,
+            "距離モード": target[
+                "モード"
+            ],
+            "最短距離差": target[
+                "最短距離差"
+            ],
+            "詳細": details,
+        })
+
+    ranking.sort(
+        key=lambda x: (
+            x["スコア"],
+            x["合計押上頭数"],
+            x["押上回数"],
+            -x["馬番"],
+        ),
+        reverse=True,
+    )
+
+    return ranking
+
+
+def render_corner_push_ranking(
+    title,
+    ranking,
+):
+    """デバッグ画面へ押上ランキングTOP5を表示する。"""
+
+    st.markdown(
+        f"#### {title}"
+    )
+
+    if not ranking:
+        st.write(
+            "対象となる4地点通過順データなし"
+        )
+        return
+
+    for rank, horse in enumerate(
+        ranking[:5],
+        start=1,
+    ):
+        st.write(
+            f"{rank}位｜"
+            f"{horse['馬番']}番 "
+            f"{horse['馬名']} "
+            f"｜{horse['スコア']}点 "
+            f"｜押上{horse['押上回数']}回 "
+            f"｜合計{horse['合計押上頭数']}頭 "
+            f"｜最大{horse['最大押上頭数']}頭 "
+            f"｜{horse['距離モード']} "
+            f"×{horse['距離倍率']}"
+        )
+
+        st.caption(
+            f"詳細：{horse['詳細']}"
+        )
+
+
+# 2角→3角：中盤で自分から動ける力。
+# K・Lの買い目でも押上ランキングを使うため、
+# デバッグOFFでもランキング自体は計算しておく。
+corner_push_2to3 = (
+    calc_corner_push_ranking(
+        horses,
+        distance_num,
+        start_index=1,
+        end_index=2,
+        point_per_head=20,
+    )
+)
+
+# 3角→4角：最も重視する勝負所の押上。
+# Lは1位から、Kは2位から候補を開始する。
+corner_push_3to4 = (
+    calc_corner_push_ranking(
+        horses,
+        distance_num,
+        start_index=2,
+        end_index=3,
+        point_per_head=30,
+    )
+)
+
+# 2角→4角：勝負所全体でどれだけ前へ進んだか。
+corner_push_2to4 = (
+    calc_corner_push_ranking(
+        horses,
+        distance_num,
+        start_index=1,
+        end_index=3,
+        point_per_head=25,
+    )
+)
+
+if debug_mode:
+
+    with st.expander(
+        "🚀 2〜4角・押上ランキング",
+        expanded=False,
+    ):
+        st.caption(
+            (
+                "盛岡のみ2地点・3地点の通過順も既存の4地点補完を使って評価。"
+                if baba_name == "盛岡"
+                else "元通過順が4地点ある過去走だけで評価。"
+            )
+            + "今回距離帯を優先し、最新走ほど少し重くしています。"
+            + (
+                "岩手ではK＝3角→4角【勝負所重視】1位、"
+                "L＝2角→4角【総合押上】1位を使用します。"
+                if baba_name in {"盛岡", "水沢"}
+                else 
+                "通常はK＝3角→4角2位、"
+                "L＝2角→4角【総合押上】1位を使用します。"
+            )
+        )
+
+        render_corner_push_ranking(
+            "2角 → 3角",
+            corner_push_2to3,
+        )
+
+        render_corner_push_ranking(
+            "3角 → 4角【勝負所重視】",
+            corner_push_3to4,
+        )
+
+        render_corner_push_ranking(
+            "2角 → 4角【総合押上】",
+            corner_push_2to4,
+        )
 
 if not front_candidates:
     st.info(
@@ -7235,6 +7873,7 @@ for horse in horses:
         calc_tenkai_class_adjustment(
             horse,
             current_race_class,
+            distance_num,
         )
     )
 
@@ -7250,11 +7889,23 @@ for horse in horses:
         ]
     )
 
-    adjusted_recent_form_score = (
+    recent_score_before_cap = (
         apply_positive_class_factor(
             long_distance_recent_score,
             class_factor,
         )
+    )
+
+    # 展開Bは「近況の良さ」だけで1位にならないよう、
+    # プラスの近況点だけ最大+60に制限する。
+    # マイナス点は従来どおりそのまま残す。
+    adjusted_recent_form_score = (
+        min(
+            recent_score_before_cap,
+            60,
+        )
+        if recent_score_before_cap > 0
+        else recent_score_before_cap
     )
 
     adjusted_front_bonus = (
@@ -7336,6 +7987,7 @@ for horse in horses:
         "地力元加点": rank_bonus["地力加点"],
         "共通元加点": rank_bonus["共通TOP5加点"],
         "近況元点": recent_form_score,
+        "近況上限前点": recent_score_before_cap,
         "長距離補正前近況点": recent_form_score,
         "長距離補正後近況点": long_distance_recent_score,
 
@@ -7370,6 +8022,17 @@ for horse in horses:
         "クラス同格以上回数": class_adjustment[
             "同格以上回数"
         ],
+        "クラス格上回数": class_adjustment.get(
+            "格上回数",
+            0,
+        ),
+        "クラス格上同距離回数": class_adjustment.get(
+            "格上同距離回数",
+            0,
+        ),
+        "クラス最上位差": class_adjustment.get(
+            "最上位クラス差"
+        ),
         "クラス平均差": class_adjustment[
             "平均クラス差"
         ],
@@ -8564,9 +9227,10 @@ if (
 # 🌊 展開馬の最終決定・消去法一本化
 #
 # ① 事前消去を通過した馬だけを対象
-# ② 予備展開点に総合順位を加える
-# ③ マーブルは加点材料の1つに留める
-# ④ 最終点の高い順に展開馬を決める
+# ② 近況プラスは最大+60まで
+# ③ 総合順位は加点せず、同点時のタイブレークだけ
+# ④ 格上クラス経験を明確に加点する
+# ⑤ 最終点の高い順に展開馬を決める
 # ==================================================
 
 tenkai_candidates = []
@@ -8580,20 +9244,10 @@ for candidate in tenkai_pre_candidates:
         99,
     )
 
-    # 総合も候補資格ではなく加点。
-    # 1〜5位だけ段階的に評価する。
-    total_rank_bonus_table = {
-        1: 55,
-        2: 45,
-        3: 35,
-        4: 25,
-        5: 15,
-    }
-
-    total_rank_bonus = total_rank_bonus_table.get(
-        total_rank,
-        0,
-    )
+    # 総合Fと展開Bの役割を明確に分ける。
+    # 総合順位は展開点へ一切加点しない。
+    # 同点時のタイブレークとしてだけ後段の並び替えで使う。
+    total_rank_bonus = 0
 
     final_tenkai_score = round(
         candidate["予備展開点"]
@@ -8617,15 +9271,16 @@ for candidate in tenkai_pre_candidates:
 
 
 # 高い順。
-# 同点なら近況 → 地力順位 → 前進順位 → 総合順位で決める。
+# 展開最終点が同点の時だけ総合順位をタイブレークに使う。
+# それでも同じなら近況 → 地力順位 → 前進順位で決める。
 tenkai_candidates = sorted(
     tenkai_candidates,
     key=lambda h: (
         -h.get("展開最終点", -9999),
+        h.get("最終総合順位", 99),
         -h.get("近況点", -9999),
         h.get("地力順位", 99),
         h.get("前進順位", 99),
-        h.get("最終総合順位", 99),
         h.get("馬番", 99),
     ),
 )
@@ -8677,6 +9332,7 @@ if not tenkai_candidates:
             calc_tenkai_class_adjustment(
                 horse,
                 current_race_class,
+                distance_num,
             )
         )
 
@@ -8695,6 +9351,12 @@ if not tenkai_candidates:
             )
         )
 
+        if rescue_recent_score > 0:
+            rescue_recent_score = min(
+                rescue_recent_score,
+                60,
+            )
+
         rescue_score = (
             rescue_recent_score
             + max(
@@ -8705,13 +9367,7 @@ if not tenkai_candidates:
                 )
                 * 0.30,
             )
-            + (
-                30
-                if total_rank <= 3
-                else 15
-                if total_rank <= 5
-                else 0
-            )
+            + 0  # 総合順位は緊急救済でも加点しない
             + rescue_class_adjustment[
                 "経験加点"
             ]
@@ -8742,6 +9398,17 @@ if not tenkai_candidates:
             "クラス同格以上回数": rescue_class_adjustment[
                 "同格以上回数"
             ],
+            "クラス格上回数": rescue_class_adjustment.get(
+                "格上回数",
+                0,
+            ),
+            "クラス格上同距離回数": rescue_class_adjustment.get(
+                "格上同距離回数",
+                0,
+            ),
+            "クラス最上位差": rescue_class_adjustment.get(
+                "最上位クラス差"
+            ),
             "クラス平均差": rescue_class_adjustment[
                 "平均クラス差"
             ],
@@ -8775,6 +9442,111 @@ if not tenkai_candidates:
 tenkai_final_candidates = tenkai_candidates
 
 tenkai_best = tenkai_final_candidates[0]
+
+# ==================================================
+# 岩手限定（盛岡・水沢）・展開B＝K
+#
+# 岩手では軸タイプに関係なく、
+# 展開馬Bを「3角→4角【勝負所重視】押上ランキング」
+# の最上位馬から採用する。
+#
+# Kの元ランキング1位が軸Aと同じ場合は、
+# 2位→3位→…へ順送りして最初の別馬を採用する。
+#
+# 目的：
+# ・岩手だけ、通常の展開適応スコアより
+#   勝負所で実際に位置を上げる能力を優先する。
+# ・他会場の展開Bロジックは一切変更しない。
+#
+# 後段の三連複B候補も同じKランキング順に揃える。
+# ==================================================
+iwate_k_tenkai_candidates = []
+iwate_tenkai_uses_k = False
+
+if baba_name in {
+    "盛岡",
+    "水沢",
+}:
+    for push_h in corner_push_3to4:
+        push_no = push_h.get(
+            "馬番"
+        )
+
+        # 展開Bは軸A自身にはしない。
+        if push_no == popular_horse_num:
+            continue
+
+        horse_data_for_k = next(
+            (
+                h
+                for h in horses
+                if h["馬番"] == push_no
+            ),
+            None,
+        )
+
+        if horse_data_for_k is None:
+            continue
+
+        style_info_for_k = (
+            classify_tenkai_candidate(
+                horse_data_for_k
+            )
+        )
+
+        k_row = {
+            "馬番": push_no,
+            "馬名": push_h.get(
+                "馬名",
+                horse_data_for_k.get(
+                    "馬名",
+                    "",
+                ),
+            ),
+            # 岩手では展開表示のスコアも
+            # Kの3→4押上スコアを基準にする。
+            "スコア": push_h.get(
+                "スコア",
+                0,
+            ),
+            "展開最終点": push_h.get(
+                "スコア",
+                0,
+            ),
+            "K押上順位元": True,
+            **style_info_for_k,
+        }
+
+        iwate_k_tenkai_candidates.append(
+            k_row
+        )
+
+    if iwate_k_tenkai_candidates:
+        iwate_tenkai_uses_k = True
+
+        tenkai_best = (
+            iwate_k_tenkai_candidates[0]
+        )
+
+        # デバッグの最終展開候補も、
+        # 岩手ではKランキングを先頭に見せる。
+        k_numbers = {
+            h["馬番"]
+            for h in iwate_k_tenkai_candidates
+        }
+
+        tenkai_final_candidates = (
+            iwate_k_tenkai_candidates
+            + [
+                h
+                for h in tenkai_candidates
+                if h["馬番"] not in k_numbers
+            ]
+        )
+
+        tenkai_selection_source = (
+            "岩手K＝3→4押上固定"
+        )
 
 selected_target_type = tenkai_best.get(
     "主脚質",
@@ -8830,6 +9602,8 @@ if debug_mode:
                 f"｜タイム+{h.get('展開タイム加点', 0)} "
                 f"｜クラス×{h.get('クラス係数', 1.0)} "
                 f"+{h.get('クラス経験加点', 0)} "
+                f"(格上{h.get('クラス格上回数', 0)}回/"
+                f"同距離{h.get('クラス格上同距離回数', 0)}回) "
                 f"｜長距離+{h.get('長距離適性加点', 0)} "
                 f"｜総合+{h.get('総合順位加点', 0)} "
                 f"｜リスク-{h.get('リスク減点', 0)}"
@@ -8839,11 +9613,14 @@ if debug_mode:
                 f"{format_marble_style(h)} "
                 f"｜クラス：{h.get('クラス判定', '判定なし')} "
                 f"｜過去クラス：{h.get('過去クラス', [])} "
+                f"｜最上位差：{h.get('クラス最上位差')} "
                 f"｜長距離：{h.get('長距離適性判定', '対象外')} "
                 f"｜同距離3着内{h.get('長距離同距離3着以内回数', 0)}回 "
                 f"｜同距離5着内{h.get('長距離同距離5着以内回数', 0)}回 "
                 f"｜補正前 "
                 f"近況{h.get('近況元点', h.get('近況点', 0))} "
+                f"→上限前{h.get('近況上限前点', h.get('近況点', 0))} "
+                f"→採用{h.get('近況点', 0)} "
                 f"前進+{h.get('前進元加点', h.get('前進加点', 0))} "
                 f"地力+{h.get('地力元加点', h.get('地力加点', 0))} "
                 f"共通+{h.get('共通元加点', h.get('共通TOP5加点', 0))} "
@@ -8852,14 +9629,25 @@ if debug_mode:
             )
 
 
-# 三連複Bの繰り下げ候補にも、
-# 最終の展開ランキング順をそのまま使う。
+# 三連複Bの繰り下げ候補。
+#
+# 通常会場：最終の展開ランキング順。
+# 岩手    ：B＝Kとするため、3→4押上ランキング順。
+if iwate_tenkai_uses_k:
+    tenkai_rank_source_for_trio = (
+        iwate_k_tenkai_candidates
+    )
+else:
+    tenkai_rank_source_for_trio = (
+        tenkai_candidates
+    )
+
 tenkai_rank_for_trio = [
     {
         "馬番": h["馬番"],
         "馬名": h["馬名"],
     }
-    for h in tenkai_candidates
+    for h in tenkai_rank_source_for_trio
 ]
 
 
@@ -10432,10 +11220,15 @@ popular = (
 # F：後詰め
 # G：穴3
 # I：穴2
-# J：前進気勢3位（南関10頭以上の三連複3点目専用）
+# J：前進気勢3位（南関10頭以上3点目／門別逃げ軸2点目で使用）
+# K：押上ランキング2位
+#    ・通常会場＝3角→4角【勝負所重視】2位
+#    ・岩手（盛岡・水沢）＝2角→4角【総合押上】2位
+# L：2角→4角【総合押上】ランキング1位
+#    （園田先行＋押上軸／岩手前受け軸で使用）
 #
 # 異なる記号が同じ馬になった場合の優先順位：
-# A → B → F → C → E → D → G → I → J
+# A → B → F → C → E → D → G → I → J → K → L
 #
 # 先に確定した記号を残し、
 # 後から確定する記号だけ自分の候補2位以降へ移動する。
@@ -10543,6 +11336,50 @@ axis_secondary_for_bet = (
 )
 
 # ==================================================
+# 岩手（盛岡・水沢）・前受け能力を持つ軸
+#
+# 主脚質または副脚質のどこかに
+# 「逃げ」「先行」のどちらかが入っていれば発動対象。
+#
+# 例：
+# ・主：先行｜副：持続 → 対象
+# ・主：持続｜副：先行 → 対象
+# ・主：逃げ｜副：押上   → 対象
+# ・主：差し｜副：持続   → 対象外
+# ==================================================
+axis_primary_for_bet = axis_marble_profile.get(
+    "主脚質",
+    kyakushoku_type,
+)
+
+axis_secondary_tags_for_bet = set(
+    axis_marble_profile.get(
+        "副脚質",
+        [],
+    )
+)
+
+is_iwate_front_axis = (
+    baba_name in {
+        "盛岡",
+        "水沢",
+    }
+    and (
+        axis_primary_for_bet in {
+            "逃げ",
+            "先行",
+        }
+        or bool(
+            axis_secondary_tags_for_bet
+            & {
+                "逃げ",
+                "先行",
+            }
+        )
+    )
+)
+
+# ==================================================
 # 南関10頭以上
 #
 # 浦和・船橋・大井・川崎
@@ -10559,6 +11396,13 @@ is_nankan_large_field = (
         "川崎",
     }
     and len(horses) >= 10
+)
+
+# 大井限定・逃げ軸
+# 三連複3点目 A-D-E / ワイド2点目 A-D
+is_ooi_escape = (
+    baba_name == "大井"
+    and kyakushoku_type == "逃げ"
 )
 
 # ==================================================
@@ -10637,6 +11481,31 @@ if kyakushoku_type == "先行":
         ]
 
 # ==================================================
+# 園田限定・先行＋押上軸
+#
+# 主：先行｜副：押上 のとき
+# 三連複1点目を A-B-L にする。
+#
+# L＝2角→4角【総合押上】ランキング1位。
+# A・Bと被る場合は2位→3位→4位…へ順送りする。
+#
+# 園田の通常先行1点目 A-B-D より後で上書きし、
+# この条件だけ最終的に A-B-L を採用する。
+# ==================================================
+if (
+    baba_name == "園田"
+    and kyakushoku_type == "先行"
+    and axis_secondary_for_bet == "押上"
+):
+    current_bet_template[
+        "三連複"
+    ][0] = [
+        "A",
+        "B",
+        "L",
+    ]
+
+# ==================================================
 # 三連複2点目
 #
 # Aと後詰めFが別馬なら、
@@ -10653,6 +11522,64 @@ if (
     current_bet_template[
         "三連複"
     ][1][1] = "F"
+
+# ==================================================
+# 門別限定・三連複専用ルール
+#
+# 差し軸
+# 1点目 A-B-I
+# 2点目 A-F-E
+#
+# 先行軸・持続軸
+# 2点目 A-C-I
+#
+# 逃げ軸
+# 2点目 A-J-G
+# J＝前進気勢3位から下位へ順送り
+#
+# 上の共通A-F変更より後で上書きすることで、
+# 門別だけ必ずこの形を最終採用する。
+# 他会場の買い目には影響させない。
+# ==================================================
+if baba_name == "門別":
+
+    if kyakushoku_type == "差し":
+        current_bet_template[
+            "三連複"
+        ][0] = [
+            "A",
+            "B",
+            "I",
+        ]
+
+        current_bet_template[
+            "三連複"
+        ][1] = [
+            "A",
+            "F",
+            "E",
+        ]
+
+    elif kyakushoku_type in {
+        "先行",
+        "持続",
+    }:
+        current_bet_template[
+            "三連複"
+        ][1] = [
+            "A",
+            "C",
+            "I",
+        ]
+
+    elif kyakushoku_type == "逃げ":
+        current_bet_template[
+            "三連複"
+        ][1] = [
+            "A",
+            "J",
+            "G",
+        ]
 
 # ==================================================
 # 園田限定
@@ -10690,6 +11617,27 @@ if is_sonoda_escape_senko:
 # ==================================================
 # 園田限定・差し軸
 #
+# 三連複2点目
+# A-F-I → A-F-K
+#
+# K＝3角→4角【勝負所重視】押上ランキング2位。
+# A・Fと被る場合は3位→4位→…へ順送りする。
+# ==================================================
+if (
+    baba_name == "園田"
+    and kyakushoku_type == "差し"
+):
+    current_bet_template[
+        "三連複"
+    ][1] = [
+        "A",
+        "F",
+        "K",
+    ]
+
+# ==================================================
+# 園田限定・差し軸
+#
 # ワイド
 # 1点目 A-B はそのまま
 # 2点目 A-E
@@ -10706,12 +11654,66 @@ if (
     ]
 
 # ==================================================
+# 岩手限定（盛岡・水沢）
+# 軸に「逃げ」または「先行」が入っている時
+#
+# 三連複1点目：A-B-L
+# 浮き輪      ：L-K
+#
+# さらに、主：先行｜副：持続 の時だけ
+# 三連複2点目：A-E-G
+#
+# K＝岩手のみ3角→4角【勝負所重視】ランキング1位
+# L＝2角→4角【総合押上】ランキング1位
+#
+# ワイドは既存ルールをそのまま使う。
+# 他会場には一切影響させない。
+# ==================================================
+if is_iwate_front_axis:
+    current_bet_template[
+        "三連複"
+    ][0] = [
+        "A",
+        "B",
+        "L",
+    ]
+
+    # 岩手のみ・主：先行｜副：持続
+    # 三連複2点目を A-E-G に固定する。
+    if (
+        axis_primary_for_bet == "先行"
+        and axis_secondary_for_bet == "持続"
+    ):
+        current_bet_template[
+            "三連複"
+        ][1] = [
+            "A",
+            "E",
+            "G",
+        ]
+
+    current_bet_template[
+        "浮き輪"
+    ] = [
+        [
+            "L",
+            "K",
+        ]
+    ]
+
+# ==================================================
 # 南関10頭以上
 #
 # 通常の三連複2点を残したまま、
 # 3点目だけ A-B-J を追加する。
+#
+# ただし大井・逃げ軸は専用3点目 A-D-E を使うため、
+# ここではA-B-Jを追加しない。
 # ==================================================
-if is_nankan_large_field:
+if (
+    is_nankan_large_field
+    and not is_ooi_escape
+):
     current_bet_template[
         "三連複"
     ].append(
@@ -10721,6 +11723,46 @@ if is_nankan_large_field:
             "J",
         ]
     )
+
+# ==================================================
+# 大井限定・逃げ軸
+#
+# 三連複3点目：A-D-E
+# ワイド2点目：A-D
+#
+# 頭数に関係なく大井の逃げ軸では三連複を3点にする。
+# 南関10頭以上の通常3点目 A-B-J よりこちらを優先する。
+# ==================================================
+if is_ooi_escape:
+
+    ooi_escape_trio3 = [
+        "A",
+        "D",
+        "E",
+    ]
+
+    if len(
+        current_bet_template[
+            "三連複"
+        ]
+    ) >= 3:
+        current_bet_template[
+            "三連複"
+        ][2] = ooi_escape_trio3
+
+    else:
+        current_bet_template[
+            "三連複"
+        ].append(
+            ooi_escape_trio3
+        )
+
+    current_bet_template[
+        "ワイド"
+    ][1] = [
+        "A",
+        "D",
+    ]
 
 # --------------------------------------------------
 # 買い目専用の候補プール
@@ -10818,7 +11860,7 @@ i_pool = [
 # 3位から候補を開始し、
 # A・Bなどと被れば4位 → 5位 → …へ繰り下げる。
 #
-# Jは南関10頭以上のA-B-Jでだけ使用する。
+# Jは南関10頭以上のA-B-Jと、門別逃げ軸A-J-Gで使用する。
 # ==================================================
 front_ranking_for_j = [
     h
@@ -10836,6 +11878,55 @@ j_pool = unique_texts(
     ]
 )
 
+# ==================================================
+# K＝3角→4角【勝負所重視】押上
+#
+# 通常会場：
+#   従来どおり3角→4角ランキング2位から開始。
+#   園田・差し軸 A-F-K などの既存仕様は変更しない。
+#
+# 岩手（盛岡・水沢）：
+#   3角→4角【勝負所重視】ランキング1位から開始。
+#   岩手前受け軸の浮き輪 L-K などで使用。
+#
+# Lは別枠で2角→4角【総合押上】ランキング1位。
+# 同じ買い目内でKとLが同じ馬になった場合は、
+# KまたはLが各ランキングの次候補へ順送りされる。
+# ==================================================
+if baba_name in {
+    "盛岡",
+    "水沢",
+}:
+    k_pool = unique_texts(
+        [
+            horse_text(h)
+            for h in corner_push_3to4
+        ]
+    )
+else:
+    k_pool = unique_texts(
+        [
+            horse_text(h)
+            for h in corner_push_3to4[1:]
+        ]
+    )
+
+# ==================================================
+# L＝押上ランキング1位
+#
+# 2角→4角【総合押上】ランキングを使用する。
+# 1位から候補を開始し、A・Bなど同じ買い目内で被れば
+# 2位 → 3位 → 4位…へ順送りする。
+#
+# 園田・先行＋押上軸、および岩手前受け軸の三連複1点目 A-B-L で使用。
+# ==================================================
+l_pool = unique_texts(
+    [
+        horse_text(h)
+        for h in corner_push_2to4
+    ]
+)
+
 alphabet_candidate_pools = {
     "A": [popular],
     "F": f_pool,
@@ -10846,6 +11937,8 @@ alphabet_candidate_pools = {
     "G": g_pool,
     "I": i_pool,
     "J": j_pool,
+    "K": k_pool,
+    "L": l_pool,
 }
 
 alphabet_role_names = {
@@ -10854,25 +11947,54 @@ alphabet_role_names = {
     "C": "地力",
     "E": "抑え",
     "D": "先行",
-    "B": "展開",
+    "B": (
+        "展開(K＝3→4押上)"
+        if baba_name in {"盛岡", "水沢"}
+        else "展開"
+    ),
     "G": "穴3",
     "I": "穴2",
     "J": "前進3位",
+    "K": (
+        "3→4押上1位"
+        if baba_name in {"盛岡", "水沢"}
+        else "3→4押上2位"
+    ),
+    "L": "総合押上1位",
 }
 
-# Jは最後に確定する。
-# 既存A〜Iの選出結果をJ追加で動かさないため。
-alphabet_priority = [
-    "A",
-    "B",
-    "F",
-    "C",
-    "E",
-    "D",
-    "G",
-    "I",
-    "J",
-]
+# J・K・Lは最後に確定する。
+# 既存A〜Iの選出結果を追加記号で動かさないため。
+# K/Lが両方必要な岩手では、L＝総合押上1位を優先して確定する。
+# 同じ馬がK＝3→4押上1位にも該当した場合は、K側を次候補へ送る。
+if baba_name in {"盛岡", "水沢"}:
+    alphabet_priority = [
+        "A",
+        "B",
+        "F",
+        "C",
+        "E",
+        "D",
+        "G",
+        "I",
+        "J",
+        "L",
+        "K",
+    ]
+else:
+    alphabet_priority = [
+        "A",
+        "B",
+        "F",
+        "C",
+        "E",
+        "D",
+        "G",
+        "I",
+        "J",
+        "K",
+        "L",
+    ]
 
 
 def collect_required_symbols(template):
@@ -11018,7 +12140,7 @@ def select_bet_alphabet_horses(
     """
     今回使う記号だけを、
     alphabet_priority の順で確定する。
-    現在は A → B → F → C → E → D → G → I → J。
+    現在は A → B → F → C → E → D → G → I → J → K → L。
 
     別の買い目に出る記号同士は、
     同じ馬を使用してもよい。
@@ -11716,10 +12838,51 @@ if debug_mode:
             f"軸タイプ：{kyakushoku_type}"
         )
 
+        if (
+            baba_name == "門別"
+            and kyakushoku_type == "差し"
+        ):
+            st.write(
+                "🟣 門別・差し軸："
+                "三連複 A-B-I / A-F-E"
+            )
+
+        if (
+            baba_name == "門別"
+            and kyakushoku_type in {
+                "先行",
+                "持続",
+            }
+        ):
+            st.write(
+                f"🟣 門別・{kyakushoku_type}軸："
+                "三連複2点目 A-C-I"
+            )
+
+        if (
+            baba_name == "門別"
+            and kyakushoku_type == "逃げ"
+        ):
+            st.write(
+                "🟣 門別・逃げ軸："
+                "三連複2点目 A-J-G"
+            )
+
         if is_sonoda_escape_senko:
             st.write(
                 "🟢 園田・逃げ＋先行："
                 "三連複 A-B-I / A-D-G"
+            )
+
+        if (
+            baba_name == "園田"
+            and kyakushoku_type == "先行"
+            and axis_secondary_for_bet == "押上"
+        ):
+            st.write(
+                "🟢 園田・先行＋押上軸："
+                "三連複1点目 A-B-L "
+                "（L＝2角→4角・総合押上1位）"
             )
 
         if (
@@ -11743,7 +12906,41 @@ if debug_mode:
                 "三連複2点目 A-E-G"
             )
 
-        if is_nankan_large_field:
+        if iwate_tenkai_uses_k:
+            st.write(
+                "🌊 岩手・展開B固定："
+                "B＝K（3角→4角【勝負所重視】押上最上位）"
+            )
+
+        if is_iwate_front_axis:
+            st.write(
+                "🟦 岩手・前受け軸："
+                "三連複1点目 A-B-L "
+                "｜浮き輪 L-K"
+            )
+
+            if (
+                axis_primary_for_bet == "先行"
+                and axis_secondary_for_bet == "持続"
+            ):
+                st.write(
+                    "🟦 岩手・先行＋持続軸："
+                    "三連複2点目 A-E-G"
+                )
+
+            st.write(
+                "K＝3角→4角【勝負所重視】1位 "
+                "｜L＝2角→4角【総合押上】1位"
+            )
+
+        if is_ooi_escape:
+            st.write(
+                "🔵 大井・逃げ軸："
+                "三連複3点目 A-D-E "
+                "｜ワイド2点目 A-D"
+            )
+
+        elif is_nankan_large_field:
             st.write(
                 "🏙 南関10頭以上："
                 "三連複3点目 A-B-J"
