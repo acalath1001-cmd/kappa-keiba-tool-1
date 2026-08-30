@@ -4078,6 +4078,12 @@ def get_corner_push_runs(
     今回距離帯があればその走だけを100％評価し、
     今回距離帯が1走もない場合だけ、
     最も近い距離の走を弱く評価する。
+
+    K/Lの質補正に使うため、各走の
+    ・走破タイム
+    ・クラス
+    ・着順
+    も一緒に保持する。
     """
 
     valid_runs = []
@@ -4123,18 +4129,48 @@ def get_corner_push_runs(
         ):
             continue
 
+        time_text = item.get(
+            "タイム",
+            "",
+        )
+
+        time_seconds = parse_time_to_seconds(
+            time_text
+        )
+
+        # 園田⇔姫路は既存の同距離タイム比較と同じ補正。
+        past_place = item.get(
+            "競馬場",
+            "",
+        )
+
+        if time_seconds is not None:
+            if (
+                baba_name == "園田"
+                and past_place == "姫路"
+            ):
+                time_seconds += 5.0
+
+            elif (
+                baba_name == "姫路"
+                and past_place == "園田"
+            ):
+                time_seconds -= 5.0
+
         valid_runs.append({
             "何走前": idx + 1,
             "距離": past_distance,
-            "競馬場": item.get(
-                "競馬場",
-                "",
-            ),
+            "競馬場": past_place,
             # 下流の押上計算はこのキーを参照しているため、
             # キー名は維持し、中身だけ盛岡では補完後通過順にする。
             "元通過順": push_flow[:4],
             "着順": item.get(
                 "着順"
+            ),
+            "タイム": time_text,
+            "タイム秒": time_seconds,
+            "クラス": item.get(
+                "クラス"
             ),
             "新しさ倍率": (
                 recent_weights[idx]
@@ -4211,12 +4247,306 @@ def get_corner_push_runs(
     }
 
 
+# ==================================================
+# 🚀 K/L押上ランキング・質補正
+#
+# 押上頭数だけでなく、
+# 「どのレベル・どの時計で押し上げたか」を評価する。
+#
+# 基本式：
+#   押上スコア × タイム補正 × クラス補正
+#
+# ① 走破タイム補正
+#    同じ競馬場・同じ距離の時計を優先して比較。
+#    サンプル不足時のみ同距離全体へフォールバック。
+#
+# ② クラス補正
+#    下級条件での押上は少し割り引く。
+#
+# ※着順・押上後の失速はK/Lの質補正には入れない。
+# ※K＝3角→4角、L＝2角→4角の意味自体は変えない。
+# ==================================================
+
+
+def build_corner_push_time_reference(
+    horse_list,
+):
+    """K/L用の走破タイム比較母集団を作る。"""
+
+    by_track_distance = {}
+    by_distance = {}
+
+    for horse in horse_list:
+        for item in horse.get(
+            "距離付きタイム",
+            [],
+        )[:5]:
+            past_distance = item.get(
+                "距離",
+                0,
+            )
+
+            past_place = item.get(
+                "競馬場",
+                "",
+            )
+
+            time_seconds = parse_time_to_seconds(
+                item.get(
+                    "タイム",
+                    "",
+                )
+            )
+
+            if (
+                not past_distance
+                or time_seconds is None
+            ):
+                continue
+
+            # 園田⇔姫路は既存比較と同じ補正。
+            if (
+                baba_name == "園田"
+                and past_place == "姫路"
+            ):
+                time_seconds += 5.0
+
+            elif (
+                baba_name == "姫路"
+                and past_place == "園田"
+            ):
+                time_seconds -= 5.0
+
+            by_track_distance.setdefault(
+                (
+                    past_place,
+                    past_distance,
+                ),
+                [],
+            ).append(
+                time_seconds
+            )
+
+            by_distance.setdefault(
+                past_distance,
+                [],
+            ).append(
+                time_seconds
+            )
+
+    for values in by_track_distance.values():
+        values.sort()
+
+    for values in by_distance.values():
+        values.sort()
+
+    return {
+        "競馬場距離": by_track_distance,
+        "距離": by_distance,
+    }
+
+
+corner_push_time_reference = (
+    build_corner_push_time_reference(
+        horses
+    )
+)
+
+
+def calc_corner_push_time_factor(
+    run,
+):
+    """
+    押し上げた走の時計の質を倍率化する。
+
+    同競馬場・同距離が3走以上あれば最優先。
+    足りなければ同距離全体が6走以上の時だけ比較する。
+    データ不足は1.00で中立。
+    """
+
+    time_seconds = run.get(
+        "タイム秒"
+    )
+
+    if time_seconds is None:
+        return {
+            "倍率": 1.00,
+            "判定": "タイムなし・中立",
+            "順位率": None,
+            "母数": 0,
+        }
+
+    track_key = (
+        run.get(
+            "競馬場",
+            "",
+        ),
+        run.get(
+            "距離",
+            0,
+        ),
+    )
+
+    track_values = (
+        corner_push_time_reference[
+            "競馬場距離"
+        ].get(
+            track_key,
+            [],
+        )
+    )
+
+    if len(track_values) >= 3:
+        values = track_values
+        mode = "同競馬場・同距離"
+
+    else:
+        distance_values = (
+            corner_push_time_reference[
+                "距離"
+            ].get(
+                run.get(
+                    "距離",
+                    0,
+                ),
+                [],
+            )
+        )
+
+        if len(distance_values) >= 6:
+            values = distance_values
+            mode = "同距離全体"
+        else:
+            return {
+                "倍率": 1.00,
+                "判定": "比較母数不足・中立",
+                "順位率": None,
+                "母数": max(
+                    len(track_values),
+                    len(distance_values),
+                ),
+            }
+
+    # 同値タイムは一番良い順位側で扱う。
+    rank = next(
+        (
+            idx + 1
+            for idx, value in enumerate(values)
+            if value >= time_seconds - 1e-9
+        ),
+        len(values),
+    )
+
+    rank_rate = (
+        rank / len(values)
+    )
+
+    if rank_rate <= 0.25:
+        factor = 1.08
+        judgement = "速い・上位25％"
+
+    elif rank_rate <= 0.50:
+        factor = 1.02
+        judgement = "やや速い・上位50％"
+
+    elif rank_rate <= 0.75:
+        factor = 0.95
+        judgement = "やや遅い"
+
+    elif rank_rate <= 0.90:
+        factor = 0.85
+        judgement = "遅い"
+
+    else:
+        factor = 0.75
+        judgement = "かなり遅い"
+
+    return {
+        "倍率": factor,
+        "判定": (
+            f"{mode}・{judgement}"
+        ),
+        "順位率": round(
+            rank_rate,
+            3,
+        ),
+        "母数": len(values),
+    }
+
+
+def calc_corner_push_class_factor(
+    run,
+    current_class,
+):
+    """
+    押し上げた走のクラスを今回クラスと比較する。
+
+    下級条件ほど押上価値を割り引く。
+    クラス不明時は中立。
+    """
+
+    current_value = get_race_class_value(
+        current_class
+    )
+
+    past_class = run.get(
+        "クラス"
+    )
+
+    past_value = get_race_class_value(
+        past_class
+    )
+
+    if (
+        current_value is None
+        or past_value is None
+    ):
+        return {
+            "倍率": 1.00,
+            "判定": "クラス不明・中立",
+            "差": None,
+        }
+
+    class_gap = (
+        past_value
+        - current_value
+    )
+
+    # 値が小さいほど上位クラス。
+    if class_gap <= 0:
+        factor = 1.00
+        judgement = "同格以上"
+
+    elif class_gap <= 2:
+        factor = 0.95
+        judgement = "少し下級"
+
+    elif class_gap <= 5:
+        factor = 0.85
+        judgement = "下級"
+
+    elif class_gap <= 9:
+        factor = 0.75
+        judgement = "明確な下級"
+
+    else:
+        factor = 0.65
+        judgement = "大幅な下級"
+
+    return {
+        "倍率": factor,
+        "判定": judgement,
+        "差": class_gap,
+    }
+
+
 def calc_corner_push_ranking(
     horse_list,
     current_distance,
     start_index,
     end_index,
     point_per_head,
+    current_class=None,
 ):
     """
     指定区間の押上ランキングを作る。
@@ -4228,6 +4558,14 @@ def calc_corner_push_ranking(
 
     位置番号は小さくなるほど前進なので、
     start_position - end_position がプラスなら押上。
+
+    K/Lで使う4角終点のランキングでは、
+    押上そのものを土台にしつつ、
+    ・押し上げたレースの走破タイム
+    ・押し上げたレースのクラス
+    だけを倍率補正する。
+
+    ※押上後の着順・失速はこのK/L補正には入れない。
     """
 
     ranking = []
@@ -4250,9 +4588,11 @@ def calc_corner_push_ranking(
             continue
 
         score = 0.0
+        raw_push_score = 0.0
         push_count = 0
         total_gain = 0
         max_gain = 0
+        quality_adjustment_count = 0
         details = []
 
         for run in target_runs:
@@ -4299,7 +4639,7 @@ def calc_corner_push_ranking(
                 elif end_position <= 5:
                     position_bonus = 20
 
-            applied_score = round(
+            raw_applied_score = round(
                 (
                     base_score
                     + position_bonus
@@ -4311,13 +4651,81 @@ def calc_corner_push_ranking(
                 1,
             )
 
+            # --------------------------------------------------
+            # K/Lの押上「質」補正
+            #
+            # K＝3角→4角、L＝2角→4角なので、
+            # 4角を終点にするランキングだけへ適用する。
+            #
+            # 押上素点 × タイム倍率 × クラス倍率
+            #
+            # 着順・押上後の失速はここでは評価しない。
+            # --------------------------------------------------
+            if end_index == 3:
+
+                time_info = (
+                    calc_corner_push_time_factor(
+                        run
+                    )
+                )
+
+                class_info = (
+                    calc_corner_push_class_factor(
+                        run,
+                        current_class,
+                    )
+                )
+
+                quality_factor = round(
+                    time_info[
+                        "倍率"
+                    ]
+                    * class_info[
+                        "倍率"
+                    ],
+                    4,
+                )
+
+            else:
+
+                # 2角→3角はデバッグ用ランキングなので、
+                # 従来の押上評価をそのまま残す。
+                time_info = {
+                    "倍率": 1.00,
+                    "判定": "K/L対象外・中立",
+                    "順位率": None,
+                    "母数": 0,
+                }
+
+                class_info = {
+                    "倍率": 1.00,
+                    "判定": "K/L対象外・中立",
+                    "差": None,
+                }
+
+                quality_factor = 1.00
+
+            applied_score = round(
+                raw_applied_score
+                * quality_factor,
+                1,
+            )
+
             score += applied_score
+            raw_push_score += (
+                raw_applied_score
+            )
             push_count += 1
             total_gain += gain
             max_gain = max(
                 max_gain,
                 gain,
             )
+
+            if abs(
+                quality_factor - 1.0
+            ) >= 0.001:
+                quality_adjustment_count += 1
 
             details.append({
                 "何走前": run[
@@ -4330,11 +4738,40 @@ def calc_corner_push_ranking(
                     "競馬場"
                 ],
                 "通過順": flow,
+                "着順": run.get(
+                    "着順"
+                ),
+                "タイム": run.get(
+                    "タイム"
+                ),
+                "クラス": (
+                    run.get(
+                        "クラス",
+                        {}
+                    ) or {}
+                ).get(
+                    "表示",
+                    "不明",
+                ),
                 "区間": (
                     f"{start_position}→"
                     f"{end_position}"
                 ),
                 "押上": gain,
+                "素点": raw_applied_score,
+                "タイム倍率": time_info[
+                    "倍率"
+                ],
+                "タイム判定": time_info[
+                    "判定"
+                ],
+                "クラス倍率": class_info[
+                    "倍率"
+                ],
+                "クラス判定": class_info[
+                    "判定"
+                ],
+                "総合倍率": quality_factor,
                 "加点": applied_score,
             })
 
@@ -4352,7 +4789,12 @@ def calc_corner_push_ranking(
                 score,
                 1,
             ),
+            "押上素点": round(
+                raw_push_score,
+                1,
+            ),
             "押上回数": push_count,
+            "質補正回数": quality_adjustment_count,
             "合計押上頭数": total_gain,
             "最大押上頭数": max_gain,
             "距離倍率": distance_weight,
@@ -4425,11 +4867,12 @@ corner_push_2to3 = (
         start_index=1,
         end_index=2,
         point_per_head=20,
+        current_class=current_race_class,
     )
 )
 
 # 3角→4角：最も重視する勝負所の押上。
-# Lは1位から、Kは2位から候補を開始する。
+# Kは1位から候補を開始する。Lも別ランキングの1位から開始する。
 corner_push_3to4 = (
     calc_corner_push_ranking(
         horses,
@@ -4437,6 +4880,7 @@ corner_push_3to4 = (
         start_index=2,
         end_index=3,
         point_per_head=30,
+        current_class=current_race_class,
     )
 )
 
@@ -4448,6 +4892,7 @@ corner_push_2to4 = (
         start_index=1,
         end_index=3,
         point_per_head=25,
+        current_class=current_race_class,
     )
 )
 
@@ -4464,12 +4909,9 @@ if debug_mode:
                 else "元通過順が4地点ある過去走だけで評価。"
             )
             + "今回距離帯を優先し、最新走ほど少し重くしています。"
+            + " K/Lはさらに走破タイム・クラスだけを質補正します。"
             + (
-                "岩手ではK＝3角→4角【勝負所重視】1位、"
-                "L＝2角→4角【総合押上】1位を使用します。"
-                if baba_name in {"盛岡", "水沢"}
-                else 
-                "通常はK＝3角→4角2位、"
+                " K＝3角→4角【勝負所重視】1位、"
                 "L＝2角→4角【総合押上】1位を使用します。"
             )
         )
@@ -11221,11 +11663,9 @@ popular = (
 # G：穴3
 # I：穴2
 # J：前進気勢3位（南関10頭以上3点目／門別逃げ軸2点目で使用）
-# K：押上ランキング2位
-#    ・通常会場＝3角→4角【勝負所重視】2位
-#    ・岩手（盛岡・水沢）＝2角→4角【総合押上】2位
+# K：3角→4角【勝負所重視】押上ランキング1位（全会場共通）
 # L：2角→4角【総合押上】ランキング1位
-#    （園田先行＋押上軸／岩手前受け軸で使用）
+#    （会場別A-B-L／佐賀先行軸／園田先行＋押上軸／岩手前受け軸で使用）
 #
 # 異なる記号が同じ馬になった場合の優先順位：
 # A → B → F → C → E → D → G → I → J → K → L
@@ -11405,6 +11845,14 @@ is_ooi_escape = (
     and kyakushoku_type == "逃げ"
 )
 
+# 大井限定・先行軸（南関10頭以上の3点目専用）
+# 通常の A-B-J を A-D-L に上書きする。
+is_ooi_senko_large_field = (
+    baba_name == "大井"
+    and kyakushoku_type == "先行"
+    and is_nankan_large_field
+)
+
 # ==================================================
 # 先行軸・三連複の会場別／マーブル分岐
 #
@@ -11415,7 +11863,8 @@ is_ooi_escape = (
 # 先行＋逃げ／なし      → A-B-D
 #
 # 【2点目】
-# 笠松・園田            → A-E-G
+# 園田                  → A-L-G  ※試験
+# 笠松・川崎            → A-E-G
 # その他                → A-C-G
 # ==================================================
 if kyakushoku_type == "先行":
@@ -11459,9 +11908,21 @@ if kyakushoku_type == "先行":
             "D",
         ]
 
-    if baba_name in {
+    # 園田だけ試験的に2点目を A-L-G。
+    # L＝2角→4角【総合押上】ランキング1位。
+    # A・Gと被ればLは2位→3位→…へ順送りする。
+    if baba_name == "園田":
+        current_bet_template[
+            "三連複"
+        ][1] = [
+            "A",
+            "L",
+            "G",
+        ]
+
+    elif baba_name in {
         "笠松",
-        "園田",
+        "川崎",
     }:
         current_bet_template[
             "三連複"
@@ -11496,6 +11957,30 @@ if (
     baba_name == "園田"
     and kyakushoku_type == "先行"
     and axis_secondary_for_bet == "押上"
+):
+    current_bet_template[
+        "三連複"
+    ][0] = [
+        "A",
+        "B",
+        "L",
+    ]
+
+# ==================================================
+# 佐賀限定・先行軸
+#
+# 軸タイプが「先行」のとき、
+# 三連複1点目を A-B-L にする。
+#
+# L＝2角→4角【総合押上】ランキング1位。
+# A・Bと被る場合は2位→3位→4位…へ順送りする。
+#
+# 先行軸の通常マーブル分岐より後で上書きするため、
+# 佐賀では副脚質に関係なく最終的に A-B-L を採用する。
+# ==================================================
+if (
+    baba_name == "佐賀"
+    and kyakushoku_type == "先行"
 ):
     current_bet_template[
         "三連複"
@@ -11618,10 +12103,10 @@ if is_sonoda_escape_senko:
 # 園田限定・差し軸
 #
 # 三連複2点目
-# A-F-I → A-F-K
+# A-F-K → A-D-K
 #
-# K＝3角→4角【勝負所重視】押上ランキング2位。
-# A・Fと被る場合は3位→4位→…へ順送りする。
+# K＝3角→4角【勝負所重視】押上ランキング1位。
+# A・Dと被る場合は既存の候補順送り／三連複3点不足救済で調整する。
 # ==================================================
 if (
     baba_name == "園田"
@@ -11631,7 +12116,7 @@ if (
         "三連複"
     ][1] = [
         "A",
-        "F",
+        "D",
         "K",
     ]
 
@@ -11663,7 +12148,7 @@ if (
 # さらに、主：先行｜副：持続 の時だけ
 # 三連複2点目：A-E-G
 #
-# K＝岩手のみ3角→4角【勝負所重視】ランキング1位
+# K＝3角→4角【勝負所重視】ランキング1位（全会場共通）
 # L＝2角→4角【総合押上】ランキング1位
 #
 # ワイドは既存ルールをそのまま使う。
@@ -11709,6 +12194,9 @@ if is_iwate_front_axis:
 #
 # ただし大井・逃げ軸は専用3点目 A-D-E を使うため、
 # ここではA-B-Jを追加しない。
+#
+# 大井・先行軸は一度A-B-Jを追加した後、
+# 直後の専用処理で A-D-L に上書きする。
 # ==================================================
 if (
     is_nankan_large_field
@@ -11723,6 +12211,24 @@ if (
             "J",
         ]
     )
+
+# ==================================================
+# 大井限定・先行軸
+#
+# 南関10頭以上で追加された三連複3点目を、
+# A-B-J → A-D-L に変更する。
+#
+# L＝2角→4角【総合押上】ランキング1位。
+# A・Dと被った場合は2位→3位→4位…へ順送りする。
+# ==================================================
+if is_ooi_senko_large_field:
+    current_bet_template[
+        "三連複"
+    ][2] = [
+        "A",
+        "D",
+        "L",
+    ]
 
 # ==================================================
 # 大井限定・逃げ軸
@@ -11763,6 +12269,172 @@ if is_ooi_escape:
         "A",
         "D",
     ]
+
+# ==================================================
+# 南関以外・A-Bワイド100円を三連複3点目へ移行
+#
+# 南関4場（浦和・船橋・大井・川崎）は完全に現状維持。
+#
+# 【園田】
+# 軸が逃げ・先行
+#   → 三連複3点目 A-E-K
+# それ以外の軸
+#   → 三連複3点目 A-B-K
+#
+# 【A-B-L 採用会場】
+# 笠松・佐賀・水沢・高知
+#   → 三連複3点目 A-B-L
+#
+# 【それ以外の南関以外】
+# 盛岡・金沢・名古屋・姫路・門別
+#   → 基本 A-D-G
+#   → ただし、画面上の先行代表Dが軸Aと同じ馬なら A-B-G
+#
+# ワイドは従来の1点目 A-B を削除し、
+# 既存の2点目だけを残す。
+#
+# これにより南関以外は原則、
+#   三連複3点 + ワイド1点 + 浮き輪1点 = 5点（500円）
+# となる。
+#
+# ※既存の三連複1〜2点目と同じ3頭になった場合は、
+#   make_unique_trio_bets() の既存重複回避により、
+#   右側の記号（LやGなど）を次候補へ順送りする。
+# ==================================================
+NANKAN_BET_TRACKS = {
+    "浦和",
+    "船橋",
+    "大井",
+    "川崎",
+}
+
+NON_NANKAN_ABK_TRACKS = {
+    "園田",
+}
+
+NON_NANKAN_ABL_TRACKS = {
+    "笠松",
+    "佐賀",
+    "水沢",
+    "高知",
+}
+
+NON_NANKAN_ADG_TRACKS = {
+    "盛岡",
+    "金沢",
+    "名古屋",
+    "姫路",
+    "門別",
+}
+
+is_non_nankan_bet_track = (
+    baba_name in (
+        NON_NANKAN_ABK_TRACKS
+        | NON_NANKAN_ABL_TRACKS
+        | NON_NANKAN_ADG_TRACKS
+    )
+)
+
+non_nankan_extra_trio_symbols = None
+non_nankan_adg_switched_to_abg = False
+
+if is_non_nankan_bet_track:
+
+    # ----------------------------------------------
+    # ワイドA-Bを削除。
+    # 会場別修正済みの「2点目」だけを残す。
+    # ----------------------------------------------
+    if len(
+        current_bet_template[
+            "ワイド"
+        ]
+    ) >= 2:
+        current_bet_template[
+            "ワイド"
+        ] = [
+            current_bet_template[
+                "ワイド"
+            ][1][:]
+        ]
+
+    # ----------------------------------------------
+    # 園田
+    # 軸が逃げ・先行 → 3点目 A-E-K
+    # それ以外       → 3点目 A-B-K
+    # ----------------------------------------------
+    if baba_name in NON_NANKAN_ABK_TRACKS:
+
+        if kyakushoku_type in {
+            "逃げ",
+            "先行",
+        }:
+            non_nankan_extra_trio_symbols = [
+                "A",
+                "E",
+                "K",
+            ]
+
+        else:
+            non_nankan_extra_trio_symbols = [
+                "A",
+                "B",
+                "K",
+            ]
+
+    # ----------------------------------------------
+    # 笠松・佐賀・水沢・高知
+    # 3点目 A-B-L
+    # ----------------------------------------------
+    elif baba_name in NON_NANKAN_ABL_TRACKS:
+        non_nankan_extra_trio_symbols = [
+            "A",
+            "B",
+            "L",
+        ]
+
+    # ----------------------------------------------
+    # 盛岡・金沢・名古屋・姫路・門別
+    # 基本 A-D-G。
+    #
+    # ここでいう A=D は、アルファベット重複回避で
+    # Dが2位へ送られる前の「本来の先行代表D」が軸Aと同じ、
+    # という意味。
+    # その場合はD次点を使わず、指定どおり A-B-G にする。
+    # ----------------------------------------------
+    elif baba_name in NON_NANKAN_ADG_TRACKS:
+
+        raw_d_is_axis_a = (
+            int(
+                front_best[
+                    "馬番"
+                ]
+            )
+            == int(
+                popular_horse_num
+            )
+        )
+
+        if raw_d_is_axis_a:
+            non_nankan_extra_trio_symbols = [
+                "A",
+                "B",
+                "G",
+            ]
+            non_nankan_adg_switched_to_abg = True
+
+        else:
+            non_nankan_extra_trio_symbols = [
+                "A",
+                "D",
+                "G",
+            ]
+
+    if non_nankan_extra_trio_symbols is not None:
+        current_bet_template[
+            "三連複"
+        ].append(
+            non_nankan_extra_trio_symbols
+        )
 
 # --------------------------------------------------
 # 買い目専用の候補プール
@@ -11879,37 +12551,21 @@ j_pool = unique_texts(
 )
 
 # ==================================================
-# K＝3角→4角【勝負所重視】押上
+# K＝3角→4角【勝負所重視】押上ランキング1位
 #
-# 通常会場：
-#   従来どおり3角→4角ランキング2位から開始。
-#   園田・差し軸 A-F-K などの既存仕様は変更しない。
-#
-# 岩手（盛岡・水沢）：
+# 全会場共通：
 #   3角→4角【勝負所重視】ランキング1位から開始。
-#   岩手前受け軸の浮き輪 L-K などで使用。
+#   A・B・Fなど、同じ買い目内の記号と同じ馬になった場合だけ、
+#   2位 → 3位 → 4位…へ順送りする。
 #
 # Lは別枠で2角→4角【総合押上】ランキング1位。
-# 同じ買い目内でKとLが同じ馬になった場合は、
-# KまたはLが各ランキングの次候補へ順送りされる。
 # ==================================================
-if baba_name in {
-    "盛岡",
-    "水沢",
-}:
-    k_pool = unique_texts(
-        [
-            horse_text(h)
-            for h in corner_push_3to4
-        ]
-    )
-else:
-    k_pool = unique_texts(
-        [
-            horse_text(h)
-            for h in corner_push_3to4[1:]
-        ]
-    )
+k_pool = unique_texts(
+    [
+        horse_text(h)
+        for h in corner_push_3to4
+    ]
+)
 
 # ==================================================
 # L＝押上ランキング1位
@@ -11918,7 +12574,7 @@ else:
 # 1位から候補を開始し、A・Bなど同じ買い目内で被れば
 # 2位 → 3位 → 4位…へ順送りする。
 #
-# 園田・先行＋押上軸、および岩手前受け軸の三連複1点目 A-B-L で使用。
+# 会場別A-B-L、佐賀先行軸、園田・先行＋押上軸、および岩手前受け軸で使用。
 # ==================================================
 l_pool = unique_texts(
     [
@@ -11955,11 +12611,7 @@ alphabet_role_names = {
     "G": "穴3",
     "I": "穴2",
     "J": "前進3位",
-    "K": (
-        "3→4押上1位"
-        if baba_name in {"盛岡", "水沢"}
-        else "3→4押上2位"
-    ),
+    "K": "3→4押上1位",
     "L": "総合押上1位",
 }
 
@@ -12755,6 +13407,197 @@ def make_unique_trio_bets(
                 )
             )
 
+            continue
+
+        # ==================================================
+        # 三連複の最終不足救済
+        #
+        # 記号上は別の買い目でも、実馬へ変換すると
+        # 1点目と同じ3頭になり、通常の次候補でも
+        # 解消できないことがある。
+        #
+        # 例：
+        #   A-B-E = 5-2-3
+        #   A-F-K = 5-2-3
+        #   （BとF、EとKが同じ馬）
+        #
+        # この場合、Aと2頭目の役割は固定したまま、
+        # 3頭目だけを「意味のある候補」へ救済する。
+        #
+        # 優先：
+        #   ① 元の3頭目記号の次候補
+        #   ② K（3角→4角押上）
+        #   ③ L（2角→4角総合押上）
+        #   ④ E（抑え）
+        #   ⑤ G（穴3）
+        #
+        # 同じ3頭の並び替えは三連複では同一なので不可。
+        # Aは絶対に動かさない。
+        # 1・2頭目もこの最終救済では動かさない。
+        # ==================================================
+        if (
+            len(symbol_list) == 3
+            and symbol_list[0] == "A"
+            and len(bet) == 3
+        ):
+
+            rescue_first = bet[0]
+            rescue_second = bet[1]
+
+            rescue_first_number = get_num(
+                rescue_first
+            )
+
+            rescue_second_number = get_num(
+                rescue_second
+            )
+
+            # Aと2頭目がすでに同一馬なら、
+            # 3頭目だけでは三連複を成立させられない。
+            if (
+                rescue_first_number
+                != rescue_second_number
+            ):
+
+                original_third_symbol = (
+                    symbol_list[2]
+                )
+
+                rescue_symbol_order = []
+
+                for rescue_symbol in (
+                    [original_third_symbol]
+                    + ["K", "L", "E", "G"]
+                ):
+                    if (
+                        rescue_symbol != "A"
+                        and rescue_symbol
+                        not in rescue_symbol_order
+                    ):
+                        rescue_symbol_order.append(
+                            rescue_symbol
+                        )
+
+                final_rescue_bet = None
+
+                for rescue_symbol in (
+                    rescue_symbol_order
+                ):
+
+                    rescue_pool = (
+                        alphabet_candidate_pools.get(
+                            rescue_symbol,
+                            [],
+                        )
+                    )
+
+                    if not rescue_pool:
+                        continue
+
+                    # その記号が今回すでに選出済みなら、
+                    # 本来候補から下位へ順送りする。
+                    # 未使用記号ならランキング1位から試す。
+                    selected_rescue_horse = (
+                        bet_selected_symbols.get(
+                            rescue_symbol
+                        )
+                        or selected_symbols.get(
+                            rescue_symbol
+                        )
+                    )
+
+                    rescue_start_index = 0
+
+                    if selected_rescue_horse:
+
+                        selected_rescue_number = (
+                            get_num(
+                                selected_rescue_horse
+                            )
+                        )
+
+                        found_index = next(
+                            (
+                                index
+                                for index, candidate
+                                in enumerate(
+                                    rescue_pool
+                                )
+                                if get_num(candidate)
+                                == selected_rescue_number
+                            ),
+                            -1,
+                        )
+
+                        if found_index >= 0:
+                            rescue_start_index = (
+                                found_index
+                            )
+
+                    for candidate in rescue_pool[
+                        rescue_start_index:
+                    ]:
+
+                        candidate_number = get_num(
+                            candidate
+                        )
+
+                        if (
+                            candidate_number
+                            in excluded_numbers
+                        ):
+                            continue
+
+                        if candidate_number in {
+                            rescue_first_number,
+                            rescue_second_number,
+                        }:
+                            continue
+
+                        test_bet = [
+                            rescue_first,
+                            rescue_second,
+                            candidate,
+                        ]
+
+                        test_numbers = [
+                            get_num(horse_name)
+                            for horse_name
+                            in test_bet
+                        ]
+
+                        if len(set(test_numbers)) != 3:
+                            continue
+
+                        test_key = frozenset(
+                            test_numbers
+                        )
+
+                        if test_key in used_trio_keys:
+                            continue
+
+                        final_rescue_bet = (
+                            test_bet
+                        )
+                        break
+
+                    if final_rescue_bet is not None:
+                        break
+
+                if final_rescue_bet is not None:
+
+                    result.append(
+                        final_rescue_bet
+                    )
+
+                    used_trio_keys.add(
+                        frozenset(
+                            get_num(horse_name)
+                            for horse_name
+                            in final_rescue_bet
+                        )
+                    )
+
     return result
 
 # --------------------------------------------------
@@ -12793,8 +13636,12 @@ float_bets = make_bets_from_symbols(
 # 必要な買い目を作れなかった場合は、
 # 斬り捨て前の通常選出へ戻す。
 #
-# 通常は三連複2点。
-# 南関10頭以上はA-B-J追加で三連複3点。
+# 南関以外は原則、A-Bワイドを外して三連複3点。
+# 園田は逃げ・先行軸のみ3点目A-E-K、それ以外はA-B-K。
+# 笠松・佐賀・水沢・高知は3点目A-B-L。
+# 盛岡・金沢・名古屋・姫路・門別は3点目A-D-G、A=DならA-B-G。
+# 南関は従来どおり。10頭以上は原則A-B-J追加で三連複3点、
+# 大井先行軸のみ3点目A-D-L。
 required_trio_count = len(
     current_bet_template[
         "三連複"
@@ -12807,7 +13654,13 @@ if len(trio_bets) < required_trio_count:
         normal_bet_symbols,
     )
 
-if len(wide_bets) < 2:
+required_wide_count = len(
+    current_bet_template[
+        "ワイド"
+    ]
+)
+
+if len(wide_bets) < required_wide_count:
     wide_bets = make_unique_wide_bets(
         current_bet_template["ワイド"],
         normal_bet_symbols,
@@ -12875,6 +13728,16 @@ if debug_mode:
             )
 
         if (
+            baba_name == "佐賀"
+            and kyakushoku_type == "先行"
+        ):
+            st.write(
+                "🔵 佐賀・先行軸："
+                "三連複1点目 A-B-L "
+                "（L＝2角→4角・総合押上1位）"
+            )
+
+        if (
             baba_name == "園田"
             and kyakushoku_type == "先行"
             and axis_secondary_for_bet == "押上"
@@ -12895,14 +13758,21 @@ if debug_mode:
             )
 
         if (
-            baba_name in {
-                "笠松",
-                "園田",
-            }
+            baba_name == "園田"
             and kyakushoku_type == "先行"
         ):
             st.write(
-                "🟢 笠松・園田の先行軸："
+                "🧪 園田・先行軸 試験："
+                "三連複2点目 A-L-G "
+                "（L＝2角→4角・総合押上1位）"
+            )
+
+        if (
+            baba_name == "笠松"
+            and kyakushoku_type == "先行"
+        ):
+            st.write(
+                "🟢 笠松・先行軸："
                 "三連複2点目 A-E-G"
             )
 
@@ -12933,11 +13803,65 @@ if debug_mode:
                 "｜L＝2角→4角【総合押上】1位"
             )
 
+        if is_non_nankan_bet_track:
+
+            st.write(
+                "🌱 南関以外・買い方変更："
+                "A-Bワイドを削除 → 三連複3点目へ移行"
+            )
+
+            if baba_name in NON_NANKAN_ABK_TRACKS:
+
+                if kyakushoku_type in {
+                    "逃げ",
+                    "先行",
+                }:
+                    st.write(
+                        f"{baba_name}・{kyakushoku_type}軸："
+                        "三連複3点目 A-E-K"
+                    )
+
+                else:
+                    st.write(
+                        f"{baba_name}：三連複3点目 A-B-K"
+                    )
+
+            elif baba_name in NON_NANKAN_ABL_TRACKS:
+                st.write(
+                    f"{baba_name}：三連複3点目 A-B-L"
+                )
+
+            elif non_nankan_adg_switched_to_abg:
+                st.write(
+                    f"{baba_name}：本来のDがAと同馬のため "
+                    "三連複3点目 A-B-G"
+                )
+
+            else:
+                st.write(
+                    f"{baba_name}：三連複3点目 A-D-G"
+                )
+
+            st.write(
+                f"ワイドは1点："
+                f"{current_bet_template['ワイド']}"
+            )
+
         if is_ooi_escape:
             st.write(
                 "🔵 大井・逃げ軸："
                 "三連複3点目 A-D-E "
                 "｜ワイド2点目 A-D"
+            )
+
+        elif is_ooi_senko_large_field:
+            st.write(
+                "🔵 大井・先行軸："
+                "三連複3点目 A-D-L"
+            )
+
+            st.write(
+                "L＝2角→4角【総合押上】1位"
             )
 
         elif is_nankan_large_field:
@@ -13012,7 +13936,9 @@ for bet in trio_bets:
         f"{bet[0]} - {bet[1]} - {bet[2]}"
     )
 
-st.subheader("おすすめのワイド２点")
+st.subheader(
+    f"おすすめのワイド {len(wide_bets)}点"
+)
 
 for bet in wide_bets:
     st.write(
@@ -13402,7 +14328,7 @@ if check_result:
                 })
 
             # --------------------------------------
-            # 通常ワイド2点
+            # 通常ワイド（南関以外は1点、南関は従来どおり）
             # --------------------------------------
             for index, bet in enumerate(
                 wide_bets,
