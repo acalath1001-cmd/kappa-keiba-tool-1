@@ -11666,9 +11666,12 @@ popular = (
 # K：3角→4角【勝負所重視】押上ランキング1位（全会場共通）
 # L：2角→4角【総合押上】ランキング1位
 #    （会場別A-B-L／佐賀先行軸／園田先行＋押上軸／岩手前受け軸で使用）
+# M：園田専用・中間重複馬
+#    総合・地力・前進・抑え・3→4押上・2→4押上の
+#    2〜5位に複数回入る馬を重複度で評価する。
 #
 # 異なる記号が同じ馬になった場合の優先順位：
-# A → B → F → C → E → D → G → I → J → K → L
+# A → B → F → C → E → D → G → I → J → K → L → M
 #
 # 先に確定した記号を残し、
 # 後から確定する記号だけ自分の候補2位以降へ移動する。
@@ -12436,6 +12439,35 @@ if is_non_nankan_bet_track:
             non_nankan_extra_trio_symbols
         )
 
+# ==================================================
+# 園田限定・先行軸【中間重複M 試験】
+#
+# オッズは一切使わず、出馬表から作った内部ランキングだけで決定する。
+#
+# 三連複3点
+#   1点目 A-E-M
+#   2点目 A-E-L
+#   3点目 A-G-K
+#
+# M＝園田専用・中間重複馬。
+# 総合・地力・前進・抑え・3→4押上・2→4押上の
+# 2〜5位に複数回顔を出す馬を優先する。
+#
+# ここで園田・先行軸の三連複3点だけを最終上書きする。
+# ワイド・浮き輪、他会場、他脚質は変更しない。
+# ==================================================
+if (
+    baba_name == "園田"
+    and kyakushoku_type == "先行"
+):
+    current_bet_template[
+        "三連複"
+    ] = [
+        ["A", "E", "M"],
+        ["A", "E", "L"],
+        ["A", "G", "K"],
+    ]
+
 # --------------------------------------------------
 # 買い目専用の候補プール
 #
@@ -12583,6 +12615,219 @@ l_pool = unique_texts(
     ]
 )
 
+# ==================================================
+# M＝園田専用・中間重複馬
+#
+# 目的：
+# 各部門1位にはならないが、複数ランキングの2〜5位に
+# 何度も顔を出す「中間上位馬」を三連複3頭目で拾う。
+#
+# 使用ランキング（オッズ不使用）：
+#   ・総合
+#   ・地力
+#   ・前進気勢
+#   ・抑え候補
+#   ・3角→4角【勝負所重視】押上
+#   ・2角→4角【総合押上】
+#
+# 点数：2位=4 / 3位=3 / 4位=2 / 5位=1
+# 2〜5位に2部門以上入った馬を最優先。
+#
+# さらに「画面の主要5役」
+#   A軸 / B展開 / 地力代表 / D先行 / E抑え
+# と違う馬を先に並べる。
+# これにより既存5頭から漏れた中間馬を優先して試す。
+#
+# 候補不足時は、同条件の主要5役馬 → 1部門だけ該当馬
+# → 全馬の順で安全にフォールバックする。
+# ==================================================
+
+def build_rank_map(ranking):
+    return {
+        int(h["馬番"]): rank
+        for rank, h in enumerate(
+            ranking,
+            start=1,
+        )
+    }
+
+
+m_rank_maps = {
+    "総合": build_rank_map(
+        total_candidates
+    ),
+    "地力": build_rank_map(
+        long_spurt_candidates
+    ),
+    "前進": build_rank_map(
+        front_candidates
+    ),
+    "抑え": build_rank_map(
+        ana_candidates
+    ),
+    "3→4押上": build_rank_map(
+        corner_push_3to4
+    ),
+    "2→4押上": build_rank_map(
+        corner_push_2to4
+    ),
+}
+
+m_rank_point_table = {
+    2: 4,
+    3: 3,
+    4: 2,
+    5: 1,
+}
+
+m_horse_name_map = {
+    int(h["馬番"]): h["馬名"]
+    for h in horses
+}
+
+m_candidates = []
+
+for horse_no, horse_name in m_horse_name_map.items():
+
+    rank_details = {}
+    m_score = 0
+    m_hit_count = 0
+    m_rank_sum = 0
+
+    for rank_name, rank_map in m_rank_maps.items():
+        rank = rank_map.get(
+            horse_no
+        )
+
+        if rank in m_rank_point_table:
+            rank_details[rank_name] = rank
+            m_score += m_rank_point_table[
+                rank
+            ]
+            m_hit_count += 1
+            m_rank_sum += rank
+
+    if m_hit_count <= 0:
+        continue
+
+    m_candidates.append({
+        "馬番": horse_no,
+        "馬名": horse_name,
+        "Mスコア": m_score,
+        "該当数": m_hit_count,
+        "順位合計": m_rank_sum,
+        "順位詳細": rank_details,
+        "総合順位": m_rank_maps[
+            "総合"
+        ].get(
+            horse_no,
+            99,
+        ),
+    })
+
+# 点数 → 該当部門数 → 順位合計の小ささ → 総合順位
+# の順で「中間重複度」が高い馬を上位にする。
+m_candidates.sort(
+    key=lambda x: (
+        -x["Mスコア"],
+        -x["該当数"],
+        x["順位合計"],
+        x["総合順位"],
+        x["馬番"],
+    )
+)
+
+# 画面主要5役。Mではまず、この5頭以外を優先する。
+m_major_numbers = {
+    int(popular_horse_num),
+    int(tenkai_best["馬番"]),
+    int(long_best["馬番"]),
+    int(front_best["馬番"]),
+    int(ana_best["馬番"]),
+}
+
+m_primary = [
+    h
+    for h in m_candidates
+    if h["該当数"] >= 2
+    and h["馬番"] not in m_major_numbers
+]
+
+m_secondary = [
+    h
+    for h in m_candidates
+    if h["該当数"] >= 2
+    and h["馬番"] in m_major_numbers
+]
+
+m_single = [
+    h
+    for h in m_candidates
+    if h["該当数"] == 1
+]
+
+m_pool = unique_texts(
+    [
+        horse_text(h)
+        for h in (
+            m_primary
+            + m_secondary
+            + m_single
+        )
+    ]
+    + all_bet_pool
+)
+
+if (
+    debug_mode
+    and baba_name == "園田"
+):
+    with st.expander(
+        "🧩 園田・中間重複Mランキング",
+        expanded=False,
+    ):
+        st.caption(
+            "2〜5位のみ加点｜"
+            "2位=4点・3位=3点・4位=2点・5位=1点｜"
+            "2部門以上＋主要5役外を優先"
+        )
+
+        if not m_candidates:
+            st.write(
+                "M候補なし"
+            )
+        else:
+            for rank, h in enumerate(
+                m_candidates[:10],
+                start=1,
+            ):
+                detail_text = " / ".join(
+                    f"{name}{value}位"
+                    for name, value
+                    in h["順位詳細"].items()
+                )
+
+                major_mark = (
+                    "｜主要5役"
+                    if h["馬番"]
+                    in m_major_numbers
+                    else "｜主要5役外"
+                )
+
+                st.write(
+                    f"{rank}位｜"
+                    f"{h['馬番']}番 {h['馬名']} "
+                    f"｜M {h['Mスコア']}点 "
+                    f"｜該当{h['該当数']}部門"
+                    f"{major_mark}"
+                )
+
+                st.caption(
+                    detail_text
+                    if detail_text
+                    else "該当順位なし"
+                )
+
 alphabet_candidate_pools = {
     "A": [popular],
     "F": f_pool,
@@ -12595,6 +12840,7 @@ alphabet_candidate_pools = {
     "J": j_pool,
     "K": k_pool,
     "L": l_pool,
+    "M": m_pool,
 }
 
 alphabet_role_names = {
@@ -12613,6 +12859,7 @@ alphabet_role_names = {
     "J": "前進3位",
     "K": "3→4押上1位",
     "L": "総合押上1位",
+    "M": "園田中間重複",
 }
 
 # J・K・Lは最後に確定する。
@@ -12632,6 +12879,7 @@ if baba_name in {"盛岡", "水沢"}:
         "J",
         "L",
         "K",
+        "M",
     ]
 else:
     alphabet_priority = [
@@ -12646,6 +12894,7 @@ else:
         "J",
         "K",
         "L",
+        "M",
     ]
 
 
@@ -12792,7 +13041,7 @@ def select_bet_alphabet_horses(
     """
     今回使う記号だけを、
     alphabet_priority の順で確定する。
-    現在は A → B → F → C → E → D → G → I → J → K → L。
+    現在は A → B → F → C → E → D → G → I → J → K → L → M。
 
     別の買い目に出る記号同士は、
     同じ馬を使用してもよい。
@@ -13762,9 +14011,19 @@ if debug_mode:
             and kyakushoku_type == "先行"
         ):
             st.write(
-                "🧪 園田・先行軸 試験："
-                "三連複2点目 A-L-G "
-                "（L＝2角→4角・総合押上1位）"
+                "🧪 園田・先行軸 M試験："
+                "三連複 A-E-M / A-E-L / A-G-K"
+            )
+
+            st.write(
+                "M候補："
+                + (
+                    " → ".join(
+                        m_pool[:5]
+                    )
+                    if m_pool
+                    else "候補なし"
+                )
             )
 
         if (
