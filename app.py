@@ -11390,6 +11390,92 @@ axis_secondary_tags_for_bet = set(
     )
 )
 
+# ==================================================
+# 買い目用・軸タイプ3分類
+#
+# 既存の脚質判定（kyakushoku_type）は変更しない。
+# 買い目表を会場別に整理するためだけに、
+# 逃げ・先行を「前受け」へまとめる。
+#
+# ・逃げ／先行 → 前受け
+# ・持続       → 持続
+# ・差し／展開待ち → 差し
+#
+# 「展開待ち」は正式な3分類では「差し」へまとめる。
+# ここでは分類名を作るだけで、既存買い目は変更しない。
+# ==================================================
+def classify_bet_axis_type(axis_type):
+    if axis_type in {
+        "逃げ",
+        "先行",
+    }:
+        return "前受け"
+
+    if axis_type in {
+        "差し",
+        "展開待ち",
+    }:
+        return "差し"
+
+    return "持続"
+
+
+# ==================================================
+# 買い目共通補助処理
+#
+# 会場ごとに同じ条件判定を持たせず、既存と同じ適用位置から
+# この4処理を呼び出す。いずれも候補取得や脚質判定は変更しない。
+# ==================================================
+def build_second_trio_with_f(
+    second_trio,
+    use_f,
+):
+    """AとFが別馬の時だけ、三連複2点目の中央をFにする。"""
+    result = second_trio[:]
+
+    if use_f and len(result) >= 2:
+        result[1] = "F"
+
+    return result
+
+
+def build_adg_or_abg_trio(d_is_a):
+    """元の先行代表Dが軸AならA-B-G、違えばA-D-Gを返す。"""
+    return [
+        "A",
+        "B" if d_is_a else "D",
+        "G",
+    ]
+
+
+def append_nankan_large_field_trio(
+    template,
+    should_append,
+):
+    """南関10頭以上の時だけ三連複A-B-Jを追加する。"""
+    if should_append:
+        template["三連複"].append(
+            ["A", "B", "J"]
+        )
+
+
+def remove_ab_wide_keep_second(template):
+    """南関以外ではA-Bワイドを外し、既存2点目だけを残す。"""
+    wide_bets = template.get(
+        "ワイド",
+        [],
+    )
+
+    if len(wide_bets) >= 2:
+        template["ワイド"] = [
+            wide_bets[1][:]
+        ]
+
+
+bet_axis_type = classify_bet_axis_type(
+    kyakushoku_type
+)
+
 is_iwate_front_axis = (
     baba_name in {
         "盛岡",
@@ -11592,14 +11678,18 @@ if (
 # 園田「逃げ＋先行」はこの後で専用ルールを
 # 上書きするため、A-D-Gが最終的に必ず残る。
 # ==================================================
-if (
-    int(total_best["馬番"])
-    != int(popular_horse_num)
-    and kyakushoku_type != "先行"
-):
+current_bet_template[
+    "三連複"
+][1] = build_second_trio_with_f(
     current_bet_template[
         "三連複"
-    ][1][1] = "F"
+    ][1],
+    (
+        int(total_best["馬番"])
+        != int(popular_horse_num)
+        and kyakushoku_type != "先行"
+    ),
+)
 
 # ==================================================
 # 門別限定・三連複専用ルール
@@ -11909,19 +11999,13 @@ if (
 # 大井・先行軸／持続軸はこの後の専用処理で、
 # 頭数に関係なく三連複3点を丸ごと上書きする。
 # ==================================================
-if (
-    is_nankan_large_field
-    and not is_ooi_escape
-):
-    current_bet_template[
-        "三連複"
-    ].append(
-        [
-            "A",
-            "B",
-            "J",
-        ]
-    )
+append_nankan_large_field_trio(
+    current_bet_template,
+    (
+        is_nankan_large_field
+        and not is_ooi_escape
+    ),
+)
 
 # ==================================================
 # 大井限定・先行軸／持続軸
@@ -12104,18 +12188,9 @@ if is_non_nankan_bet_track:
     # ワイドA-Bを削除。
     # 会場別修正済みの「2点目」だけを残す。
     # ----------------------------------------------
-    if len(
-        current_bet_template[
-            "ワイド"
-        ]
-    ) >= 2:
-        current_bet_template[
-            "ワイド"
-        ] = [
-            current_bet_template[
-                "ワイド"
-            ][1][:]
-        ]
+    remove_ab_wide_keep_second(
+        current_bet_template
+    )
 
     # ----------------------------------------------
     # 園田
@@ -12174,20 +12249,14 @@ if is_non_nankan_bet_track:
             )
         )
 
-        if raw_d_is_axis_a:
-            non_nankan_extra_trio_symbols = [
-                "A",
-                "B",
-                "G",
-            ]
-            non_nankan_adg_switched_to_abg = True
+        non_nankan_extra_trio_symbols = (
+            build_adg_or_abg_trio(
+                raw_d_is_axis_a
+            )
+        )
 
-        else:
-            non_nankan_extra_trio_symbols = [
-                "A",
-                "D",
-                "G",
-            ]
+        if raw_d_is_axis_a:
+            non_nankan_adg_switched_to_abg = True
 
     if non_nankan_extra_trio_symbols is not None:
         current_bet_template[
@@ -12260,6 +12329,622 @@ if is_sonoda_escape_or_senko_axis:
     ] = [
         ["D", "E"],
     ]
+
+# ==================================================
+# 14会場 × 軸3タイプ＝42通り
+# 会場別・最終買い目上書き表
+#
+# 適用順：
+#   1) ここまでの既存ロジックで買い目を作る
+#   2) 最後に「会場 × 3分類」の設定だけを上書きする
+#
+# 14会場42枠すべて設定済み。
+# ==================================================
+BET_TRACKS_14 = (
+    "浦和",
+    "船橋",
+    "大井",
+    "川崎",
+    "金沢",
+    "笠松",
+    "名古屋",
+    "園田",
+    "姫路",
+    "高知",
+    "佐賀",
+    "門別",
+    "盛岡",
+    "水沢",
+)
+
+BET_AXIS_TYPES_3 = (
+    "前受け",
+    "持続",
+    "差し",
+)
+
+
+def build_kanazawa_axis_bet_override(context):
+    """金沢の正式3分類ルール。"""
+
+    axis_type = context["axis_type"]
+
+    third_trio = build_adg_or_abg_trio(
+        context["d_is_a"]
+    )
+
+    rules = {
+        "前受け": {
+            "三連複": [
+                ["A", "B", "D"],
+                ["A", "C", "G"],
+                third_trio,
+            ],
+            "ワイド": [["A", "E"]],
+            "浮き輪": [["D", "E"]],
+        },
+        "持続": {
+            "三連複": [
+                ["A", "B", "C"],
+                ["A", "C", "E"],
+                third_trio,
+            ],
+            "ワイド": [["D", "C"]],
+            "浮き輪": [["E", "D"]],
+        },
+        "差し": {
+            "三連複": [
+                ["A", "B", "E"],
+                ["A", "D", "I"],
+                third_trio,
+            ],
+            "ワイド": [["A", "C"]],
+            "浮き輪": [["I", "G"]],
+        },
+    }
+
+    result = {
+        bet_type: [bet[:] for bet in bets]
+        for bet_type, bets in rules[axis_type].items()
+    }
+
+    if (
+        axis_type in {"持続", "差し"}
+        and context["a_is_not_f"]
+    ):
+        result["三連複"][1][1] = "F"
+
+    return result
+
+def build_kasamatsu_axis_bet_override(context):
+    """笠松の正式3分類ルール。"""
+
+    axis_type = context["axis_type"]
+
+    rules = {
+        "前受け": {
+            "三連複": [
+                ["A", "B", "D"],
+                ["A", "E", "G"],
+                ["A", "B", "L"],
+            ],
+            "ワイド": [["A", "E"]],
+            "浮き輪": [["D", "E"]],
+        },
+        "持続": {
+            "三連複": [
+                ["A", "B", "C"],
+                ["A", "C", "E"],
+                ["A", "B", "L"],
+            ],
+            "ワイド": [["D", "C"]],
+            "浮き輪": [["E", "D"]],
+        },
+        "差し": {
+            "三連複": [
+                ["A", "B", "E"],
+                ["A", "D", "I"],
+                ["A", "B", "L"],
+            ],
+            "ワイド": [["A", "C"]],
+            "浮き輪": [["I", "G"]],
+        },
+    }
+
+    result = {
+        bet_type: [bet[:] for bet in bets]
+        for bet_type, bets in rules[axis_type].items()
+    }
+
+    if (
+        axis_type in {"持続", "差し"}
+        and context["a_is_not_f"]
+    ):
+        result["三連複"][1][1] = "F"
+
+    return result
+
+def build_urawa_funabashi_axis_bet_override(context):
+    """浦和・船橋の買い目を正式3分類だけで作る。"""
+    axis_type = context["axis_type"]
+
+    rules = {
+        "前受け": {
+            "三連複": [
+                ["A", "B", "D"],
+                ["A", "C", "G"],
+            ],
+            "ワイド": [
+                ["A", "B"],
+                ["A", "E"],
+            ],
+            "浮き輪": [["D", "E"]],
+        },
+        "持続": {
+            "三連複": [
+                ["A", "B", "C"],
+                ["A", "C", "E"],
+            ],
+            "ワイド": [
+                ["A", "B"],
+                ["D", "C"],
+            ],
+            "浮き輪": [["E", "D"]],
+        },
+        "差し": {
+            "三連複": [
+                ["A", "B", "E"],
+                ["A", "D", "I"],
+            ],
+            "ワイド": [
+                ["A", "B"],
+                ["A", "C"],
+            ],
+            "浮き輪": [["I", "G"]],
+        },
+    }
+
+    result = {
+        bet_type: [bet[:] for bet in bets]
+        for bet_type, bets in rules[axis_type].items()
+    }
+
+    # 現行結果を維持する持続・差しだけ、A≠F時にFを使う。
+    # 前受けには旧逃げ専用のA≠F分岐を適用しない。
+    if (
+        axis_type in {"持続", "差し"}
+        and context["a_is_not_f"]
+    ):
+        result["三連複"][1][1] = "F"
+
+    append_nankan_large_field_trio(
+        result,
+        context["is_nankan_large_field"],
+    )
+
+    return result
+
+
+def build_kawasaki_axis_bet_override(context):
+    """浦和・船橋共通ルールとの差分だけを適用する。"""
+    result = build_urawa_funabashi_axis_bet_override(
+        context
+    )
+
+    if context["axis_type"] == "前受け":
+        result["三連複"][1] = ["A", "E", "G"]
+
+    return result
+
+
+def build_nagoya_himeji_axis_bet_override(context):
+    """名古屋・姫路の共通3分類ルールを作る。"""
+    result = build_urawa_funabashi_axis_bet_override(
+        context
+    )
+
+    remove_ab_wide_keep_second(result)
+    result["三連複"].append(
+        build_adg_or_abg_trio(context["d_is_a"])
+    )
+
+    if (
+        context["track"] == "名古屋"
+        and context["axis_type"] == "差し"
+    ):
+        result["三連複"][1] = ["A", "N", "I"]
+        result["ワイド"] = [["A", "E"]]
+
+    return result
+
+
+def build_kochi_saga_axis_bet_override(context):
+    """高知・佐賀の共通3分類ルールを作る。"""
+    result = build_urawa_funabashi_axis_bet_override(
+        context
+    )
+
+    remove_ab_wide_keep_second(result)
+    result["三連複"].append(["A", "B", "L"])
+
+    if (
+        context["track"] == "佐賀"
+        and context["axis_type"] == "前受け"
+    ):
+        result["三連複"][0] = ["A", "B", "L"]
+
+    return result
+
+
+def build_iwate_axis_bet_override(context):
+    """盛岡・水沢の共通3分類ルールを作る。"""
+    track = context["track"]
+    axis_type = context["axis_type"]
+    result = build_urawa_funabashi_axis_bet_override(
+        context
+    )
+
+    if axis_type == "前受け":
+        result["三連複"][0] = ["A", "B", "L"]
+        result["浮き輪"] = [["L", "K"]]
+
+    if track == "盛岡":
+        if axis_type == "持続":
+            result["三連複"][1] = ["A", "C", "G"]
+        elif axis_type == "差し":
+            result["三連複"][0] = ["A", "B", "C"]
+            result["浮き輪"] = [["K", "K2"]]
+
+        return result
+
+    remove_ab_wide_keep_second(result)
+    result["三連複"].append(["A", "B", "L"])
+    if axis_type == "前受け":
+        result["三連複"][2] = ["A", "L", "E"]
+
+    return result
+
+
+def build_monbetsu_axis_bet_override(context):
+    """門別の買い目を正式3分類だけで作る。"""
+    axis_type = context["axis_type"]
+    third_trio = build_adg_or_abg_trio(
+        context["d_is_a"]
+    )
+
+    rules = {
+        "前受け": {
+            "三連複": [
+                ["A", "B", "D"],
+                ["A", "C", "I"],
+            ],
+            "ワイド": [["A", "E"]],
+            "浮き輪": [["D", "E"]],
+        },
+        "持続": {
+            "三連複": [
+                ["A", "B", "C"],
+                ["A", "C", "I"],
+            ],
+            "ワイド": [["D", "C"]],
+            "浮き輪": [["E", "D"]],
+        },
+        "差し": {
+            "三連複": [
+                ["A", "B", "I"],
+                ["A", "F", "E"],
+            ],
+            "ワイド": [["A", "C"]],
+            "浮き輪": [["I", "G"]],
+        },
+    }
+
+    result = {
+        bet_type: [bet[:] for bet in bets]
+        for bet_type, bets in rules[axis_type].items()
+    }
+    result["三連複"].append(third_trio)
+
+    return result
+
+
+def build_ooi_axis_bet_override(context):
+    """大井の買い目を正式3分類だけで作る。"""
+    axis_type = context["axis_type"]
+
+    rules = {
+        "前受け": {
+            "三連複": [
+                ["A", "B", "D"],
+                ["A", "G", "L"],
+                ["A", "D", "G"],
+            ],
+            "ワイド": [
+                ["A", "B"],
+                ["A", "E"],
+            ],
+            "浮き輪": [["D", "E"]],
+        },
+        "持続": {
+            "三連複": [
+                ["A", "B", "C"],
+                ["A", "G", "L"],
+                ["A", "K", "J"],
+            ],
+            "ワイド": [
+                ["A", "B"],
+                ["D", "C"],
+            ],
+            "浮き輪": [["E", "D"]],
+        },
+        "差し": {
+            "三連複": [
+                ["A", "B", "E"],
+                ["A", "D", "I"],
+            ],
+            "ワイド": [
+                ["A", "B"],
+                ["A", "C"],
+            ],
+            "浮き輪": [["I", "G"]],
+        },
+    }
+
+    result = {
+        bet_type: [bet[:] for bet in bets]
+        for bet_type, bets in rules[axis_type].items()
+    }
+
+    if axis_type == "差し":
+        result["三連複"][1] = build_second_trio_with_f(
+            result["三連複"][1],
+            context["a_is_not_f"],
+        )
+        append_nankan_large_field_trio(
+            result,
+            context["is_nankan_large_field"],
+        )
+
+    return result
+
+
+def build_sonoda_axis_bet_override(context):
+    """園田の買い目を正式3分類だけで作る。"""
+    axis_type = context["axis_type"]
+
+    rules = {
+        "前受け": {
+            "三連複": [
+                ["A", "M", "G"],
+                ["A", "D", "C"],
+                ["A", "M", "L"],
+            ],
+            "ワイド": [["A", "I"]],
+            "浮き輪": [["D", "E"]],
+        },
+        "持続": {
+            "三連複": [
+                ["A", "B", "C"],
+                ["A", "C", "E"],
+                ["A", "B", "K"],
+            ],
+            "ワイド": [["D", "C"]],
+            "浮き輪": [["E", "D"]],
+        },
+        "差し": {
+            "三連複": [
+                ["A", "B", "E"],
+                ["A", "D", "K"],
+                ["A", "B", "K"],
+            ],
+            "ワイド": [["A", "E"]],
+            "浮き輪": [["I", "G"]],
+        },
+    }
+
+    result = {
+        bet_type: [bet[:] for bet in bets]
+        for bet_type, bets in rules[axis_type].items()
+    }
+
+    if axis_type == "持続":
+        result["三連複"][1] = build_second_trio_with_f(
+            result["三連複"][1],
+            context["a_is_not_f"],
+        )
+
+    return result
+
+
+VENUE_AXIS_BET_OVERRIDES = {
+    track: {
+        axis_type: None
+        for axis_type in BET_AXIS_TYPES_3
+    }
+    for track in BET_TRACKS_14
+}
+
+# 14会場42枠すべて設定済み。
+VENUE_AXIS_BET_OVERRIDES["金沢"] = {
+    "前受け": build_kanazawa_axis_bet_override,
+    "持続": build_kanazawa_axis_bet_override,
+    "差し": build_kanazawa_axis_bet_override,
+}
+
+VENUE_AXIS_BET_OVERRIDES["笠松"] = {
+    "前受け": build_kasamatsu_axis_bet_override,
+    "持続": build_kasamatsu_axis_bet_override,
+    "差し": build_kasamatsu_axis_bet_override,
+}
+
+# 浦和・船橋は正式3分類の共通実ルールを使う。
+# 旧逃げ／先行、legacy、副脚質、existing_templateには依存しない。
+for track in ("浦和", "船橋"):
+    VENUE_AXIS_BET_OVERRIDES[track] = {
+        axis_type: build_urawa_funabashi_axis_bet_override
+        for axis_type in BET_AXIS_TYPES_3
+    }
+
+# 川崎は持続・差しを浦和・船橋と共用し、
+# 前受けの三連複2点目だけA-E-Gへ変更する。
+VENUE_AXIS_BET_OVERRIDES["川崎"] = {
+    axis_type: build_kawasaki_axis_bet_override
+    for axis_type in BET_AXIS_TYPES_3
+}
+
+# 名古屋・姫路は共通3分類ルールを使い、
+# 名古屋の差しだけA-N-I／A-Eを差分上書きする。
+for track in ("名古屋", "姫路"):
+    VENUE_AXIS_BET_OVERRIDES[track] = {
+        axis_type: build_nagoya_himeji_axis_bet_override
+        for axis_type in BET_AXIS_TYPES_3
+    }
+
+# 高知・佐賀は共通3分類ルールを使い、
+# 佐賀の前受けだけ1点目をA-B-Lへ差分上書きする。
+for track in ("高知", "佐賀"):
+    VENUE_AXIS_BET_OVERRIDES[track] = {
+        axis_type: build_kochi_saga_axis_bet_override
+        for axis_type in BET_AXIS_TYPES_3
+    }
+
+# 盛岡・水沢は岩手共通3分類ルールを使い、
+# 三連複3点目・ワイド本数・盛岡持続／差しだけ差分処理する。
+for track in ("盛岡", "水沢"):
+    VENUE_AXIS_BET_OVERRIDES[track] = {
+        axis_type: build_iwate_axis_bet_override
+        for axis_type in BET_AXIS_TYPES_3
+    }
+
+# 門別は正式3分類だけで作り、旧逃げ／先行、legacy、
+# 副脚質、existing_template、A≠F分岐には依存しない。
+VENUE_AXIS_BET_OVERRIDES["門別"] = {
+    axis_type: build_monbetsu_axis_bet_override
+    for axis_type in BET_AXIS_TYPES_3
+}
+
+# 大井は正式3分類だけで作る。前受け・持続は固定3点、
+# 差しだけA≠Fと南関10頭以上の共通ヘルパーを適用する。
+VENUE_AXIS_BET_OVERRIDES["大井"] = {
+    axis_type: build_ooi_axis_bet_override
+    for axis_type in BET_AXIS_TYPES_3
+}
+
+# 園田は正式3分類だけで作る。前受けはMを直接使い、
+# 持続だけB候補をMへ差し替え、差しは通常Bを使う。
+VENUE_AXIS_BET_OVERRIDES["園田"] = {
+    axis_type: build_sonoda_axis_bet_override
+    for axis_type in BET_AXIS_TYPES_3
+}
+
+
+def build_venue_axis_bet_rule_context(
+    track,
+    axis_type,
+    legacy_axis_type,
+    axis_primary,
+    axis_secondary,
+    axis_secondary_tags,
+    a_is_f,
+    d_is_a,
+    horse_count,
+    is_nankan_large_field,
+    candidate_pools,
+    existing_template,
+):
+    """
+    会場×3軸タイプのルール関数へ渡す共通コンテキスト。
+
+    各ルール関数は、この辞書だけを受け取る。
+    候補プールはルール側で誤って変更しないようtuple化する。
+    """
+    a_is_not_f = not a_is_f
+
+    return {
+        "track": track,
+        "axis_type": axis_type,
+        "legacy_axis_type": legacy_axis_type,
+        "axis_primary": axis_primary,
+        "axis_secondary": axis_secondary,
+        "axis_secondary_tags": frozenset(
+            axis_secondary_tags
+        ),
+        "a_is_f": a_is_f,
+        "a_is_not_f": a_is_not_f,
+        "d_is_a": d_is_a,
+        "horse_count": horse_count,
+        "is_nankan_large_field": (
+            is_nankan_large_field
+        ),
+        "existing_template": {
+            bet_type: [bet[:] for bet in bets]
+            for bet_type, bets in existing_template.items()
+        },
+        "candidate_pools": {
+            symbol: tuple(pool)
+            for symbol, pool
+            in candidate_pools.items()
+        },
+    }
+
+
+def apply_venue_axis_bet_override(
+    base_template,
+    context,
+):
+    """
+    既存買い目をコピーし、会場×3分類の設定がある券種だけを
+    最後に上書きして返す。
+    """
+    result = {
+        bet_type: [
+            bet[:]
+            for bet in bets
+        ]
+        for bet_type, bets
+        in base_template.items()
+    }
+
+    track = context["track"]
+    axis_type = context["axis_type"]
+
+    track_table = (
+        VENUE_AXIS_BET_OVERRIDES.get(
+            track,
+            {},
+        )
+    )
+
+    override = track_table.get(
+        axis_type
+    )
+
+    if not override:
+        return result
+
+    # 設定済みの各ルール関数は、全会場共通のcontextを受け取る。
+    # 金沢・笠松も旧脚質と既存分岐条件をcontextから参照する。
+    if callable(override):
+        override = override(context)
+
+    for bet_type in (
+        "三連複",
+        "ワイド",
+        "浮き輪",
+    ):
+        override_bets = override.get(
+            bet_type
+        )
+
+        if override_bets is None:
+            continue
+
+        result[bet_type] = [
+            bet[:]
+            for bet in override_bets
+        ]
+
+    return result
 
 # --------------------------------------------------
 # 買い目専用の候補プール
@@ -12603,23 +13288,28 @@ m_single = [
 ]
 
 # ==================================================
-# 園田M専用・持ちタイムで上から斬る
+# ==================================================
+# 全14会場共通・Mを同距離持ちタイムで上から斬る
 #
 # まず従来どおり「中間重複」で候補を絞る。
-# その各グループ内を、今回と完全同距離の持ちタイム
-# （総合評価で使っている上位2走平均）の速い順に並べ直す。
 #
 # 優先順位：
 #   1) 2部門以上＋主要5役外
 #   2) 2部門以上＋主要5役
 #   3) 1部門だけ該当
 #
-# 各グループの中では
-#   持ちタイムあり → 速い順
-#   持ちタイムなし → 従来Mスコア順
+# 各グループ内だけ、
+# 今回と完全同距離の持ちタイム
+# （総合評価で使っている上位2走平均）が速い順に並べる。
+#
+# 同距離タイムあり → 速い順
+# 同距離タイムなし → 従来M順位を維持
 #
 # A・Eなど同じ買い目内の馬と被った場合は、
 # 既存のアルファベット競合処理で次のM候補へ繰り下がる。
+#
+# ※Mの取得・並び替えは全14会場共通。
+# ※園田でBそのものをMへ差し替える既存仕様はこの下で維持する。
 # ==================================================
 def get_m_same_distance_time(h):
     time_info = total_same_distance_time_map.get(
@@ -12661,16 +13351,18 @@ def sort_m_group_by_time(group):
     )
 
 
-if baba_name == "園田":
-    m_primary = sort_m_group_by_time(
-        m_primary
-    )
-    m_secondary = sort_m_group_by_time(
-        m_secondary
-    )
-    m_single = sort_m_group_by_time(
-        m_single
-    )
+# 全14会場で共通して同距離持ちタイム順を適用
+m_primary = sort_m_group_by_time(
+    m_primary
+)
+
+m_secondary = sort_m_group_by_time(
+    m_secondary
+)
+
+m_single = sort_m_group_by_time(
+    m_single
+)
 
 m_selection_candidates = (
     m_primary
@@ -12689,16 +13381,19 @@ m_pool = unique_texts(
 # ==================================================
 # 園田のみ・画面の展開馬表示もBの実体に合わせる
 #
-# ・園田＋軸差し以外
+# ・園田＋正式3分類「持続」
 #     → 展開馬欄にM候補の最上位馬を表示
-# ・園田＋軸差し
+# ・園田＋正式3分類「前受け／差し」
 #     → 従来の展開馬を表示
 # ・他会場
 #     → 従来の展開馬を表示
+#
+# ※ここは「M取得ロジック」とは別。
+#   M自体は上で全14会場共通化済み。
 # ==================================================
 sonoda_b_uses_m = (
     baba_name == "園田"
-    and kyakushoku_type != "差し"
+    and bet_axis_type == "持続"
 )
 
 with tenkai_card_placeholder.container():
@@ -12706,7 +13401,7 @@ with tenkai_card_placeholder.container():
         show_card(
             "🌊",
             "展開の向く馬",
-            "M：中間重複＋持ちタイム",
+            "M：中間重複＋同距離持ちタイム",
             m_pool[0],
             "#e0f2fe",
             "#7dd3fc",
@@ -12726,25 +13421,21 @@ with tenkai_card_placeholder.container():
             "#0369a1"
         )
 
+# ==================================================
+# Mランキング・デバッグ表示
+# 全14会場で同じ説明・同じ並びを表示
+# ==================================================
 if debug_mode:
     with st.expander(
         f"🧩 {baba_name}・中間重複Mランキング",
         expanded=False,
     ):
-        if baba_name == "園田":
-            st.caption(
-                "2〜5位のみ加点｜"
-                "2位=4点・3位=3点・4位=2点・5位=1点｜"
-                "2部門以上＋主要5役外を優先｜"
-                "園田のみ各グループ内は同距離持ちタイム順"
-            )
-        else:
-            st.caption(
-                "2〜5位のみ加点｜"
-                "2位=4点・3位=3点・4位=2点・5位=1点｜"
-                "2部門以上＋主要5役外を優先｜"
-                "買い目には使用しない表示・検証専用"
-            )
+        st.caption(
+            "2〜5位のみ加点｜"
+            "2位=4点・3位=3点・4位=2点・5位=1点｜"
+            "2部門以上＋主要5役外を優先｜"
+            "全14会場・各グループ内は同距離持ちタイム順"
+        )
 
         if not m_candidates:
             st.write(
@@ -12793,25 +13484,20 @@ if debug_mode:
                     else "該当順位なし"
                 )
 
-# ==================================================
-# 園田限定・差し軸以外の展開馬BをM候補から選ぶ
 #
-# 園田で軸タイプが「差し」以外の時だけ、
+# 園田で正式3分類が「持続」の時だけ、
 # Bの候補プールを従来の展開b_poolではなく、
 # 「中間重複M＋持ちタイム優先」のm_poolへ差し替える。
 #
+# ・園田の前受けは買い目でBを使わず、Mを直接使用
 # ・園田の差し軸Bは従来どおりb_pool
 # ・他会場のBも従来どおりb_pool
 # ・画面の「展開の向く馬」欄もM馬へ連動
-# ・M記号そのものも従来どおりm_pool
-# ・園田先行軸のA-E-M / A-E-L / A-G-Kも維持
+# ・M記号そのものは従来どおりm_pool
 # ==================================================
 sonoda_b_pool = (
     m_pool
-    if (
-        baba_name == "園田"
-        and kyakushoku_type != "差し"
-    )
+    if sonoda_b_uses_m
     else b_pool
 )
 
@@ -12832,6 +13518,51 @@ alphabet_candidate_pools = {
     "M": m_pool,
 }
 
+# ==================================================
+# 工程⑤・会場別ルール関数の共通インターフェース
+#
+# 42表の適用を候補プール完成後に置き、各会場×3タイプの
+# 関数が同じcontextから条件とA〜M候補を参照できるようにする。
+# この位置までcurrent_bet_templateの変更処理はないため、
+# 42枠の設定済みルールは、すべてこの後で最終適用する。
+# ==================================================
+venue_axis_bet_rule_context = (
+    build_venue_axis_bet_rule_context(
+        track=baba_name,
+        axis_type=bet_axis_type,
+        legacy_axis_type=kyakushoku_type,
+        axis_primary=axis_primary_for_bet,
+        axis_secondary=axis_secondary_for_bet,
+        axis_secondary_tags=(
+            axis_secondary_tags_for_bet
+        ),
+        a_is_f=(
+            int(total_best["馬番"])
+            == int(popular_horse_num)
+        ),
+        d_is_a=(
+            int(front_best["馬番"])
+            == int(popular_horse_num)
+        ),
+        horse_count=len(horses),
+        is_nankan_large_field=(
+            is_nankan_large_field
+        ),
+        candidate_pools=(
+            alphabet_candidate_pools
+        ),
+        existing_template=(
+            current_bet_template
+        ),
+    )
+)
+
+# 14会場×3タイプの表は、すべて既存ロジックの後で適用する。
+current_bet_template = apply_venue_axis_bet_override(
+    current_bet_template,
+    venue_axis_bet_rule_context,
+)
+
 alphabet_role_names = {
     "A": "軸",
     "F": "後詰め",
@@ -12840,10 +13571,7 @@ alphabet_role_names = {
     "D": "先行",
     "B": (
         "展開(M＝中間重複＋持ちタイム)"
-        if (
-            baba_name == "園田"
-            and kyakushoku_type != "差し"
-        )
+        if sonoda_b_uses_m
         else (
             "展開(K＝3→4押上)"
             if baba_name in {"盛岡", "水沢"}
