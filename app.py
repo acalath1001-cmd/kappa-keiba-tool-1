@@ -289,189 +289,6 @@ def calc_recent_form_bonus(finish_positions):
         bonus += 8
 
     return bonus, recent_results
-def calc_distance_change_score(
-    horse,
-    current_distance,
-):
-    """
-    距離短縮・距離延長の適性を、
-    展開評価専用の加点として判定する。
-
-    同じ馬に複数の該当走があっても、
-    最も強い1走だけを採用する。
-
-    1900m以上の距離延長は、
-    既存の距離延長・押し上げ型ロジックへ任せる。
-    """
-
-    best_score = 0
-    best_type = "なし"
-    best_detail = None
-
-    for item in horse.get(
-        "距離付きタイム",
-        [],
-    ):
-
-        past_distance = item.get(
-            "距離",
-            0,
-        )
-
-        flow = item.get(
-            "通過順",
-            [],
-        )
-
-        finish = item.get(
-            "着順"
-        )
-
-        if (
-            finish is None
-            or len(flow) < 2
-        ):
-            continue
-
-        first = flow[0]
-        last = flow[-1]
-
-        shortening = (
-            past_distance
-            - current_distance
-        )
-
-        extension = (
-            current_distance
-            - past_distance
-        )
-
-        race_score = 0
-        change_type = "なし"
-        reasons = []
-
-        # ------------------------------------------
-        # 100〜300mの距離短縮
-        # 長い距離でも前で運べた馬、
-        # 最後だけ少し甘くなった馬を拾う。
-        # ------------------------------------------
-        if 100 <= shortening <= 300:
-
-            change_type = "短縮"
-
-            if (
-                first <= 4
-                and last <= 5
-            ):
-                race_score += 40
-                reasons.append(
-                    "長い距離でも前で運べた"
-                )
-
-            goal_drop = finish - last
-
-            if (
-                first <= 4
-                and last <= 5
-                and 2 <= goal_drop <= 4
-            ):
-                race_score += 30
-                reasons.append(
-                    "最後だけ少し甘くなった"
-                )
-
-        # ------------------------------------------
-        # 100〜300mの距離延長
-        # 1900m未満だけを対象にする。
-        # 位置を保って好走した持続型、
-        # 押し上げて好走した馬を拾う。
-        # ------------------------------------------
-        elif (
-            current_distance < 1900
-            and 100 <= extension <= 300
-        ):
-
-            change_type = "延長"
-
-            if (
-                2 <= first <= 7
-                and abs(last - first) <= 2
-                and finish <= 5
-            ):
-                race_score += 50
-                reasons.append(
-                    "短い距離で位置を保って好走"
-                )
-
-            elif (
-                first >= 6
-                and last <= first - 3
-                and finish <= 5
-            ):
-                race_score += 30
-                reasons.append(
-                    "短い距離で押し上げて好走"
-                )
-
-            # 踏ん張り不足馬は、
-            # 距離延長のプラス評価を弱める。
-            if (
-                race_score > 0
-                and horse.get(
-                    "踏ん張り不足",
-                    False,
-                )
-            ):
-                race_score = max(
-                    0,
-                    race_score - 60,
-                )
-                reasons.append(
-                    "踏ん張り不足で延長加点を抑制"
-                )
-
-        if (
-            race_score > best_score
-            or (
-                race_score == best_score == 0
-                and reasons
-                and best_detail is None
-            )
-        ):
-            best_score = race_score
-            best_type = change_type
-            best_detail = {
-                "過去距離": past_distance,
-                "今回距離": current_distance,
-                "通過順": flow,
-                "着順": finish,
-                "理由": reasons,
-            }
-
-    # 最新走で大失速した馬は、
-    # 距離変化だけで信用を戻さない。
-    if (
-        best_score > 0
-        and horse.get(
-            "直近大失速強度",
-            0,
-        ) >= 1.0
-    ):
-        best_score = 0
-        best_type = "大失速で無効"
-
-        if best_detail is not None:
-            best_detail["理由"].append(
-                "最新走大失速のため加点なし"
-            )
-
-    return {
-        "スコア": best_score,
-        "種類": best_type,
-        "詳細": best_detail,
-    }
-
-
 def extract_current_jockey(horse_row):
     """
     NAR出馬表の現在騎手だけを取得する。
@@ -1866,14 +1683,11 @@ matches = re.findall(pattern, page_text)
 
 real_horses = []
 
-for num, name in matches:
+for _, name in matches:
     if name not in real_horses:
         real_horses.append(name)
 
 horses = []
-
-# 出走馬データ取得状況のデバッグ保存用
-horse_parse_debug = []
 
 for i, horse in enumerate(real_horses, start=1):
 
@@ -2588,29 +2402,6 @@ for i, horse in enumerate(real_horses, start=1):
         word in horse_text
         for word in ["出走取消", "競走除外", "出走除外"]
     )
-    if debug_mode:
-
-        horse_parse_debug.append({
-            "馬番": i,
-            "馬名": horse,
-            "距離付きタイム数": len(
-                distance_time_pairs
-            ),
-            "通過順数": len(
-                race_flows
-            ),
-            "着順数": len(
-                finish_positions
-            ),
-            "最高タイム": display_best_time,
-            "最高タイム秒": display_best_time_seconds,
-            "上がり3F": [
-                item.get("上がり3F")
-                for item in distance_time_pairs
-            ],
-            "元通過順": original_race_flows,
-            "評価通過順": race_flows,
-        })
     horses.append({
         "馬番": i,
         "馬名": horse,
@@ -3254,9 +3045,6 @@ LOCAL_TRACKS = set(LOCAL_PLACES)
 # JRA履歴馬ごとの地方出走数
 jra_local_result_count_map = {}
 
-# JRA履歴が確認できる全馬
-jra_all_horse_numbers = set()
-
 # 地方0走のJRA転入馬だけ、従来の警告表示に使う
 jra_horse_info_map = {}
 
@@ -3280,10 +3068,6 @@ for h in horses:
     )
 
     horse_no = h["馬番"]
-
-    jra_all_horse_numbers.add(
-        horse_no
-    )
 
     jra_local_result_count_map[
         horse_no
@@ -3337,37 +3121,6 @@ jra_transfer_watch_numbers = (
 jra_count = len(
     jra_horse_numbers
 )
-
-# 展開の足切り判断では、
-# 地方慣らし中もJRA転入の影響馬として数える
-jra_rate = (
-    len(jra_transfer_watch_numbers)
-    / len(horses)
-    if horses
-    else 0
-)
-
-# 踏ん張り不足の馬
-fumbaribuso_horse_numbers = {
-    h["馬番"]
-    for h in horses
-    if (
-        h.get("踏ん張り不足", False)
-        and h["馬番"]
-        not in nankan_transfer_first_horse_numbers
-    )
-}
-
-# 徐々垂れの馬
-jojo_tare_horse_numbers = {
-    h["馬番"]
-    for h in horses
-    if (
-        h.get("徐々垂れ", False)
-        and h["馬番"]
-        not in nankan_transfer_first_horse_numbers
-    )
-}
 
 # 直近3走で前から繰り返し崩れている馬。
 # 前進気勢・先行力Dには残すが、
@@ -3668,27 +3421,19 @@ for horse in horses:
     # 側で信用度として評価する。
     #
     # 先行Dでは失速を減点しない。
-    # そのため確認用の値だけ保持し、front_scoreからは引かない。
     # ==================================================
-    heavy_collapse_front_penalty = 0
     # 長距離では、短距離だけの先行実績を少し弱める
     if distance_num >= 1900:
-        horse_text = horse.get("取得テキスト", "")
-
         short_distance_count = len(re.findall(r"(?:右|左)?(?:800|900|1000|1200|1300|1400)", horse_text))
         long_distance_count = len(re.findall(r"(?:右|左)?(?:1600|1700|1800|1900|2000)", horse_text))
 
-        if distance_num >= 1900:
-            if long_distance_count == 0:
-                front_score -= 120
-            elif short_distance_count > long_distance_count:
-                front_score -= 80
+        if long_distance_count == 0:
+            front_score -= 120
+        elif short_distance_count > long_distance_count:
+            front_score -= 80
     front_candidates.append({
         "馬番": horse_no,
         "馬名": horse_name,
-        # 先行Dでは大失速を減点しないため常に0。
-        # 地力・総合・抑え側の大失速評価は従来どおり残る。
-        "大失速減点": heavy_collapse_front_penalty,
         "スコア": front_score,
 
         # 全過去走の1角位置は確認用に残す
@@ -4778,9 +4523,6 @@ if not front_candidates:
     )
     st.stop()
 
-front_best = front_candidates[0]
-
-front_horse = f"{front_best['馬番']}番 {front_best['馬名']}"
 front_score_map = {h["馬番"]: h["スコア"] for h in front_candidates}
 long_spurt_candidates = []
 
@@ -5462,10 +5204,6 @@ front_horse = (
     f"{front_best['馬名']}"
 )
 
-front_score_map = {
-    h["馬番"]: h["スコア"]
-    for h in front_candidates
-}
 # 地力ランキングは評価順位をそのまま使う。
 # 踏ん張り不足・失速不安はランキング上の評価にすでに反映済み。
 
@@ -5591,16 +5329,6 @@ long_spurt_horse = (
     f"{long_best['馬名']}"
 )
 
-# 展開評価で使用するスコアマップ
-front_score_map = {
-    h["馬番"]: h["スコア"]
-    for h in front_candidates
-}
-
-long_score_map = {
-    h["馬番"]: h["スコア"]
-    for h in long_spurt_candidates
-}
 # 展開が向く馬：人気馬の脚色と合う馬を選ぶ
 
 # 展開馬は、使用者が選んだ人気馬の脚色から算出する
@@ -5614,52 +5342,6 @@ for horse in horses:
         break
 
 strong_flows = strong_data["通過順"] if strong_data else []
-# レース全体の前崩れ警戒判定
-front_pressure_count = 0
-
-for horse in horses:
-    flows = horse.get("通過順", [])
-
-    for flow in flows[-3:]:
-        if len(flow) < 2:
-            continue
-
-        first = flow[0]
-        last = flow[-1]
-
-        # 近走で前に行く意思がある馬
-        if first <= 4:
-            front_pressure_count += 1
-            break
-
-# 前崩れ山型理論
-# 2〜4頭が一番やり合いやすい
-# 多すぎると逆に前残りしやすい
-
-if front_pressure_count <= 1:
-    front_collapse_score = 10
-
-elif front_pressure_count == 2:
-    front_collapse_score = 40
-
-elif front_pressure_count == 3:
-    front_collapse_score = 70
-
-elif front_pressure_count == 4:
-    front_collapse_score = 90
-
-elif front_pressure_count == 5:
-    front_collapse_score = 70
-
-elif front_pressure_count == 6:
-    front_collapse_score = 50
-
-elif front_pressure_count == 7:
-    front_collapse_score = 30
-
-else:
-    front_collapse_score = 15
-
 # 人気馬の脚色タイプを判定し、脚色が合う馬を選ぶ
 
 def avg_nonzero(values):
@@ -5769,6 +5451,55 @@ def analyze_flow_style(race_flows):
         "押し上げ率": push_rate,
         "後方回数": back_count,
     }
+
+
+def classify_basic_flow_type(
+    escape_rate,
+    front_count,
+    stable_count,
+    push_count,
+    avg_first,
+    avg_last,
+):
+    """通過順集計から共通の基本脚質を判定する。"""
+
+    if escape_rate >= 0.5:
+        return "逃げ"
+
+    elif front_count >= 2:
+        return "先行"
+
+    elif (
+        stable_count >= 2
+        and stable_count >= push_count
+    ):
+        return "持続"
+
+    elif push_count >= 2:
+        return "差し"
+
+    elif (
+        push_count >= 1
+        and avg_first >= 4.5
+        and avg_last <= avg_first - 1.5
+    ):
+        return "差し"
+
+    elif (
+        stable_count >= 1
+        and 3 <= avg_first <= 6
+        and abs(avg_last - avg_first) <= 1.0
+    ):
+        return "持続"
+
+    elif (
+        front_count >= 1
+        and avg_first <= 4
+        and avg_last <= 5
+    ):
+        return "先行"
+
+    return "展開待ち"
 
 
 def build_marble_style_profile(
@@ -6005,23 +5736,12 @@ strong_style = analyze_flow_style(
     strong_flows
 )
 
-strong_escape_count = strong_style["逃げ回数"]
 strong_front_count = strong_style["前団回数"]
-
-strong_front_sustain_count = (
-    strong_style["前団持続回数"]
-)
-
-strong_middle_sustain_count = (
-    strong_style["中団持続回数"]
-)
 
 strong_stable_count = strong_style["持続回数"]
 strong_push_count = strong_style["押し上げ回数"]
-strong_back_count = strong_style["後方回数"]
 
 escape_rate = strong_style["逃げ率"]
-push_rate = strong_style["押し上げ率"]
 # ==================================================
 # 軸馬の大まかな脚色判定
 #
@@ -6031,72 +5751,24 @@ push_rate = strong_style["押し上げ率"]
 # 強いか弱いかではなく、
 # 過去5走で大体どこを走る馬かだけを見る
 # ==================================================
-# ① 逃げ
-if escape_rate >= 0.5:
-    kyakushoku_type = "逃げ"
-
-# ② 先行
-# 過去5走で前団（1角4番手以内）が2回以上あれば、
-# 後方回数や平均位置より、前へ行けた実績を優先する
-elif strong_front_count >= 2:
-    kyakushoku_type = "先行"
-
-# ③ 持続
-# 前団持続と中団持続をまとめて「持続」と表示
-elif (
-    strong_stable_count >= 2
-    and strong_stable_count >= strong_push_count
-):
-    kyakushoku_type = "持続"
-
-# ④ 差し
-# 後方から押し上げたレースが複数ある馬
-elif strong_push_count >= 2:
-    kyakushoku_type = "差し"
-
-# ⑤ 差し救済
-# 押し上げが1回でも、
-# 平均的に中団以降から大きく前進している馬
-elif (
-    strong_push_count >= 1
-    and strong_avg_first >= 4.5
-    and strong_avg_last
-        <= strong_avg_first - 1.5
-):
-    kyakushoku_type = "差し"
-
-# ⑥ 持続救済
-# 持続経験が1回でも、
-# 普段から前〜中団で位置取りが安定している馬
-elif (
-    strong_stable_count >= 1
-    and 3 <= strong_avg_first <= 6
-    and abs(
-        strong_avg_last
-        - strong_avg_first
-    ) <= 1.0
-):
-    kyakushoku_type = "持続"
-
-# ⑦ 先行救済
-# 前団経験が1回でも、
-# 平均的に前で運べている馬
-elif (
-    strong_front_count >= 1
-    and strong_avg_first <= 4
-    and strong_avg_last <= 5
-):
-    kyakushoku_type = "先行"
+kyakushoku_type = classify_basic_flow_type(
+    escape_rate,
+    strong_front_count,
+    strong_stable_count,
+    strong_push_count,
+    strong_avg_first,
+    strong_avg_last,
+)
 
 # ⑧ 最終救済
 # ここまで主脚質が決まらなくても、
 # 押し上げ実績が1回でもある馬は「差し」とする。
 # 押上実績もない馬だけ「展開待ち」に残す。
-else:
-    if strong_push_count >= 1:
-        kyakushoku_type = "差し"
-    else:
-        kyakushoku_type = "展開待ち"
+if (
+    kyakushoku_type == "展開待ち"
+    and strong_push_count >= 1
+):
+    kyakushoku_type = "差し"
 # ==================================================
 # 南関から他地区への転入初戦・脚色補正
 #
@@ -6572,50 +6244,14 @@ def get_cd_overlap_profile(horse_no):
         0,
     )
 
-    # 軸馬・展開候補と同じ順序で主脚質を仮判定する。
-    if escape_rate_for_cd >= 0.5:
-        primary_type_for_cd = "逃げ"
-
-    elif front_count_for_cd >= 2:
-        primary_type_for_cd = "先行"
-
-    elif (
-        stable_count_for_cd >= 2
-        and stable_count_for_cd
-            >= push_count_for_cd
-    ):
-        primary_type_for_cd = "持続"
-
-    elif push_count_for_cd >= 2:
-        primary_type_for_cd = "差し"
-
-    elif (
-        push_count_for_cd >= 1
-        and avg_first >= 4.5
-        and avg_last
-            <= avg_first - 1.5
-    ):
-        primary_type_for_cd = "差し"
-
-    elif (
-        stable_count_for_cd >= 1
-        and 3 <= avg_first <= 6
-        and abs(
-            avg_last
-            - avg_first
-        ) <= 1.0
-    ):
-        primary_type_for_cd = "持続"
-
-    elif (
-        front_count_for_cd >= 1
-        and avg_first <= 4
-        and avg_last <= 5
-    ):
-        primary_type_for_cd = "先行"
-
-    else:
-        primary_type_for_cd = "展開待ち"
+    primary_type_for_cd = classify_basic_flow_type(
+        escape_rate_for_cd,
+        front_count_for_cd,
+        stable_count_for_cd,
+        push_count_for_cd,
+        avg_first,
+        avg_last,
+    )
 
     return build_marble_style_profile(
         style,
@@ -6629,9 +6265,6 @@ def get_cd_overlap_profile(horse_no):
     )
 
 
-cd_overlap_adjusted = False
-cd_overlap_original = None
-cd_overlap_action = "なし"
 cd_overlap_profile = None
 
 if (
@@ -6639,11 +6272,6 @@ if (
     == long_best["馬番"]
 ):
     overlap_no = front_best["馬番"]
-
-    cd_overlap_original = {
-        "馬番": overlap_no,
-        "馬名": front_best["馬名"],
-    }
 
     cd_overlap_profile = get_cd_overlap_profile(
         overlap_no
@@ -6689,10 +6317,6 @@ if (
                 f"{long_best['馬名']}"
             )
 
-            cd_overlap_adjusted = True
-            cd_overlap_action = (
-                "先行Dを維持・地力Cを次点へ"
-            )
             break
 
     else:
@@ -6715,10 +6339,6 @@ if (
                 f"{front_best['馬名']}"
             )
 
-            cd_overlap_adjusted = True
-            cd_overlap_action = (
-                "地力Cを維持・先行Dを次点へ"
-            )
             break
 
 
@@ -6831,55 +6451,14 @@ def classify_tenkai_candidate(horse):
         "押し上げ回数"
     ]
 
-    # ① 逃げ
-    if escape_rate >= 0.5:
-        target_type = "逃げ"
-
-    # ② 先行
-    elif front_count >= 2:
-        target_type = "先行"
-
-    # ③ 持続
-    elif (
-        stable_count >= 2
-        and stable_count >= push_count
-    ):
-        target_type = "持続"
-
-    # ④ 差し
-    elif push_count >= 2:
-        target_type = "差し"
-
-    # ⑤ 差し救済
-    elif (
-        push_count >= 1
-        and avg_first >= 4.5
-        and avg_last
-        <= avg_first - 1.5
-    ):
-        target_type = "差し"
-
-    # ⑥ 持続救済
-    elif (
-        stable_count >= 1
-        and 3 <= avg_first <= 6
-        and abs(
-            avg_last
-            - avg_first
-        ) <= 1.0
-    ):
-        target_type = "持続"
-
-    # ⑦ 先行救済
-    elif (
-        front_count >= 1
-        and avg_first <= 4
-        and avg_last <= 5
-    ):
-        target_type = "先行"
-
-    else:
-        target_type = "展開待ち"
+    target_type = classify_basic_flow_type(
+        escape_rate,
+        front_count,
+        stable_count,
+        push_count,
+        avg_first,
+        avg_last,
+    )
 
     recent_front_break = horse.get(
         "近走前崩れ",
@@ -7178,24 +6757,6 @@ tenkai_type_priority = {
 }
 
 
-# 軸タイプごとの前進・地力の比重
-# これは展開候補スコア表示と、同脚質内の補助比較に使う。
-tenkai_rank_weights = {
-    "逃げ": (0.70, 0.30),
-    "先行": (0.60, 0.40),
-    "持続": (0.35, 0.65),
-    "差し": (0.25, 0.75),
-    "展開待ち": (0.50, 0.50),
-}
-
-front_weight, long_weight = (
-    tenkai_rank_weights.get(
-        kyakushoku_type,
-        (0.50, 0.50),
-    )
-)
-
-
 # ==================================================
 # 展開馬試験用・同距離タイム比較
 #
@@ -7343,6 +6904,7 @@ axis_tenkai_time = (
 def judge_tenkai_elimination(
     horse,
     long_distance_info=None,
+    relax_recent_losses=False,
 ):
     """
     展開馬をスコア比較する前の消去判定。
@@ -7406,7 +6968,8 @@ def judge_tenkai_elimination(
         # ただし「近走前崩れ」と
         # 「最新走大失速＋大敗」は別問題なので残す。
         if (
-            not long_distance_elimination_rescue
+            not relax_recent_losses
+            and not long_distance_elimination_rescue
             and len(recent_finishes) >= 3
             and bottom8_count >= 2
             and top3_count == 0
@@ -7416,7 +6979,8 @@ def judge_tenkai_elimination(
             )
 
         if (
-            not long_distance_elimination_rescue
+            not relax_recent_losses
+            and not long_distance_elimination_rescue
             and len(recent_finishes) >= 2
             and recent_finishes[0] >= 8
             and recent_finishes[1] >= 8
@@ -7867,9 +7431,116 @@ def calc_tenkai_type_match_bonus(candidate_profile):
     }
 
 
+# ==================================================
+# 🏎️ 園田820m専用・展開B距離短縮ボーナス
+#
+# 820mでは近走着順より、
+# 「長い距離で前へ行けていた馬が短縮で前進できるか」を重視する。
+#
+# 最も強い該当1走だけを採用し、複数走の加点は重ねない。
+#
+# 301〜600m短縮 ＋ 1角1〜2番手 → +120
+# 100〜300m短縮 ＋ 1角1〜2番手 → +80
+# 100〜600m短縮 ＋ 1角3〜4番手 → +50
+# ==================================================
+def calc_sonoda_820_shortening_bonus(
+    horse,
+    current_distance,
+):
+    if (
+        baba_name != "園田"
+        or current_distance != 820
+    ):
+        return {
+            "加点": 0,
+            "理由": "対象外",
+            "詳細": None,
+        }
+
+    best_bonus = 0
+    best_detail = None
+
+    for item in horse.get(
+        "距離付きタイム",
+        [],
+    ):
+        past_distance = item.get(
+            "距離",
+            0,
+        )
+
+        flow = item.get(
+            "通過順",
+            [],
+        )
+
+        if (
+            not past_distance
+            or len(flow) < 1
+        ):
+            continue
+
+        shortening = (
+            past_distance
+            - current_distance
+        )
+
+        if not (100 <= shortening <= 600):
+            continue
+
+        first = flow[0]
+        bonus = 0
+        reason = ""
+
+        if (
+            301 <= shortening <= 600
+            and first <= 2
+        ):
+            bonus = 120
+            reason = "301〜600m短縮＋1角1〜2番手"
+
+        elif (
+            100 <= shortening <= 300
+            and first <= 2
+        ):
+            bonus = 80
+            reason = "100〜300m短縮＋1角1〜2番手"
+
+        elif first <= 4:
+            bonus = 50
+            reason = "100〜600m短縮＋1角3〜4番手"
+
+        if bonus > best_bonus:
+            best_bonus = bonus
+            best_detail = {
+                "過去距離": past_distance,
+                "今回距離": current_distance,
+                "短縮距離": shortening,
+                "通過順": flow,
+                "理由": reason,
+            }
+
+    return {
+        "加点": best_bonus,
+        "理由": (
+            best_detail["理由"]
+            if best_detail
+            else "該当なし"
+        ),
+        "詳細": best_detail,
+    }
+
+
 # --------------------------------------------------
 # 全馬を一度候補として見る。
 # 軸馬と消去対象だけを先に落とす。
+#
+# 園田820mだけは、
+# ・直近3走の大敗条件
+# ・直近2走連続大敗条件
+# を消去理由から外す。
+#
+# 近走前崩れと最新走大失速＋大敗は従来どおり残す。
 # --------------------------------------------------
 tenkai_pre_candidates = []
 tenkai_eliminated_candidates = []
@@ -7889,9 +7560,15 @@ for horse in horses:
         )
     )
 
+    sonoda_820_relax = (
+        baba_name == "園田"
+        and distance_num == 820
+    )
+
     elimination = judge_tenkai_elimination(
         horse,
         long_distance_info=long_distance_info,
+        relax_recent_losses=sonoda_820_relax,
     )
 
     if elimination["消去"]:
@@ -8093,6 +7770,19 @@ for horse in horses:
         )
     )
 
+    sonoda_820_shortening_info = (
+        calc_sonoda_820_shortening_bonus(
+            horse,
+            distance_num,
+        )
+    )
+
+    sonoda_820_shortening_bonus = (
+        sonoda_820_shortening_info[
+            "加点"
+        ]
+    )
+
     preliminary_score = round(
         adjusted_recent_form_score
         + adjusted_rank_bonus_total
@@ -8101,6 +7791,7 @@ for horse in horses:
         + time_bonus
         + class_experience_bonus
         + long_distance_bonus
+        + sonoda_820_shortening_bonus
         - risk_penalty,
         1,
     )
@@ -8142,6 +7833,21 @@ for horse in horses:
             "判定",
             "対象外",
         ),
+
+        # 園田820m専用
+        "園田820短縮加点": sonoda_820_shortening_bonus,
+        "園田820短縮理由": (
+            sonoda_820_shortening_info[
+                "理由"
+            ]
+        ),
+        "園田820短縮詳細": (
+            sonoda_820_shortening_info[
+                "詳細"
+            ]
+        ),
+        "園田820消去緩和": sonoda_820_relax,
+
         "長距離同距離3着以内回数": long_distance_info.get(
             "同距離3着以内回数",
             0,
@@ -8257,8 +7963,6 @@ for horse in horses:
 
 # 総合ランキング確定後に最終点を加えるため、
 # この段階ではまだ展開馬を確定しない。
-tenkai_candidates = []
-selected_target_type = None
 tenkai_selection_source = "消去法＋適応スコア"
 
 # 総合力1位を裏側で判定
@@ -12145,13 +11849,6 @@ if is_ooi_escape:
 #   make_unique_trio_bets() の既存重複回避により、
 #   右側の記号（LやGなど）を次候補へ順送りする。
 # ==================================================
-NANKAN_BET_TRACKS = {
-    "浦和",
-    "船橋",
-    "大井",
-    "川崎",
-}
-
 NON_NANKAN_ABK_TRACKS = {
     "園田",
 }
@@ -12577,33 +12274,73 @@ def build_kochi_saga_axis_bet_override(context):
 
 
 def build_iwate_axis_bet_override(context):
-    """盛岡・水沢の共通3分類ルールを作る。"""
+    """盛岡・水沢を三連複3点＋ワイド2点＋浮き輪1点で統一する。"""
     track = context["track"]
     axis_type = context["axis_type"]
+
     result = build_urawa_funabashi_axis_bet_override(
         context
     )
 
+    # ----------------------------------------------
+    # 前受け
+    # 1点目：展開＋穴寄りL
+    # 2点目：固めC＋穴G
+    # 3点目：展開＋穴E
+    # ----------------------------------------------
     if axis_type == "前受け":
-        result["三連複"][0] = ["A", "B", "L"]
+        result["三連複"] = [
+            ["A", "B", "L"],
+            ["A", "C", "G"],
+            ["A", "B", "E"],
+        ]
+        result["ワイド"] = [
+            ["A", "B"],
+            ["A", "E"],
+        ]
         result["浮き輪"] = [["L", "K"]]
-
-    if track == "盛岡":
-        if axis_type == "持続":
-            result["三連複"][1] = ["A", "C", "G"]
-        elif axis_type == "差し":
-            result["三連複"][0] = ["A", "B", "C"]
-            result["浮き輪"] = [["K", "K2"]]
-
         return result
 
-    remove_ab_wide_keep_second(result)
-    result["三連複"].append(["A", "B", "L"])
-    if axis_type == "前受け":
-        result["三連複"][2] = ["A", "L", "E"]
+    # ----------------------------------------------
+    # 持続
+    # A≠F時の2点目F差し替えは共通ルール側を維持。
+    # 3点目は展開B＋穴L。
+    # ----------------------------------------------
+    if axis_type == "持続":
+        if track == "盛岡":
+            result["三連複"][1] = ["A", "C", "G"]
+
+        result["三連複"].append(
+            ["A", "B", "L"]
+        )
+
+        result["ワイド"] = [
+            ["A", "B"],
+            ["D", "C"],
+        ]
+        result["浮き輪"] = [["E", "D"]]
+        return result
+
+    # ----------------------------------------------
+    # 差し
+    # 盛岡だけ1点目A-B-Cと浮き輪K-K2を維持。
+    # 水沢は共通のA-B-E。
+    # 3点目は展開B＋穴L。
+    # ----------------------------------------------
+    if track == "盛岡":
+        result["三連複"][0] = ["A", "B", "C"]
+        result["浮き輪"] = [["K", "K2"]]
+
+    result["三連複"].append(
+        ["A", "B", "L"]
+    )
+
+    result["ワイド"] = [
+        ["A", "B"],
+        ["A", "C"],
+    ]
 
     return result
-
 
 def build_monbetsu_axis_bet_override(context):
     """門別の買い目を正式3分類だけで作る。"""
@@ -12711,11 +12448,26 @@ def build_ooi_axis_bet_override(context):
 def build_sonoda_axis_bet_override(context):
     """園田の買い目を正式3分類だけで作る。"""
     axis_type = context["axis_type"]
+    current_distance = context.get(
+        "current_distance"
+    )
+
+    # 園田820m・前受けだけは、
+    # 距離短縮補正で強化した通常Bを買い目へ直接使う。
+    #
+    # 1点目：A-B-D ＝ 軸＋展開＋先行（前残り筋）
+    # 2点目：A-D-C ＝ 先行＋地力（固め）
+    # 3点目：A-M-L ＝ M＋押上（別展開）
+    sonoda_front_first_trio = (
+        ["A", "B", "D"]
+        if current_distance == 820
+        else ["A", "M", "G"]
+    )
 
     rules = {
         "前受け": {
             "三連複": [
-                ["A", "M", "G"],
+                sonoda_front_first_trio,
                 ["A", "D", "C"],
                 ["A", "M", "L"],
             ],
@@ -12851,6 +12603,7 @@ def build_venue_axis_bet_rule_context(
     is_nankan_large_field,
     candidate_pools,
     existing_template,
+    current_distance,
 ):
     """
     会場×3軸タイプのルール関数へ渡す共通コンテキスト。
@@ -12873,6 +12626,7 @@ def build_venue_axis_bet_rule_context(
         "a_is_not_f": a_is_not_f,
         "d_is_a": d_is_a,
         "horse_count": horse_count,
+        "current_distance": current_distance,
         "is_nankan_large_field": (
             is_nankan_large_field
         ),
@@ -13288,7 +13042,6 @@ m_single = [
 ]
 
 # ==================================================
-# ==================================================
 # 全14会場共通・Mを同距離持ちタイムで上から斬る
 #
 # まず従来どおり「中間重複」で候補を絞る。
@@ -13554,6 +13307,7 @@ venue_axis_bet_rule_context = (
         existing_template=(
             current_bet_template
         ),
+        current_distance=distance_num,
     )
 )
 
@@ -13680,7 +13434,24 @@ def build_symbol_conflicts(template):
                 conflicts[symbol].update(
                     other_symbol
                     for other_symbol in symbol_list
-                    if other_symbol != symbol
+                    if (
+                        other_symbol != symbol
+                        and not (
+                            # 園田820m・前受けのA-B-Dだけは、
+                            # BとDが同じ馬でもアルファベット本体は動かさない。
+                            #
+                            # 例：
+                            # B=7、D=7 の場合でも
+                            # D本体は7のまま保持。
+                            #
+                            # 実際のA-B-D買い目を作る時だけ、
+                            # make_unique_trio_bets()側でDを次候補へ繰り下げる。
+                            baba_name == "園田"
+                            and distance_num == 820
+                            and bet_axis_type == "前受け"
+                            and {symbol, other_symbol} == {"B", "D"}
+                        )
+                    )
                 )
 
     # 以前はここで、
