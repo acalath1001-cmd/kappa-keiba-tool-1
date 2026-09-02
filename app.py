@@ -12250,6 +12250,7 @@ def build_nagoya_himeji_axis_bet_override(context):
         and context["axis_type"] == "差し"
     ):
         result["三連複"][1] = ["A", "N", "I"]
+        result["三連複"][2] = ["A", "C", "E"]
         result["ワイド"] = [["A", "E"]]
 
     return result
@@ -12286,13 +12287,13 @@ def build_iwate_axis_bet_override(context):
     # 前受け
     # 1点目：展開＋穴寄りL
     # 2点目：固めC＋穴G
-    # 3点目：展開＋穴E
+    # 3点目：盛岡・水沢ともに A-I-E
     # ----------------------------------------------
     if axis_type == "前受け":
         result["三連複"] = [
             ["A", "B", "L"],
             ["A", "C", "G"],
-            ["A", "B", "E"],
+            ["A", "I", "E"],
         ]
         result["ワイド"] = [
             ["A", "B"],
@@ -12352,10 +12353,10 @@ def build_monbetsu_axis_bet_override(context):
     rules = {
         "前受け": {
             "三連複": [
-                ["A", "B", "D"],
+                ["A", "B", "I"],
                 ["A", "C", "I"],
             ],
-            "ワイド": [["A", "E"]],
+            "ワイド": [["A", "G"]],
             "浮き輪": [["D", "E"]],
         },
         "持続": {
@@ -12380,7 +12381,13 @@ def build_monbetsu_axis_bet_override(context):
         bet_type: [bet[:] for bet in bets]
         for bet_type, bets in rules[axis_type].items()
     }
-    result["三連複"].append(third_trio)
+
+    # 門別・軸前受けだけ三連複3点目を A-E-G にする。
+    # 持続・差しは従来の D=A 重複回避付き3点目を維持する。
+    if axis_type == "前受け":
+        result["三連複"].append(["A", "E", "G"])
+    else:
+        result["三連複"].append(third_trio)
 
     return result
 
@@ -12457,11 +12464,18 @@ def build_sonoda_axis_bet_override(context):
     #
     # 1点目：A-B-D ＝ 軸＋展開＋先行（前残り筋）
     # 2点目：A-D-C ＝ 先行＋地力（固め）
-    # 3点目：A-M-L ＝ M＋押上（別展開）
+    # 3点目：園田820mのみ A-M-I
+    #         それ以外は従来どおり A-M-L
     sonoda_front_first_trio = (
         ["A", "B", "D"]
         if current_distance == 820
         else ["A", "M", "G"]
+    )
+
+    sonoda_front_third_trio = (
+        ["A", "M", "I"]
+        if current_distance == 820
+        else ["A", "M", "L"]
     )
 
     rules = {
@@ -12469,7 +12483,7 @@ def build_sonoda_axis_bet_override(context):
             "三連複": [
                 sonoda_front_first_trio,
                 ["A", "D", "C"],
-                ["A", "M", "L"],
+                sonoda_front_third_trio,
             ],
             "ワイド": [["A", "I"]],
             "浮き輪": [["D", "E"]],
@@ -12498,6 +12512,27 @@ def build_sonoda_axis_bet_override(context):
         bet_type: [bet[:] for bet in bets]
         for bet_type, bets in rules[axis_type].items()
     }
+
+    # 園田・軸先行だけ、三連複2点目を A-M-I にする。
+    # 「前受け」全体を書き換えず、逃げ軸には影響させない。
+    if (
+        axis_type == "前受け"
+        and context.get("axis_primary") == "先行"
+    ):
+        result["三連複"][1] = [
+            "A",
+            "M",
+            "I",
+        ]
+
+        # 園田820m・軸先行だけ、三連複3点目を A-M-G にする。
+        # 820mの逃げ軸は従来どおり A-M-I のまま。
+        if current_distance == 820:
+            result["三連複"][2] = [
+                "A",
+                "M",
+                "G",
+            ]
 
     if axis_type == "持続":
         result["三連複"][1] = build_second_trio_with_f(
