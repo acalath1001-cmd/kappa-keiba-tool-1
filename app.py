@@ -12389,6 +12389,20 @@ def build_nagoya_himeji_axis_bet_override(context):
 
     if (
         context["track"] == "名古屋"
+        and context["axis_type"] == "前受け"
+    ):
+        result["三連複"][1] = ["A", "M", "G"]
+
+        # 名古屋のみ・主＝先行／副＝持続の時は、
+        # 三連複3点目を A-I-G にする。
+        if (
+            context.get("axis_primary") == "先行"
+            and context.get("axis_secondary") == "持続"
+        ):
+            result["三連複"][2] = ["A", "I", "G"]
+
+    if (
+        context["track"] == "名古屋"
         and context["axis_type"] == "差し"
     ):
         result["三連複"][1] = ["A", "N", "I"]
@@ -12426,7 +12440,7 @@ def build_kochi_saga_axis_bet_override(context):
 
 
 def build_iwate_axis_bet_override(context):
-    """盛岡・水沢を三連複3点＋ワイド2点＋浮き輪1点で統一する。"""
+    """盛岡・水沢を三連複3点＋ワイド1点＋浮き輪1点の5点で統一する。"""
     track = context["track"]
     axis_type = context["axis_type"]
 
@@ -12439,6 +12453,7 @@ def build_iwate_axis_bet_override(context):
     # 1点目：展開＋穴寄りL
     # 2点目：固めC＋穴G
     # 3点目：盛岡・水沢ともに A-I-E
+    # ワイド2点目 A-E を浮き輪へ移す。
     # ----------------------------------------------
     if axis_type == "前受け":
         result["三連複"] = [
@@ -12448,15 +12463,15 @@ def build_iwate_axis_bet_override(context):
         ]
         result["ワイド"] = [
             ["A", "B"],
-            ["A", "E"],
         ]
-        result["浮き輪"] = [["L", "K"]]
+        result["浮き輪"] = [["A", "E"]]
         return result
 
     # ----------------------------------------------
     # 持続
     # A≠F時の2点目F差し替えは共通ルール側を維持。
     # 3点目は展開B＋穴L。
+    # ワイド2点目 D-C を浮き輪へ移す。
     # ----------------------------------------------
     if axis_type == "持続":
         if track == "盛岡":
@@ -12468,20 +12483,19 @@ def build_iwate_axis_bet_override(context):
 
         result["ワイド"] = [
             ["A", "B"],
-            ["D", "C"],
         ]
-        result["浮き輪"] = [["E", "D"]]
+        result["浮き輪"] = [["D", "C"]]
         return result
 
     # ----------------------------------------------
     # 差し
-    # 盛岡だけ1点目A-B-Cと浮き輪K-Lを維持。
+    # 盛岡だけ1点目A-B-Cを維持。
     # 水沢は共通のA-B-E。
     # 3点目は展開B＋穴L。
+    # ワイド2点目 A-C を浮き輪へ移す。
     # ----------------------------------------------
     if track == "盛岡":
         result["三連複"][0] = ["A", "B", "C"]
-        result["浮き輪"] = [["K", "L"]]
 
     result["三連複"].append(
         ["A", "B", "L"]
@@ -12489,8 +12503,8 @@ def build_iwate_axis_bet_override(context):
 
     result["ワイド"] = [
         ["A", "B"],
-        ["A", "C"],
     ]
+    result["浮き輪"] = [["A", "C"]]
 
     return result
 
@@ -12785,7 +12799,7 @@ VENUE_AXIS_BET_OVERRIDES["川崎"] = {
 }
 
 # 名古屋・姫路は共通3分類ルールを使い、
-# 名古屋の差しだけA-N-I／A-L-G／A-Eを差分上書きする。
+# 名古屋の前受け2点目A-M-Gと、差しA-N-I／A-L-G／A-Eを差分上書きする。
 for track in ("名古屋", "姫路"):
     VENUE_AXIS_BET_OVERRIDES[track] = {
         axis_type: build_nagoya_himeji_axis_bet_override
