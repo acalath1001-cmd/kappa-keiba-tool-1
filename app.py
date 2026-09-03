@@ -3557,6 +3557,8 @@ if debug_mode:
 # ・必ず「元通過順」を使う。
 # ・通常会場は元通過順が4地点ある過去走だけを対象にする。
 # ・盛岡だけは2地点・3地点が多いため、既存の4地点補完後「通過順」を使う。
+# ・門別・大井だけは同会場の過去走に限り、3地点を2角・3角・4角、
+#   2地点を3角・4角としてK/L評価用の4地点へ変換する。
 # ・今回距離帯を最優先。
 # ・該当距離がない馬だけ、最も近い距離を弱く評価する。
 # ・最新走ほど少し強く評価する。
@@ -3606,6 +3608,16 @@ def get_corner_push_runs(
       例：10-5 → 10-10-5-5
       この場合、2角→4角は 10→5 なので5頭押上として評価。
 
+    門別・大井だけ：
+      今回会場と過去走会場が同じ場合に限り、元通過順が3地点なら
+      2角・3角・4角、2地点なら3角・4角として扱う。
+
+      例：5-3-2 → 5-5-3-2
+          4-2 → 4-4-4-2
+
+      大井1200mのように2地点・3地点表示が多い条件でも、
+      K＝3角→4角、L＝2角→4角の押上評価へ入れられる。
+
     今回距離帯があればその走だけを100％評価し、
     今回距離帯が1走もない場合だけ、
     最も近い距離の走を弱く評価する。
@@ -3638,14 +3650,45 @@ def get_corner_push_runs(
             [],
         )
 
+        # 距離付きタイム作成時に保存されている
+        # 実際の過去走競馬場。
+        past_place = item.get(
+            "競馬場",
+            "",
+        )
+
         # 盛岡だけは、2地点・3地点を4地点へ補完済みの
         # 評価用通過順を押上ランキングにも使う。
-        # 他会場は従来どおり「元通過順4地点のみ」。
+        # 門別・大井は、今回会場と過去走会場が同じ場合だけ、
+        # 3地点を2角・3角・4角、2地点を3角・4角として扱う。
+        # その他会場は従来どおり「元通過順4地点のみ」。
         if baba_name == "盛岡":
             push_flow = item.get(
                 "通過順",
                 [],
             )
+        elif (
+            baba_name in ["門別", "大井"]
+            and past_place == baba_name
+        ):
+            if len(raw_flow) >= 4:
+                push_flow = raw_flow[:4]
+            elif len(raw_flow) == 3:
+                push_flow = [
+                    raw_flow[0],
+                    raw_flow[0],
+                    raw_flow[1],
+                    raw_flow[2],
+                ]
+            elif len(raw_flow) == 2:
+                push_flow = [
+                    raw_flow[0],
+                    raw_flow[0],
+                    raw_flow[0],
+                    raw_flow[1],
+                ]
+            else:
+                push_flow = raw_flow
         else:
             push_flow = raw_flow
 
@@ -3670,11 +3713,6 @@ def get_corner_push_runs(
         )
 
         # 園田⇔姫路は既存の同距離タイム比較と同じ補正。
-        past_place = item.get(
-            "競馬場",
-            "",
-        )
-
         if time_seconds is not None:
             if (
                 baba_name == "園田"
@@ -3693,7 +3731,8 @@ def get_corner_push_runs(
             "距離": past_distance,
             "競馬場": past_place,
             # 下流の押上計算はこのキーを参照しているため、
-            # キー名は維持し、中身だけ盛岡では補完後通過順にする。
+            # キー名は維持し、中身だけ盛岡・門別・大井では
+            # 上記のK/L評価用通過順にする。
             "元通過順": push_flow[:4],
             "着順": item.get(
                 "着順"
@@ -4363,7 +4402,7 @@ def render_corner_push_ranking(
 
     if not ranking:
         st.write(
-            "対象となる4地点通過順データなし"
+            "対象となる押上通過順データなし"
         )
         return
 
@@ -4437,7 +4476,12 @@ if debug_mode:
             (
                 "盛岡のみ2地点・3地点の通過順も既存の4地点補完を使って評価。"
                 if baba_name == "盛岡"
-                else "元通過順が4地点ある過去走だけで評価。"
+                else (
+                    f"{baba_name}の過去走は、3地点を2角・3角・4角、"
+                    "2地点を3角・4角としてK/L評価。"
+                    if baba_name in ["門別", "大井"]
+                    else "元通過順が4地点ある過去走だけで評価。"
+                )
             )
             + "今回距離帯を優先し、最新走ほど少し重くしています。"
             + " K/Lはさらに走破タイム・クラスだけを質補正します。"
@@ -9357,6 +9401,76 @@ if baba_name in {
             "岩手K＝3→4押上固定"
         )
 
+# ==================================================
+# 大井限定・軸に「持続」が含まれる時の展開B
+#
+# 主脚質または副脚質に「持続」が1つでも含まれる場合、
+# 展開候補を「前進TOP5 ∩ 地力TOP5＝共通TOP5」に限定する。
+#
+# 共通TOP5内の順位は、既存の展開最終点ランキング順をそのまま使う。
+# 例：共通TOP5の展開順位が 1番 → 13番 → 15番 なら、
+#   B＝1位の1番
+#   J＝2位の13番（後段で設定）
+# とする。
+#
+# 主：先行｜副：持続 のようなマーブル軸でも発動する。
+# 他会場・大井の持続非該当軸には影響させない。
+# ==================================================
+oi_axis_has_sustain = (
+    baba_name == "大井"
+    and (
+        axis_marble_profile.get(
+            "主脚質",
+            kyakushoku_type,
+        ) == "持続"
+        or "持続" in set(
+            axis_marble_profile.get(
+                "副脚質",
+                [],
+            )
+        )
+    )
+)
+
+oi_common_tenkai_candidates = []
+oi_tenkai_uses_common_top5 = False
+
+if oi_axis_has_sustain:
+    oi_common_tenkai_candidates = [
+        h
+        for h in tenkai_candidates
+        if h.get("馬番")
+        in common_top5_numbers_for_tenkai
+    ]
+
+    if oi_common_tenkai_candidates:
+        oi_tenkai_uses_common_top5 = True
+
+        # 展開Bは共通TOP5内の1位。
+        tenkai_best = (
+            oi_common_tenkai_candidates[0]
+        )
+
+        # デバッグ等の最終候補も、共通TOP5勢を先頭へ並べる。
+        oi_common_numbers = {
+            h["馬番"]
+            for h in oi_common_tenkai_candidates
+        }
+
+        tenkai_final_candidates = (
+            oi_common_tenkai_candidates
+            + [
+                h
+                for h in tenkai_candidates
+                if h["馬番"]
+                not in oi_common_numbers
+            ]
+        )
+
+        tenkai_selection_source = (
+            "大井・軸持続含む＝共通TOP5固定"
+        )
+
 selected_target_type = tenkai_best.get(
     "主脚質",
     tenkai_best.get(
@@ -9442,7 +9556,11 @@ if debug_mode:
 #
 # 通常会場：最終の展開ランキング順。
 # 岩手    ：B＝Kとするため、3→4押上ランキング順。
-if iwate_tenkai_uses_k:
+if oi_tenkai_uses_common_top5:
+    tenkai_rank_source_for_trio = (
+        oi_common_tenkai_candidates
+    )
+elif iwate_tenkai_uses_k:
     tenkai_rank_source_for_trio = (
         iwate_k_tenkai_candidates
     )
@@ -9505,6 +9623,29 @@ if debug_mode:
         st.write(
             f"共通TOP5：{common_numbers_text}"
         )
+
+        if oi_tenkai_uses_common_top5:
+            oi_common_rank_text = (
+                " → ".join(
+                    f"{h['馬番']}番"
+                    for h in oi_common_tenkai_candidates
+                )
+            )
+
+            st.write(
+                "大井・持続系 共通TOP5展開順位："
+                + oi_common_rank_text
+            )
+
+            if len(oi_common_tenkai_candidates) >= 2:
+                oi_j_debug_horse = (
+                    oi_common_tenkai_candidates[1]
+                )
+                st.write(
+                    "J＝共通TOP5展開2位："
+                    f"{oi_j_debug_horse['馬番']}番 "
+                    f"{oi_j_debug_horse['馬名']}"
+                )
 
         for rank, h in enumerate(
             tenkai_candidates[:5],
@@ -10954,7 +11095,7 @@ popular = (
 # F：後詰め
 # G：穴3
 # I：穴2
-# J：前進気勢3位（南関10頭以上3点目／門別逃げ軸2点目で使用）
+# J：大井・持続を含む軸では共通TOP5展開2位／それ以外は前進気勢3位
 # K：3角→4角【勝負所重視】押上ランキング1位（全会場共通）
 # L：2角→4角【総合押上】ランキング1位
 #    （会場別A-B-L／佐賀先行軸／園田先行＋押上軸／岩手前受け軸で使用）
@@ -11155,11 +11296,12 @@ def build_adg_or_abg_trio(d_is_a):
 def append_nankan_large_field_trio(
     template,
     should_append,
+    third_symbol="J",
 ):
-    """南関10頭以上の時だけ三連複A-B-Jを追加する。"""
+    """南関10頭以上の三連複3点目を追加する。"""
     if should_append:
         template["三連複"].append(
-            ["A", "B", "J"]
+            ["A", "B", third_symbol]
         )
 
 
@@ -11666,14 +11808,10 @@ if (
 # ==================================================
 # 盛岡限定・差し軸
 #
-# 浮き輪ワイド：K1位 - K2位
+# 浮き輪ワイド：K - L
 #
-# K  ＝3角→4角【勝負所重視】押上ランキング1位
-# K2 ＝同ランキング2位
-#
-# K2が存在しない／斬り捨てで使えない場合は、
-# L＝2角→4角【総合押上】ランキングから補充する。
-# その際K1と同じ馬なら、L2位→L3位→…へ繰り下げる。
+# K＝3角→4角【勝負所重視】押上ランキング1位
+# L＝2角→4角【総合押上】ランキング1位
 #
 # 盛岡の差し軸だけに適用し、
 # 三連複・通常ワイド・他会場・他脚質には影響させない。
@@ -11687,7 +11825,7 @@ if (
     ] = [
         [
             "K",
-            "K2",
+            "L",
         ]
     ]
 
@@ -12214,9 +12352,13 @@ def build_urawa_funabashi_axis_bet_override(context):
     ):
         result["三連複"][1][1] = "F"
 
+    # 浦和・船橋は10頭以上の3点目を A-B-F にする。
+    # 川崎もこの共通関数を使うため同じく A-B-F になる。
+    # Jは大井専用として残す。
     append_nankan_large_field_trio(
         result,
         context["is_nankan_large_field"],
+        third_symbol="F",
     )
 
     return result
@@ -12250,7 +12392,7 @@ def build_nagoya_himeji_axis_bet_override(context):
         and context["axis_type"] == "差し"
     ):
         result["三連複"][1] = ["A", "N", "I"]
-        result["三連複"][2] = ["A", "C", "E"]
+        result["三連複"][2] = ["A", "L", "G"]
         result["ワイド"] = [["A", "E"]]
 
     return result
@@ -12270,6 +12412,15 @@ def build_kochi_saga_axis_bet_override(context):
         and context["axis_type"] == "前受け"
     ):
         result["三連複"][0] = ["A", "B", "L"]
+
+    # 佐賀・差しだけ2点目を A-D-G に固定する。
+    # 共通側のA≠F時のA-F-I差し替えより後で上書きするため、
+    # AとFが異なる場合でも最終買い目はA-D-Gになる。
+    if (
+        context["track"] == "佐賀"
+        and context["axis_type"] == "差し"
+    ):
+        result["三連複"][1] = ["A", "D", "G"]
 
     return result
 
@@ -12324,13 +12475,13 @@ def build_iwate_axis_bet_override(context):
 
     # ----------------------------------------------
     # 差し
-    # 盛岡だけ1点目A-B-Cと浮き輪K-K2を維持。
+    # 盛岡だけ1点目A-B-Cと浮き輪K-Lを維持。
     # 水沢は共通のA-B-E。
     # 3点目は展開B＋穴L。
     # ----------------------------------------------
     if track == "盛岡":
         result["三連複"][0] = ["A", "B", "C"]
-        result["浮き輪"] = [["K", "K2"]]
+        result["浮き輪"] = [["K", "L"]]
 
     result["三連複"].append(
         ["A", "B", "L"]
@@ -12395,6 +12546,7 @@ def build_monbetsu_axis_bet_override(context):
 def build_ooi_axis_bet_override(context):
     """大井の買い目を正式3分類だけで作る。"""
     axis_type = context["axis_type"]
+    is_ten_or_less = context["horse_count"] <= 10
 
     rules = {
         "前受け": {
@@ -12404,7 +12556,7 @@ def build_ooi_axis_bet_override(context):
                 ["A", "D", "G"],
             ],
             "ワイド": [
-                ["A", "B"],
+                ["A", "F"],
                 ["A", "E"],
             ],
             "浮き輪": [["D", "E"]],
@@ -12416,7 +12568,7 @@ def build_ooi_axis_bet_override(context):
                 ["A", "K", "J"],
             ],
             "ワイド": [
-                ["A", "B"],
+                ["A", "F"],
                 ["D", "C"],
             ],
             "浮き輪": [["E", "D"]],
@@ -12427,7 +12579,7 @@ def build_ooi_axis_bet_override(context):
                 ["A", "D", "I"],
             ],
             "ワイド": [
-                ["A", "B"],
+                ["A", "F"],
                 ["A", "C"],
             ],
             "浮き輪": [["I", "G"]],
@@ -12439,15 +12591,62 @@ def build_ooi_axis_bet_override(context):
         for bet_type, bets in rules[axis_type].items()
     }
 
+    # 大井・前受けのマーブル脚質差分。
+    # ・主＝先行・副＝持続 → 三連複2点目 A-D-N
+    # ・主＝逃げ・副＝先行 → 三連複2点目 A-B-J
+    # ・主＝先行/逃げ・副＝持続 → 三連複3点目 A-E-I
+    # それ以外の前受け・持続・差しには影響させない。
+    if (
+        axis_type == "前受け"
+        and context.get("axis_primary") == "先行"
+        and context.get("axis_secondary") == "持続"
+    ):
+        result["三連複"][1] = [
+            "A",
+            "D",
+            "N",
+        ]
+
+    if (
+        axis_type == "前受け"
+        and context.get("axis_primary") == "逃げ"
+        and context.get("axis_secondary") == "先行"
+    ):
+        result["三連複"][1] = [
+            "A",
+            "B",
+            "J",
+        ]
+
+    if (
+        axis_type == "前受け"
+        and context.get("axis_primary") in {"先行", "逃げ"}
+        and context.get("axis_secondary") == "持続"
+    ):
+        result["三連複"][2] = [
+            "A",
+            "E",
+            "I",
+        ]
+
     if axis_type == "差し":
         result["三連複"][1] = build_second_trio_with_f(
             result["三連複"][1],
             context["a_is_not_f"],
         )
-        append_nankan_large_field_trio(
-            result,
-            context["is_nankan_large_field"],
-        )
+
+        if is_ten_or_less:
+            result["三連複"].append(["A", "D", "E"])
+        else:
+            append_nankan_large_field_trio(
+                result,
+                context["is_nankan_large_field"],
+            )
+
+    # 大井10頭以下は通常ワイド1点＋浮き輪1点にする。
+    # 全3タイプとも先頭はA-Fなので、1点目だけを外す。
+    if is_ten_or_less:
+        result["ワイド"] = result["ワイド"][1:]
 
     return result
 
@@ -12464,18 +12663,11 @@ def build_sonoda_axis_bet_override(context):
     #
     # 1点目：A-B-D ＝ 軸＋展開＋先行（前残り筋）
     # 2点目：A-D-C ＝ 先行＋地力（固め）
-    # 3点目：園田820mのみ A-M-I
-    #         それ以外は従来どおり A-M-L
+    # 3点目：A-M-D
     sonoda_front_first_trio = (
         ["A", "B", "D"]
         if current_distance == 820
         else ["A", "M", "G"]
-    )
-
-    sonoda_front_third_trio = (
-        ["A", "M", "I"]
-        if current_distance == 820
-        else ["A", "M", "L"]
     )
 
     rules = {
@@ -12483,7 +12675,7 @@ def build_sonoda_axis_bet_override(context):
             "三連複": [
                 sonoda_front_first_trio,
                 ["A", "D", "C"],
-                sonoda_front_third_trio,
+                ["A", "M", "D"],
             ],
             "ワイド": [["A", "I"]],
             "浮き輪": [["D", "E"]],
@@ -12525,20 +12717,33 @@ def build_sonoda_axis_bet_override(context):
             "I",
         ]
 
-        # 園田820m・軸先行だけ、三連複3点目を A-M-G にする。
-        # 820mの逃げ軸は従来どおり A-M-I のまま。
-        if current_distance == 820:
-            result["三連複"][2] = [
-                "A",
-                "M",
-                "G",
-            ]
-
     if axis_type == "持続":
         result["三連複"][1] = build_second_trio_with_f(
             result["三連複"][1],
             context["a_is_not_f"],
         )
+
+    # 園田・元の主脚質が展開待ちの時だけ
+    # 三連複1点目を A-F-E、2点目を A-D-E、3点目を A-D-G にする。
+    if (
+        axis_type == "差し"
+        and context.get("axis_primary") == "展開待ち"
+    ):
+        result["三連複"][0] = [
+            "A",
+            "F",
+            "E",
+        ]
+        result["三連複"][1] = [
+            "A",
+            "D",
+            "E",
+        ]
+        result["三連複"][2] = [
+            "A",
+            "D",
+            "G",
+        ]
 
     return result
 
@@ -12580,7 +12785,7 @@ VENUE_AXIS_BET_OVERRIDES["川崎"] = {
 }
 
 # 名古屋・姫路は共通3分類ルールを使い、
-# 名古屋の差しだけA-N-I／A-Eを差分上書きする。
+# 名古屋の差しだけA-N-I／A-L-G／A-Eを差分上書きする。
 for track in ("名古屋", "姫路"):
     VENUE_AXIS_BET_OVERRIDES[track] = {
         axis_type: build_nagoya_himeji_axis_bet_override
@@ -12610,8 +12815,8 @@ VENUE_AXIS_BET_OVERRIDES["門別"] = {
     for axis_type in BET_AXIS_TYPES_3
 }
 
-# 大井は正式3分類だけで作る。前受け・持続は固定3点、
-# 差しだけA≠Fと南関10頭以上の共通ヘルパーを適用する。
+# 大井は正式3分類だけで作る。10頭以下は三連複3点・
+# 通常ワイド1点＋浮き輪1点とし、11頭以上は従来仕様を維持する。
 VENUE_AXIS_BET_OVERRIDES["大井"] = {
     axis_type: build_ooi_axis_bet_override
     for axis_type in BET_AXIS_TYPES_3
@@ -12838,15 +13043,17 @@ n_pool = unique_texts(
 )
 
 # ==================================================
-# J＝前進気勢3位
+# J
 #
-# 画面に出している前進気勢ランキングと同じ、
-# 「スコア0より上」の元ランキングを使用する。
+# 大井で軸の主・副脚質に「持続」が含まれる時：
+#   共通TOP5に残った展開ランキングの2位から開始する。
+#   例：1番 → 13番 → 15番 なら J＝13番。
+#   同じ買い目内でKなどと被れば15番へ繰り下げる。
 #
-# 3位から候補を開始し、
-# A・Bなどと被れば4位 → 5位 → …へ繰り下げる。
+# それ以外：
+#   従来どおり前進気勢ランキング3位から開始する。
 #
-# Jは南関10頭以上のA-B-Jと、門別逃げ軸A-J-Gで使用する。
+# 現在、最終買い目でJを使う会場は大井のみ。
 # ==================================================
 front_ranking_for_j = [
     h
@@ -12857,12 +13064,31 @@ front_ranking_for_j = [
     ) > 0
 ]
 
-j_pool = unique_texts(
-    [
+default_j_candidates = [
+    horse_text(h)
+    for h in front_ranking_for_j[2:]
+]
+
+if (
+    oi_axis_has_sustain
+    and len(oi_common_tenkai_candidates) >= 2
+):
+    # 1位はBとして使うため、Jは共通TOP5展開2位から。
+    oi_common_j_candidates = [
         horse_text(h)
-        for h in front_ranking_for_j[2:]
+        for h in oi_common_tenkai_candidates[1:]
     ]
-)
+
+    # 共通TOP5内で被り回避できない場合だけ、
+    # 従来J候補を安全網として後ろへつなぐ。
+    j_pool = unique_texts(
+        oi_common_j_candidates
+        + default_j_candidates
+    )
+else:
+    j_pool = unique_texts(
+        default_j_candidates
+    )
 
 # ==================================================
 # K＝3角→4角【勝負所重視】押上ランキング1位
@@ -12895,34 +13121,6 @@ l_pool = unique_texts(
         horse_text(h)
         for h in corner_push_2to4
     ]
-)
-
-# ==================================================
-# K2＝盛岡・差し軸の浮き輪専用
-#
-# 基本は3角→4角【勝負所重視】押上ランキング2位。
-# 2位が存在しない、または斬り捨て等で使えない場合だけ、
-# L＝2角→4角【総合押上】ランキングへフォールバックする。
-#
-# K（1位）と同じ馬は同一買い目内の競合処理で自動的に飛ばし、
-# L2位→L3位→…へ繰り下げる。
-#
-# 重要：3→4押上3位へは送らない。
-# 「K2がいなければL繰り下がり」という盛岡専用ルールを守る。
-# ==================================================
-k2_exact_pool = (
-    [
-        horse_text(
-            corner_push_3to4[1]
-        )
-    ]
-    if len(corner_push_3to4) >= 2
-    else []
-)
-
-k2_pool = unique_texts(
-    k2_exact_pool
-    + l_pool
 )
 
 # ==================================================
@@ -13167,47 +13365,16 @@ m_pool = unique_texts(
 )
 
 # ==================================================
-# 園田のみ・画面の展開馬表示もBの実体に合わせる
+# 園田・持続だけは、買い目上のB候補そのものをMプールへ差し替える。
 #
-# ・園田＋正式3分類「持続」
-#     → 展開馬欄にM候補の最上位馬を表示
-# ・園田＋正式3分類「前受け／差し」
-#     → 従来の展開馬を表示
-# ・他会場
-#     → 従来の展開馬を表示
-#
-# ※ここは「M取得ロジック」とは別。
-#   M自体は上で全14会場共通化済み。
+# 画面の「🌊 展開の向く馬」は、この時点ではまだ描画しない。
+# MやBは後段の重複回避・斬り捨て処理で次候補へ動く可能性があるため、
+# 最終買い目用の記号が確定した後に描画し、実際の買い目と一致させる。
 # ==================================================
 sonoda_b_uses_m = (
     baba_name == "園田"
     and bet_axis_type == "持続"
 )
-
-with tenkai_card_placeholder.container():
-    if sonoda_b_uses_m and m_pool:
-        show_card(
-            "🌊",
-            "展開の向く馬",
-            "M：中間重複＋同距離持ちタイム",
-            m_pool[0],
-            "#e0f2fe",
-            "#7dd3fc",
-            "#0369a1"
-        )
-    else:
-        show_card(
-            "🌊",
-            "展開の向く馬",
-            (
-                f"主：{tenkai_best.get('主脚質', tenkai_best.get('候補脚質', '不明'))}"
-                f"｜副：{tenkai_best.get('副脚質表示', 'なし')}"
-            ),
-            tenkai_horse,
-            "#e0f2fe",
-            "#7dd3fc",
-            "#0369a1"
-        )
 
 # ==================================================
 # Mランキング・デバッグ表示
@@ -13301,7 +13468,6 @@ alphabet_candidate_pools = {
     "N": n_pool,
     "J": j_pool,
     "K": k_pool,
-    "K2": k2_pool,
     "L": l_pool,
     "M": m_pool,
 }
@@ -13370,9 +13536,12 @@ alphabet_role_names = {
     "G": "穴3",
     "I": "穴2",
     "N": "穴5",
-    "J": "前進3位",
+    "J": (
+        "大井・共通TOP5展開2位"
+        if oi_axis_has_sustain
+        else "前進3位"
+    ),
     "K": "3→4押上1位",
-    "K2": "3→4押上2位／なければL繰り下がり",
     "L": "総合押上1位",
     "M": "中間重複",
 }
@@ -13395,7 +13564,6 @@ if baba_name in {"盛岡", "水沢"}:
         "J",
         "L",
         "K",
-        "K2",
         "M",
     ]
 else:
@@ -13413,7 +13581,6 @@ else:
         "L",
         "K",
         "J",
-        "K2",
     ]
 
 
@@ -13458,7 +13625,7 @@ def build_symbol_conflicts(template):
     # 同じ1つの買い目内に出る記号同士だけ競合。
     # 三連複・ワイド・浮き輪それぞれの
     # 「1点の中」で同じ馬にならないための最低限の制約。
-    for bet_group in template.values():
+    for bet_type, bet_group in template.items():
         for symbol_list in bet_group:
             for symbol in symbol_list:
                 conflicts.setdefault(
@@ -13481,10 +13648,21 @@ def build_symbol_conflicts(template):
                             #
                             # 実際のA-B-D買い目を作る時だけ、
                             # make_unique_trio_bets()側でDを次候補へ繰り下げる。
-                            baba_name == "園田"
-                            and distance_num == 820
-                            and bet_axis_type == "前受け"
-                            and {symbol, other_symbol} == {"B", "D"}
+                            (
+                                baba_name == "園田"
+                                and distance_num == 820
+                                and bet_axis_type == "前受け"
+                                and {symbol, other_symbol} == {"B", "D"}
+                            )
+                            or (
+                                # 大井のワイド A-F はワイド専用で重複解消する。
+                                # F本体を2位へ動かさず、A=F1位なら
+                                # make_unique_wide_bets() 側でF3位へ飛ばす。
+                                baba_name == "大井"
+                                and bet_type == "ワイド"
+                                and symbol_list == ["A", "F"]
+                                and {symbol, other_symbol} == {"A", "F"}
+                            )
                         )
                     )
                 )
@@ -13720,6 +13898,69 @@ def make_unique_wide_bets(
         bet_key = frozenset(
             bet_numbers
         )
+
+        # ==================================================
+        # 大井限定・ワイド A-F の特別ルール
+        #
+        # Fランキング1位が軸Aと同じ馬だった場合、
+        # 通常の「次候補＝F2位」にはせず、
+        # F3位から下へ順番に探す。
+        #
+        # これはワイド専用処理。
+        # F記号本体や三連複のF選出は変更しない。
+        # ==================================================
+        if (
+            baba_name == "大井"
+            and symbol_list == ["A", "F"]
+            and f_pool
+            and get_num(f_pool[0]) == get_num(bet[0])
+        ):
+            resolved_ooi_af = None
+
+            # index 2 ＝ Fランキング3位。
+            # 3位が斬り捨て・A重複などで使えない場合だけ、
+            # 4位、5位…へ順番に繰り下げる。
+            for candidate in f_pool[2:]:
+                candidate_number = get_num(candidate)
+
+                if candidate_number in excluded_numbers:
+                    continue
+
+                if candidate_number == get_num(bet[0]):
+                    continue
+
+                test_bet = [
+                    bet[0],
+                    candidate,
+                ]
+
+                test_key = frozenset(
+                    get_num(horse_name)
+                    for horse_name in test_bet
+                )
+
+                if test_key in used_wide_keys:
+                    continue
+
+                resolved_ooi_af = test_bet
+                break
+
+            if resolved_ooi_af is not None:
+                result.append(
+                    resolved_ooi_af
+                )
+                used_wide_keys.add(
+                    frozenset(
+                        get_num(horse_name)
+                        for horse_name
+                        in resolved_ooi_af
+                    )
+                )
+                continue
+
+            # F3位以降に有効馬がいない場合は、
+            # F2位へ戻さず、このA-Fワイドは作らない。
+            continue
 
         # 2頭が別馬で、
         # まだ出していないワイドならそのまま確定。
@@ -14401,6 +14642,12 @@ final_bet_symbols = select_bet_alphabet_horses(
     excluded_numbers=kirisute_horse_numbers
 )
 
+# 画面表示を実際の買い目と一致させるため、
+# どの記号セットから最終買い目を作ったかも保持する。
+trio_symbol_source = final_bet_symbols
+wide_symbol_source = final_bet_symbols
+float_symbol_source = final_bet_symbols
+
 trio_bets = make_unique_trio_bets(
     current_bet_template["三連複"],
     final_bet_symbols,
@@ -14426,7 +14673,8 @@ float_bets = make_bets_from_symbols(
 # 園田は逃げ・先行軸のみ3点目A-E-K、それ以外はA-B-K。
 # 笠松・佐賀・水沢・高知は3点目A-B-L。
 # 金沢・名古屋・姫路・門別は3点目A-D-G、A=DならA-B-G。
-# 南関は従来どおり。10頭以上は原則A-B-J追加で三連複3点。
+# 浦和・船橋・川崎の10頭以上はA-B-F追加で三連複3点。
+# 大井の多頭数Jルールは従来どおり維持する。
 # 大井の先行軸／持続軸だけは頭数に関係なく
 # A-B-D / A-G-L / A-D-G の三連複3点へ固定。
 required_trio_count = len(
@@ -14440,6 +14688,7 @@ if len(trio_bets) < required_trio_count:
         current_bet_template["三連複"],
         normal_bet_symbols,
     )
+    trio_symbol_source = normal_bet_symbols
 
 required_wide_count = len(
     current_bet_template[
@@ -14452,12 +14701,14 @@ if len(wide_bets) < required_wide_count:
         current_bet_template["ワイド"],
         normal_bet_symbols,
     )
+    wide_symbol_source = normal_bet_symbols
 
 if len(float_bets) < 1:
     float_bets = make_bets_from_symbols(
         current_bet_template["浮き輪"],
         normal_bet_symbols,
     )
+    float_symbol_source = normal_bet_symbols
 
 
 def make_float_bets_from_pools(
@@ -14577,6 +14828,83 @@ if len(float_bets) < 1:
         current_bet_template["浮き輪"],
         excluded_numbers=kirisute_horse_numbers,
     )
+
+
+# ==================================================
+# 園田のみ・Mを「🌊 展開の向く馬」として画面表示
+#
+# 目的：
+#   買い目にMが出るのに主要5頭表示にMが見えない、という混乱を防ぐ。
+#
+# 方針：
+# ・園田で買い目にMを直接使う時
+#     → 最終買い目用に確定したMを表示
+# ・園田・持続でB候補をMプールへ差し替えている時
+#     → 最終買い目用に確定したB（実体はM候補）を表示
+# ・園田でもMを使わない差し等、および他会場
+#     → 従来の展開馬Bを表示
+#
+# B/Mの取得ロジックや買い目ルール自体は変更しない。
+# ==================================================
+def template_uses_symbol(template, symbol):
+    return any(
+        symbol in symbol_list
+        for bet_group in template.values()
+        for symbol_list in bet_group
+    )
+
+sonoda_directly_uses_m = (
+    baba_name == "園田"
+    and template_uses_symbol(
+        current_bet_template,
+        "M",
+    )
+)
+
+sonoda_display_m_horse = None
+
+if sonoda_directly_uses_m:
+    # 現在の園田ルールではMは三連複で使用。
+    # 斬り捨て等で通常選出へ戻った場合も、実際に使った記号セットへ合わせる。
+    sonoda_display_m_horse = (
+        trio_symbol_source.get("M")
+        or final_bet_symbols.get("M")
+        or normal_bet_symbols.get("M")
+    )
+
+elif sonoda_b_uses_m:
+    # 持続ではBの候補プール自体がM。
+    sonoda_display_m_horse = (
+        trio_symbol_source.get("B")
+        or wide_symbol_source.get("B")
+        or final_bet_symbols.get("B")
+        or normal_bet_symbols.get("B")
+    )
+
+with tenkai_card_placeholder.container():
+    if sonoda_display_m_horse:
+        show_card(
+            "🌊",
+            "展開の向く馬",
+            "M：中間重複＋同距離持ちタイム",
+            sonoda_display_m_horse,
+            "#e0f2fe",
+            "#7dd3fc",
+            "#0369a1"
+        )
+    else:
+        show_card(
+            "🌊",
+            "展開の向く馬",
+            (
+                f"主：{tenkai_best.get('主脚質', tenkai_best.get('候補脚質', '不明'))}"
+                f"｜副：{tenkai_best.get('副脚質表示', 'なし')}"
+            ),
+            tenkai_horse,
+            "#e0f2fe",
+            "#7dd3fc",
+            "#0369a1"
+        )
 
 
 if debug_mode:
@@ -14735,8 +15063,7 @@ if debug_mode:
         ):
             st.write(
                 "🟦 盛岡・差し軸："
-                "浮き輪 K1-K2 "
-                "｜K2なし時はLランキングを繰り下げ"
+                "浮き輪 K-L"
             )
 
 
@@ -14795,7 +15122,19 @@ if debug_mode:
                 f"{current_bet_template['ワイド']}"
             )
 
-        if is_ooi_escape:
+        if (
+            baba_name == "大井"
+            and len(horses) <= 10
+        ):
+            st.write(
+                "🔵 大井・10頭以下："
+                "三連複3点・通常ワイド1点・浮き輪1点"
+            )
+            st.write(
+                f"最終買い目：{current_bet_template}"
+            )
+
+        elif is_ooi_escape:
             st.write(
                 "🔵 大井・逃げ軸："
                 "三連複3点目 A-D-E "
@@ -14823,19 +15162,25 @@ if debug_mode:
                 )
 
         elif is_nankan_large_field:
-            st.write(
-                "🏙 南関10頭以上："
-                "三連複3点目 A-B-J"
-            )
-
-            st.write(
-                "J候補："
-                + (
-                    " → ".join(j_pool)
-                    if j_pool
-                    else "候補なし"
+            if baba_name in {"浦和", "船橋", "川崎"}:
+                st.write(
+                    f"🏙 {baba_name}10頭以上："
+                    "三連複3点目 A-B-F"
                 )
-            )
+            else:
+                st.write(
+                    "🏙 大井10頭以上："
+                    "三連複3点目 A-B-J"
+                )
+
+                st.write(
+                    "J候補："
+                    + (
+                        " → ".join(j_pool)
+                        if j_pool
+                        else "候補なし"
+                    )
+                )
 
         if kyakushoku_type == "先行":
             st.write(
