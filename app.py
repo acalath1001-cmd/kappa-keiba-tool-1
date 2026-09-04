@@ -895,8 +895,25 @@ st.set_page_config(
     layout="centered"
 )
 
+# 既存の競馬場コードを入口画面でも共通利用する。
+keibajo = {
+    "10": "盛岡競馬",
+    "11": "水沢競馬",
+    "18": "浦和競馬",
+    "19": "船橋競馬",
+    "20": "大井競馬",
+    "21": "川崎競馬",
+    "22": "金沢競馬",
+    "23": "笠松競馬",
+    "24": "名古屋競馬",
+    "27": "園田競馬",
+    "28": "姫路競馬",
+    "31": "高知競馬",
+    "32": "佐賀競馬",
+    "36": "門別競馬",
+}
+
 st.title("🐎 地方競馬AI")
-debug_mode = st.checkbox("デバッグ表示")
 
 # ==================================================
 # 全R一括検証用の内部状態
@@ -1407,6 +1424,381 @@ def clear_race_url():
 
 
 # ==================================================
+# 本日の開催会場・レース選択
+#
+# NAR公式「本日のレース」表だけを対象に、
+# 当日の競馬場コードと実在するレース番号を取得する。
+# 前日・翌日以降の開催場や重賞競走のリンクは参照しない。
+# 取得失敗時は例外を入口内で受け止め、従来のURL入力へ進む。
+# ==================================================
+@st.cache_data(ttl=300, show_spinner=False)
+def get_today_race_schedule(race_date):
+    import requests
+    from bs4 import BeautifulSoup
+
+    response = requests.get(
+        (
+            "https://www.keiba.go.jp/KeibaWeb/"
+            "TodayRaceInfo/TodayRaceInfoTop"
+        ),
+        headers={
+            "User-Agent": (
+                "Mozilla/5.0 (compatible; "
+                "KappaKeibaTool/1.0)"
+            )
+        },
+        timeout=10,
+    )
+    response.raise_for_status()
+
+    soup = BeautifulSoup(
+        response.content,
+        "html.parser",
+    )
+
+    # ページ下部には前日・翌日以降の開催場や重賞リンクもあるため、
+    # 「本日のレース」の表だけに取得範囲を限定する。
+    race_table = soup.select_one(
+        "article.todayRace table.today"
+    )
+
+    if race_table is None:
+        raise ValueError(
+            "NAR公式の本日のレース表を取得できませんでした"
+        )
+
+    schedule = {}
+
+    for row in race_table.select("tbody tr"):
+        venue_link = row.select_one(
+            'a[href*="/TodayRaceInfo/RaceList"]'
+        )
+
+        if venue_link is None:
+            continue
+
+        venue_params = parse_qs(
+            urlparse(
+                venue_link.get("href", "")
+            ).query
+        )
+
+        venue_date = venue_params.get(
+            "k_raceDate",
+            [None],
+        )[0]
+        baba_code = venue_params.get(
+            "k_babaCode",
+            [None],
+        )[0]
+
+        # NAR側のURLに入っている日付が、日本時間の今日と
+        # 完全一致する行だけを採用する。
+        if (
+            venue_date != race_date
+            or baba_code not in keibajo
+        ):
+            continue
+
+        race_numbers = set()
+
+        # 当日表の各レースボタンに設定されたURLから、
+        # k_raceDate・k_babaCode・k_raceNoを一組で取得する。
+        for button in row.select("button[onclick]"):
+            onclick = button.get("onclick", "")
+            url_match = re.search(
+                r"location\.href\s*=\s*['\"]([^'\"]+)['\"]",
+                onclick,
+            )
+
+            if url_match is None:
+                continue
+
+            race_url = url_match.group(1)
+            race_path = urlparse(race_url).path
+
+            if not race_path.endswith((
+                "/DebaTable",
+                "/RaceMarkTable",
+            )):
+                continue
+
+            race_params = parse_qs(
+                urlparse(race_url).query
+            )
+
+            race_date_value = race_params.get(
+                "k_raceDate",
+                [None],
+            )[0]
+            race_baba_code = race_params.get(
+                "k_babaCode",
+                [None],
+            )[0]
+            race_no_value = race_params.get(
+                "k_raceNo",
+                [None],
+            )[0]
+
+            if (
+                race_date_value != race_date
+                or race_baba_code != baba_code
+                or race_no_value is None
+            ):
+                continue
+
+            try:
+                race_no_value = int(race_no_value)
+            except (TypeError, ValueError):
+                continue
+
+            if 1 <= race_no_value <= 12:
+                race_numbers.add(race_no_value)
+
+        if race_numbers:
+            schedule[baba_code] = race_numbers
+
+    if not schedule:
+        raise ValueError(
+            f"{race_date}の開催情報を取得できませんでした"
+        )
+
+    return {
+        baba_code: sorted(race_numbers)
+        for baba_code, race_numbers in schedule.items()
+    }
+
+
+def select_today_venue(baba_code):
+    st.session_state.selected_venue = baba_code
+    st.session_state.selected_race = None
+
+
+def select_today_race(race_no_value):
+    baba_code = st.session_state.selected_venue
+    race_date_value = st.session_state.race_picker_date
+
+    race_url = (
+        "https://www.keiba.go.jp/"
+        "KeibaWeb/TodayRaceInfo/DebaTable?"
+        + urlencode({
+            "k_raceDate": race_date_value,
+            "k_raceNo": int(race_no_value),
+            "k_babaCode": baba_code,
+        })
+    )
+
+    st.session_state.selected_race = int(race_no_value)
+    st.session_state.race_url_input = race_url
+    st.session_state.race_url = race_url
+    st.session_state.race_nav_message = ""
+
+    reset_normal_analysis_state()
+    st.session_state.analyzed = True
+
+
+def reselect_today_race():
+    st.session_state.selected_race = None
+    st.session_state.analyzed = False
+
+
+def reselect_today_venue():
+    st.session_state.selected_venue = None
+    st.session_state.selected_race = None
+    st.session_state.analyzed = False
+
+
+def use_manual_race_url():
+    st.session_state.race_picker_manual = True
+    st.session_state.selected_venue = None
+    st.session_state.selected_race = None
+    st.session_state.analyzed = False
+
+
+def use_today_race_picker():
+    st.session_state.race_picker_manual = False
+    st.session_state.selected_venue = None
+    st.session_state.selected_race = None
+    st.session_state.analyzed = False
+
+
+def render_today_race_picker():
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    today_value = datetime.now(
+        ZoneInfo("Asia/Tokyo")
+    ).strftime("%Y/%m/%d")
+
+    # 日付をまたいだセッションでは、前日の選択だけを解除する。
+    if st.session_state.race_picker_date != today_value:
+        st.session_state.race_picker_date = today_value
+        st.session_state.selected_venue = None
+        st.session_state.selected_race = None
+        st.session_state.analyzed = False
+
+    if st.session_state.race_picker_manual:
+        st.button(
+            "🏇 本日の開催から選ぶ",
+            on_click=use_today_race_picker,
+        )
+        return
+
+    try:
+        schedule = get_today_race_schedule(
+            today_value
+        )
+    except Exception:
+        st.warning(
+            "本日の開催情報を取得できませんでした"
+        )
+        st.caption(
+            "従来どおり出馬表URLを入力して利用できます。"
+        )
+        return
+
+    selected_venue = st.session_state.selected_venue
+    selected_race = st.session_state.selected_race
+
+    # キャッシュ更新や日付変更で対象外になった選択を安全に解除する。
+    if selected_venue not in schedule:
+        selected_venue = None
+        selected_race = None
+        st.session_state.selected_venue = None
+        st.session_state.selected_race = None
+        st.session_state.analyzed = False
+
+    if (
+        selected_race is not None
+        and selected_race not in schedule.get(
+            selected_venue,
+            [],
+        )
+    ):
+        selected_race = None
+        st.session_state.selected_race = None
+        st.session_state.analyzed = False
+
+    if selected_venue is None:
+        st.subheader("🏇 本日の開催")
+
+        today_venues = [
+            (baba_code, baba_name)
+            for baba_code, baba_name in keibajo.items()
+            if baba_code in schedule
+        ]
+
+        for row_start in range(
+            0,
+            len(today_venues),
+            4,
+        ):
+            columns = st.columns(4)
+
+            for column, venue_item in zip(
+                columns,
+                today_venues[row_start:row_start + 4],
+            ):
+                baba_code, baba_name = venue_item
+
+                with column:
+                    st.button(
+                        baba_name.removesuffix("競馬"),
+                        key=f"today_venue_{baba_code}",
+                        on_click=select_today_venue,
+                        args=(baba_code,),
+                        use_container_width=True,
+                    )
+
+        st.button(
+            "出馬表URLを直接入力する",
+            on_click=use_manual_race_url,
+        )
+        st.stop()
+
+    venue_name = keibajo[
+        selected_venue
+    ].removesuffix("競馬")
+
+    if selected_race is None:
+        st.subheader(
+            f"🏇 {venue_name}競馬"
+        )
+
+        race_numbers = schedule[
+            selected_venue
+        ]
+
+        for row_start in range(
+            0,
+            len(race_numbers),
+            4,
+        ):
+            columns = st.columns(4)
+
+            for column, race_no_value in zip(
+                columns,
+                race_numbers[row_start:row_start + 4],
+            ):
+                with column:
+                    st.button(
+                        f"{race_no_value}R",
+                        key=(
+                            f"today_race_"
+                            f"{selected_venue}_"
+                            f"{race_no_value}"
+                        ),
+                        on_click=select_today_race,
+                        args=(race_no_value,),
+                        use_container_width=True,
+                    )
+
+        st.button(
+            "← 会場を選び直す",
+            on_click=reselect_today_venue,
+        )
+        st.stop()
+
+    st.subheader(
+        f"🏇 {venue_name} {selected_race}R"
+    )
+
+    back_col1, back_col2 = st.columns(2)
+
+    with back_col1:
+        st.button(
+            "← レースを選び直す",
+            on_click=reselect_today_race,
+            use_container_width=True,
+        )
+
+    with back_col2:
+        st.button(
+            "← 会場を選び直す",
+            on_click=reselect_today_venue,
+            use_container_width=True,
+        )
+
+
+if "selected_venue" not in st.session_state:
+    st.session_state.selected_venue = None
+
+if "selected_race" not in st.session_state:
+    st.session_state.selected_race = None
+
+if "race_picker_date" not in st.session_state:
+    st.session_state.race_picker_date = ""
+
+if "race_picker_manual" not in st.session_state:
+    st.session_state.race_picker_manual = False
+
+
+render_today_race_picker()
+
+debug_mode = st.checkbox("デバッグ表示")
+
+
+# ==================================================
 # URL入力
 # ==================================================
 url = st.text_input(
@@ -1534,22 +1926,6 @@ from bs4 import BeautifulSoup
 
 st.write("分析開始...")
 
-keibajo = {
-    "10": "盛岡競馬",
-    "11": "水沢競馬",
-    "18": "浦和競馬",
-    "19": "船橋競馬",
-    "20": "大井競馬",
-    "21": "川崎競馬",
-    "22": "金沢競馬",
-    "23": "笠松競馬",
-    "24": "名古屋競馬",
-    "27": "園田競馬",
-    "28": "姫路競馬",
-    "31": "高知競馬",
-    "32": "佐賀競馬",
-    "36": "門別競馬",
-}
 LOCAL_PLACES = [
     "帯広", "盛岡", "水沢", "浦和", "船橋",
     "大井", "川崎", "金沢", "笠松", "名古屋",
@@ -10795,18 +11171,6 @@ def add_ana_fallback(horse_no, horse_name):
     if horse_no == popular_horse_num:
         return
 
-    # 現在選択されている斬り捨て御免馬
-    current_kirisute_numbers = {
-        int(horse_text.split("番")[0])
-        for horse_text in st.session_state.get(
-            "kirisute_horses",
-            []
-        )
-    }
-
-    if horse_no in current_kirisute_numbers:
-        return
-
     # 同じ馬は追加しない
     if any(
         h["馬番"] == horse_no
@@ -11010,54 +11374,9 @@ show_card(
     "#fed7aa",
     "#f97316"
 )
-# ==================================================
-# 斬り捨て御免馬
-# 分析結果には影響させず、最終買い目からだけ除外する
-# ==================================================
-
-kirisute_options = [
-    f"{h['馬番']}番 {h['馬名']}"
-    for h in horses
-    if h["馬番"] != popular_horse_num
-]
-
-if "kirisute_limit_warning" not in st.session_state:
-    st.session_state.kirisute_limit_warning = False
-
-def limit_kirisute_horses():
-    selected = st.session_state.get(
-        "kirisute_horses",
-        []
-    )
-
-    if len(selected) > 2:
-        st.session_state.kirisute_horses = selected[:2]
-        st.session_state.kirisute_limit_warning = True
-    else:
-        st.session_state.kirisute_limit_warning = False
-
-with st.expander(
-    "⚔️ 斬り捨て御免馬（任意で斬りたい馬を選択）",
-    expanded=False
-):
-    kirisute_horses = st.multiselect(
-        "斬り捨て御免馬",
-        options=kirisute_options,
-        placeholder="斬りたい馬を選択",
-        label_visibility="collapsed",
-        key="kirisute_horses",
-        on_change=limit_kirisute_horses,
-    )
-
-    if st.session_state.kirisute_limit_warning:
-        st.warning(
-            "⚠️ 斬り捨て御免馬は2頭までです"
-        )
-
-kirisute_horse_numbers = {
-    int(horse_text.split("番")[0])
-    for horse_text in kirisute_horses
-}
+# 斬り捨て御免馬の入力欄は廃止。
+# 後段の既存買い目生成は変えず、除外対象だけ常に空にする。
+kirisute_horse_numbers = set()
 def get_num(horse_text):
     return int(horse_text.split("番")[0])
 
@@ -11544,8 +11863,12 @@ current_bet_template[
 # 1点目 A-B-I
 # 2点目 A-F-E
 #
-# 先行軸・持続軸
+# 先行軸
 # 2点目 A-C-I
+#
+# 持続軸
+# 2点目 A-D-I
+# 3点目 A-C-G
 #
 # 逃げ軸
 # 2点目 A-J-G
@@ -11574,10 +11897,7 @@ if baba_name == "門別":
             "E",
         ]
 
-    elif kyakushoku_type in {
-        "先行",
-        "持続",
-    }:
+    elif kyakushoku_type == "先行":
         current_bet_template[
             "三連複"
         ][1] = [
@@ -11585,6 +11905,25 @@ if baba_name == "門別":
             "C",
             "I",
         ]
+
+    elif kyakushoku_type == "持続":
+        current_bet_template[
+            "三連複"
+        ][1] = [
+            "A",
+            "D",
+            "I",
+        ]
+
+        # 門別・持続だけ3点目を A-C-G にする。
+        if len(current_bet_template["三連複"]) >= 3:
+            current_bet_template[
+                "三連複"
+            ][2] = [
+                "A",
+                "C",
+                "G",
+            ]
 
     elif kyakushoku_type == "逃げ":
         current_bet_template[
@@ -12518,7 +12857,7 @@ def build_monbetsu_axis_bet_override(context):
     rules = {
         "前受け": {
             "三連複": [
-                ["A", "B", "I"],
+                ["A", "B", "E"],
                 ["A", "C", "I"],
             ],
             "ワイド": [["A", "G"]],
@@ -12527,7 +12866,7 @@ def build_monbetsu_axis_bet_override(context):
         "持続": {
             "三連複": [
                 ["A", "B", "C"],
-                ["A", "C", "I"],
+                ["A", "D", "I"],
             ],
             "ワイド": [["D", "C"]],
             "浮き輪": [["E", "D"]],
@@ -12547,10 +12886,13 @@ def build_monbetsu_axis_bet_override(context):
         for bet_type, bets in rules[axis_type].items()
     }
 
-    # 門別・軸前受けだけ三連複3点目を A-E-G にする。
-    # 持続・差しは従来の D=A 重複回避付き3点目を維持する。
+    # 門別・前受けは3点目 A-E-G。
+    # 門別・持続は3点目 A-C-G。
+    # 差しだけ従来の D=A 重複回避付き3点目を維持する。
     if axis_type == "前受け":
         result["三連複"].append(["A", "E", "G"])
+    elif axis_type == "持続":
+        result["三連複"].append(["A", "C", "G"])
     else:
         result["三連複"].append(third_trio)
 
@@ -15253,6 +15595,61 @@ for bet in trio_bets:
         f"{bet[0]} - {bet[1]} - {bet[2]}"
     )
 
+# 通常買い目とは完全に独立した、使用者の追加1点。
+all_horse_options = [
+    f"{h['馬番']}番 {h['馬名']}"
+    for h in horses
+]
+unselected_option = "未選択"
+
+st.markdown("#### 三連複オリジナル")
+st.caption(f"軸馬：{popular_horse_label}")
+
+original_trio_options = [
+    horse_label
+    for horse_label in all_horse_options
+    if get_num(horse_label) != popular_horse_num
+]
+
+if st.session_state.get("original_trio_first") not in (
+    [unselected_option] + original_trio_options
+):
+    st.session_state.pop("original_trio_first", None)
+
+trio_original_col1, trio_original_col2 = st.columns(2)
+
+with trio_original_col1:
+    original_trio_first = st.selectbox(
+        "相手馬1",
+        [unselected_option] + original_trio_options,
+        key="original_trio_first",
+    )
+
+with trio_original_col2:
+    original_trio_second_options = [
+        horse_label
+        for horse_label in original_trio_options
+        if horse_label != original_trio_first
+    ]
+    if st.session_state.get("original_trio_second") not in (
+        [unselected_option] + original_trio_second_options
+    ):
+        st.session_state.pop("original_trio_second", None)
+    original_trio_second = st.selectbox(
+        "相手馬2",
+        [unselected_option] + original_trio_second_options,
+        key="original_trio_second",
+    )
+
+if (
+    original_trio_first != unselected_option
+    and original_trio_second != unselected_option
+):
+    st.write(
+        f"{popular_horse_label} - "
+        f"{original_trio_first} - {original_trio_second}"
+    )
+
 st.subheader(
     f"おすすめのワイド {len(wide_bets)}点"
 )
@@ -15260,6 +15657,46 @@ st.subheader(
 for bet in wide_bets:
     st.write(
         f"{bet[0]} - {bet[1]}"
+    )
+
+st.markdown("#### ワイドオリジナル")
+
+if st.session_state.get("original_wide_first") not in (
+    [unselected_option] + all_horse_options
+):
+    st.session_state.pop("original_wide_first", None)
+
+wide_original_col1, wide_original_col2 = st.columns(2)
+
+with wide_original_col1:
+    original_wide_first = st.selectbox(
+        "馬1",
+        [unselected_option] + all_horse_options,
+        key="original_wide_first",
+    )
+
+with wide_original_col2:
+    original_wide_second_options = [
+        horse_label
+        for horse_label in all_horse_options
+        if horse_label != original_wide_first
+    ]
+    if st.session_state.get("original_wide_second") not in (
+        [unselected_option] + original_wide_second_options
+    ):
+        st.session_state.pop("original_wide_second", None)
+    original_wide_second = st.selectbox(
+        "馬2",
+        [unselected_option] + original_wide_second_options,
+        key="original_wide_second",
+    )
+
+if (
+    original_wide_first != unselected_option
+    and original_wide_second != unselected_option
+):
+    st.write(
+        f"{original_wide_first} - {original_wide_second}"
     )
 
 st.markdown("### 🛟 カッパの浮き輪保険")
