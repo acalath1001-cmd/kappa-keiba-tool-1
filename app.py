@@ -1429,9 +1429,13 @@ def clear_race_url():
 # NAR公式「本日のレース」表だけを対象に、
 # 当日の競馬場コードと実在するレース番号を取得する。
 # 前日・翌日以降の開催場や重賞競走のリンクは参照しない。
+#
+# 終了済み判定は時刻の推測ではなく、
+# NAR側の各Rリンクが「競走成績 RaceMarkTable」に
+# 切り替わっているかで判定する。
 # 取得失敗時は例外を入口内で受け止め、従来のURL入力へ進む。
 # ==================================================
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=60, show_spinner=False)
 def get_today_race_schedule(race_date):
     import requests
     from bs4 import BeautifulSoup
@@ -1468,6 +1472,7 @@ def get_today_race_schedule(race_date):
         )
 
     schedule = {}
+    finished_races = {}
 
     for row in race_table.select("tbody tr"):
         venue_link = row.select_one(
@@ -1501,9 +1506,11 @@ def get_today_race_schedule(race_date):
             continue
 
         race_numbers = set()
+        venue_finished_races = set()
 
         # 当日表の各レースボタンに設定されたURLから、
         # k_raceDate・k_babaCode・k_raceNoを一組で取得する。
+        # RaceMarkTableへ切り替わったRは「終了済み」として保持する。
         for button in row.select("button[onclick]"):
             onclick = button.get("onclick", "")
             url_match = re.search(
@@ -1555,18 +1562,232 @@ def get_today_race_schedule(race_date):
             if 1 <= race_no_value <= 12:
                 race_numbers.add(race_no_value)
 
+                if race_path.endswith("/RaceMarkTable"):
+                    venue_finished_races.add(
+                        race_no_value
+                    )
+
         if race_numbers:
             schedule[baba_code] = race_numbers
+            finished_races[baba_code] = (
+                venue_finished_races
+            )
 
     if not schedule:
         raise ValueError(
             f"{race_date}の開催情報を取得できませんでした"
         )
 
-    return {
+    sorted_schedule = {
         baba_code: sorted(race_numbers)
         for baba_code, race_numbers in schedule.items()
     }
+
+    sorted_finished_races = {
+        baba_code: sorted(race_numbers)
+        for baba_code, race_numbers in finished_races.items()
+    }
+
+    return sorted_schedule, sorted_finished_races
+
+
+@st.cache_data(ttl=30, show_spinner=False)
+def get_current_first_favorite_from_win_odds(
+    race_date_value,
+    baba_code,
+    race_no_value,
+):
+    """
+    NAR公式の単勝・複勝オッズから、現在の単勝1番人気を取得する。
+
+    オッズ未発表・取得失敗時は None を返す。
+    予想ロジックには使わず、入口で軸馬の初期値を自動セットするためだけに使う。
+    """
+    import requests
+    from bs4 import BeautifulSoup
+
+    try:
+        odds_url = (
+            "https://www.keiba.go.jp/KeibaWeb/"
+            "TodayRaceInfo/OddsTanFuku"
+        )
+
+        response = requests.get(
+            odds_url,
+            params={
+                "k_raceDate": race_date_value,
+                "k_raceNo": int(race_no_value),
+                "k_babaCode": baba_code,
+                # 人気順。NAR側で人気列が表示されるため、
+                # 1番人気を直接拾いやすくする。
+                "odds_flg": 5,
+            },
+            headers={
+                "User-Agent": (
+                    "Mozilla/5.0 (compatible; "
+                    "KappaKeibaTool/1.0)"
+                )
+            },
+            timeout=8,
+        )
+        response.raise_for_status()
+
+        soup = BeautifulSoup(
+            response.content,
+            "html.parser",
+        )
+
+        # --------------------------------------------------
+        # 1) 人気列がある表なら「人気=1」を直接取得
+        # 2) 人気列が取れない場合は単勝オッズ最小をフォールバック
+        # --------------------------------------------------
+        fallback_candidates = []
+
+        for table in soup.find_all("table"):
+            rows = table.find_all("tr")
+            header_map = None
+
+            for row_index, row in enumerate(rows):
+                header_cells = row.find_all(["th", "td"])
+                header_texts = [
+                    re.sub(
+                        r"\s+",
+                        "",
+                        cell.get_text(" ", strip=True),
+                    )
+                    for cell in header_cells
+                ]
+
+                horse_no_index = next(
+                    (
+                        i
+                        for i, value in enumerate(header_texts)
+                        if value == "馬番"
+                    ),
+                    None,
+                )
+                win_odds_index = next(
+                    (
+                        i
+                        for i, value in enumerate(header_texts)
+                        if "単勝" in value
+                        and "オッズ" in value
+                    ),
+                    None,
+                )
+                popularity_index = next(
+                    (
+                        i
+                        for i, value in enumerate(header_texts)
+                        if value == "人気"
+                    ),
+                    None,
+                )
+
+                if (
+                    horse_no_index is not None
+                    and win_odds_index is not None
+                ):
+                    header_map = {
+                        "row_index": row_index,
+                        "馬番": horse_no_index,
+                        "単勝": win_odds_index,
+                        "人気": popularity_index,
+                    }
+                    break
+
+            if header_map is None:
+                continue
+
+            for row in rows[header_map["row_index"] + 1:]:
+                cells = row.find_all(["td", "th"])
+                texts = [
+                    re.sub(
+                        r"\s+",
+                        "",
+                        cell.get_text(" ", strip=True),
+                    )
+                    for cell in cells
+                ]
+
+                required_index = max(
+                    header_map["馬番"],
+                    header_map["単勝"],
+                    header_map["人気"]
+                    if header_map["人気"] is not None
+                    else 0,
+                )
+
+                if len(texts) <= required_index:
+                    continue
+
+                try:
+                    horse_no = int(
+                        re.sub(
+                            r"[^0-9]",
+                            "",
+                            texts[header_map["馬番"]],
+                        )
+                    )
+                except (TypeError, ValueError):
+                    continue
+
+                win_odds_text = texts[
+                    header_map["単勝"]
+                ].replace(",", "")
+
+                odds_match = re.search(
+                    r"\d+(?:\.\d+)?",
+                    win_odds_text,
+                )
+                if odds_match is None:
+                    continue
+
+                try:
+                    win_odds = float(
+                        odds_match.group(0)
+                    )
+                except ValueError:
+                    continue
+
+                if win_odds <= 0:
+                    continue
+
+                popularity_index = header_map["人気"]
+                if popularity_index is not None:
+                    popularity_match = re.search(
+                        r"\d+",
+                        texts[popularity_index],
+                    )
+                    if (
+                        popularity_match is not None
+                        and int(popularity_match.group(0)) == 1
+                    ):
+                        return {
+                            "馬番": horse_no,
+                            "単勝": win_odds,
+                            "取得方法": "人気1位",
+                        }
+
+                fallback_candidates.append(
+                    (win_odds, horse_no)
+                )
+
+        if fallback_candidates:
+            win_odds, horse_no = min(
+                fallback_candidates,
+                key=lambda item: (item[0], item[1]),
+            )
+            return {
+                "馬番": horse_no,
+                "単勝": win_odds,
+                "取得方法": "単勝最小",
+            }
+
+        return None
+
+    except Exception:
+        return None
 
 
 def select_today_venue(baba_code):
@@ -1587,6 +1808,30 @@ def select_today_race(race_no_value):
             "k_babaCode": baba_code,
         })
     )
+
+    # レースボタンを押した瞬間の単勝1番人気を自動取得。
+    # オッズ未発表なら従来どおり1番を初期値にして、手動変更できる。
+    current_favorite = get_current_first_favorite_from_win_odds(
+        race_date_value,
+        baba_code,
+        race_no_value,
+    )
+
+    race_key = (
+        f"{race_date_value}|"
+        f"{baba_code}|"
+        f"{int(race_no_value)}"
+    )
+
+    st.session_state.auto_axis_race_key = race_key
+    st.session_state.auto_axis_info = current_favorite
+
+    if current_favorite is not None:
+        st.session_state.axis_horse_input = int(
+            current_favorite["馬番"]
+        )
+    else:
+        st.session_state.axis_horse_input = 1
 
     st.session_state.selected_race = int(race_no_value)
     st.session_state.race_url_input = race_url
@@ -1645,7 +1890,10 @@ def render_today_race_picker():
         return
 
     try:
-        schedule = get_today_race_schedule(
+        (
+            schedule,
+            finished_races,
+        ) = get_today_race_schedule(
             today_value
         )
     except Exception:
@@ -1728,6 +1976,12 @@ def render_today_race_picker():
         race_numbers = schedule[
             selected_venue
         ]
+        venue_finished_races = set(
+            finished_races.get(
+                selected_venue,
+                [],
+            )
+        )
 
         for row_start in range(
             0,
@@ -1741,8 +1995,15 @@ def render_today_race_picker():
                 race_numbers[row_start:row_start + 4],
             ):
                 with column:
+                    race_label = (
+                        f"{race_no_value}R 済"
+                        if race_no_value
+                        in venue_finished_races
+                        else f"{race_no_value}R"
+                    )
+
                     st.button(
-                        f"{race_no_value}R",
+                        race_label,
                         key=(
                             f"today_race_"
                             f"{selected_venue}_"
@@ -1791,6 +2052,15 @@ if "race_picker_date" not in st.session_state:
 
 if "race_picker_manual" not in st.session_state:
     st.session_state.race_picker_manual = False
+
+if "axis_horse_input" not in st.session_state:
+    st.session_state.axis_horse_input = 1
+
+if "auto_axis_race_key" not in st.session_state:
+    st.session_state.auto_axis_race_key = ""
+
+if "auto_axis_info" not in st.session_state:
+    st.session_state.auto_axis_info = None
 
 
 render_today_race_picker()
@@ -3656,13 +3926,66 @@ if st.session_state.batch_mode:
 
 else:
 
+    # 会場→レースボタンから入った場合は、
+    # ボタン押下時点の単勝1番人気を初期値として自動セットする。
+    # ただし使用者はこの入力欄から自由に変更できる。
+    if st.session_state.axis_horse_input > len(real_horses):
+        st.session_state.axis_horse_input = 1
+
     popular_horse_num = st.number_input(
         "軸馬の馬番",
         min_value=1,
         max_value=len(real_horses),
-        value=1,
-        step=1
+        step=1,
+        key="axis_horse_input",
     )
+
+    current_axis_race_key = (
+        f"{race_date}|"
+        f"{params.get('k_babaCode', [''])[0]}|"
+        f"{race_no}"
+    )
+
+    auto_axis_info = (
+        st.session_state.auto_axis_info
+        if st.session_state.auto_axis_race_key
+        == current_axis_race_key
+        else None
+    )
+
+    if auto_axis_info is not None:
+        auto_axis_num = int(
+            auto_axis_info["馬番"]
+        )
+        auto_axis_odds = auto_axis_info.get(
+            "単勝"
+        )
+
+        if int(popular_horse_num) == auto_axis_num:
+            st.success(
+                f"🎯 現在の単勝1番人気 "
+                f"{auto_axis_num}番を自動で軸にセットしました"
+                + (
+                    f"（単勝 {auto_axis_odds:.1f}倍）"
+                    if isinstance(auto_axis_odds, (int, float))
+                    else ""
+                )
+            )
+        else:
+            st.caption(
+                f"自動取得時の単勝1番人気は "
+                f"{auto_axis_num}番"
+                + (
+                    f"（{auto_axis_odds:.1f}倍）"
+                    if isinstance(auto_axis_odds, (int, float))
+                    else ""
+                )
+                + "。現在は手動で軸を変更しています。"
+            )
+    elif st.session_state.auto_axis_race_key == current_axis_race_key:
+        st.caption(
+            "単勝オッズがまだ出ていないため、軸馬は手動選択です。"
+        )
 
 # 出走取消・競走除外馬は軸にできない
 active_horse_numbers = {
@@ -12908,7 +13231,7 @@ def build_ooi_axis_bet_override(context):
         "前受け": {
             "三連複": [
                 ["A", "B", "D"],
-                ["A", "G", "L"],
+                ["A", "F", "L"],
                 ["A", "D", "G"],
             ],
             "ワイド": [
@@ -13018,7 +13341,7 @@ def build_sonoda_axis_bet_override(context):
     # 距離短縮補正で強化した通常Bを買い目へ直接使う。
     #
     # 1点目：A-B-D ＝ 軸＋展開＋先行（前残り筋）
-    # 2点目：A-D-C ＝ 先行＋地力（固め）
+    # 2点目：A-F-I ＝ 後詰め＋押上
     # 3点目：A-M-D
     sonoda_front_first_trio = (
         ["A", "B", "D"]
@@ -13030,7 +13353,7 @@ def build_sonoda_axis_bet_override(context):
         "前受け": {
             "三連複": [
                 sonoda_front_first_trio,
-                ["A", "D", "C"],
+                ["A", "F", "I"],
                 ["A", "M", "D"],
             ],
             "ワイド": [["A", "I"]],
@@ -13061,7 +13384,7 @@ def build_sonoda_axis_bet_override(context):
         for bet_type, bets in rules[axis_type].items()
     }
 
-    # 園田・軸先行だけ、三連複2点目を A-M-I にする。
+    # 園田・軸先行だけ、三連複2点目を A-F-I にする。
     # 「前受け」全体を書き換えず、逃げ軸には影響させない。
     if (
         axis_type == "前受け"
@@ -13069,7 +13392,7 @@ def build_sonoda_axis_bet_override(context):
     ):
         result["三連複"][1] = [
             "A",
-            "M",
+            "F",
             "I",
         ]
 
@@ -15584,6 +15907,320 @@ if debug_mode:
         )
 
 # ==================================================
+# NAR公式オッズ取得
+#
+# NAR公式スマホ版の人気順オッズを第一候補として取得する。
+# スマホ版の正式ホストは sp.keiba.go.jp。
+# 取得できない場合だけPC版へフォールバックする。
+#
+# ・三連複：単一倍率（例 18.6倍）
+# ・ワイド：下限〜上限（例 3.4〜3.8倍）
+# ・オッズ未発表 / 取得失敗時は何も表示しない
+# ・予想ロジックや買い目生成には一切使わない
+# ==================================================
+
+def _normalize_odds_text(value):
+    return (
+        str(value or "")
+        .replace("　", "")
+        .replace("−", "-")
+        .replace("－", "-")
+        .replace("–", "-")
+        .replace("—", "-")
+        .replace("～", "-")
+        .replace("〜", "-")
+        .strip()
+    )
+
+
+def _parse_mobile_trio_odds_page(soup):
+    """三連複の人気順表を {(1,2,3): 18.6} にする。"""
+    odds_map = {}
+
+    for row in soup.find_all("tr"):
+        row_text = " ".join(
+            cell.get_text(" ", strip=True)
+            for cell in row.find_all(["th", "td"])
+        )
+        row_text = _normalize_odds_text(row_text)
+
+        if not row_text:
+            continue
+
+        combo_match = re.search(
+            r"(?<!\d)(\d{1,2})\s*-\s*(\d{1,2})\s*-\s*(\d{1,2})(?!\d)",
+            row_text,
+        )
+        if combo_match is None:
+            continue
+
+        combo_numbers = tuple(
+            sorted(int(combo_match.group(i)) for i in (1, 2, 3))
+        )
+        if len(set(combo_numbers)) != 3:
+            continue
+
+        # 組合せより後ろにある最初の数値が三連複オッズ。
+        suffix = row_text[combo_match.end():]
+        odds_match = re.search(r"\d+(?:\.\d+)?", suffix)
+        if odds_match is None:
+            continue
+
+        try:
+            odds_value = float(odds_match.group(0))
+        except (TypeError, ValueError):
+            continue
+
+        if odds_value > 0:
+            odds_map[combo_numbers] = odds_value
+
+    return odds_map
+
+
+def _parse_mobile_wide_odds_page(soup):
+    """ワイドの人気順表を {(1,2): (3.4,3.8)} にする。"""
+    odds_map = {}
+
+    for row in soup.find_all("tr"):
+        row_text = " ".join(
+            cell.get_text(" ", strip=True)
+            for cell in row.find_all(["th", "td"])
+        )
+        row_text = _normalize_odds_text(row_text)
+
+        if not row_text:
+            continue
+
+        combo_match = re.search(
+            r"(?<!\d)(\d{1,2})\s*-\s*(\d{1,2})(?!\s*-\s*\d)(?!\d)",
+            row_text,
+        )
+        if combo_match is None:
+            continue
+
+        combo_numbers = tuple(
+            sorted((int(combo_match.group(1)), int(combo_match.group(2))))
+        )
+        if len(set(combo_numbers)) != 2:
+            continue
+
+        # 組合せより後ろの「下限-上限」を取得。
+        suffix = row_text[combo_match.end():]
+        range_match = re.search(
+            r"(\d+(?:\.\d+)?)\s*-\s*(\d+(?:\.\d+)?)",
+            suffix,
+        )
+        if range_match is None:
+            continue
+
+        try:
+            low = float(range_match.group(1))
+            high = float(range_match.group(2))
+        except (TypeError, ValueError):
+            continue
+
+        if low <= 0 or high <= 0:
+            continue
+
+        if low > high:
+            low, high = high, low
+
+        odds_map[combo_numbers] = (low, high)
+
+    return odds_map
+
+
+@st.cache_data(ttl=30, show_spinner=False)
+def get_official_bet_odds(source_url):
+    """
+    NAR公式から三連複・ワイドの現在オッズを取得する。
+
+    第一候補：sp.keiba.go.jp のスマホ版人気順ページ
+    第二候補：www.keiba.go.jp のPC版ページ
+
+    三連複とワイドは個別に取得するため、片方の失敗で
+    もう片方まで空になることはない。
+    """
+    import requests
+    from bs4 import BeautifulSoup
+
+    result = {
+        "三連複": {},
+        "ワイド": {},
+        "取得元": {},
+        "エラー": {},
+    }
+
+    try:
+        parsed = urlparse(source_url)
+        params = parse_qs(parsed.query)
+
+        race_date_value = params.get("k_raceDate", [None])[0]
+        race_no_value = params.get("k_raceNo", [None])[0]
+        baba_code_value = params.get("k_babaCode", [None])[0]
+    except Exception:
+        return result
+
+    if not all((race_date_value, race_no_value, baba_code_value)):
+        return result
+
+    common_params = {
+        "k_raceDate": race_date_value,
+        "k_raceNo": race_no_value,
+        "k_babaCode": baba_code_value,
+    }
+
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
+            "AppleWebKit/605.1.15 Version/17.0 Mobile/15E148 Safari/604.1"
+        ),
+        "Accept-Language": "ja-JP,ja;q=0.9",
+    }
+
+    # PC版は全組合せ表を持っているため先に取得し、
+    # スマホ版は現在表示されている人気順オッズを補助として重ねる。
+    # 以前はスマホ版で1件でも取れると break していたため、
+    # 上位人気にない組合せ（例：2-3-6）が辞書に入らないことがあった。
+    targets = {
+        "三連複": {
+            "parser": _parse_mobile_trio_odds_page,
+            "urls": [
+                "https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/Odds3LenFuku",
+                "https://sp.keiba.go.jp/KeibaWebSP/TodayRaceInfo/S_Odds3LenFuku",
+            ],
+        },
+        "ワイド": {
+            "parser": _parse_mobile_wide_odds_page,
+            "urls": [
+                "https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/OddsWide",
+                "https://sp.keiba.go.jp/KeibaWebSP/TodayRaceInfo/S_OddsWide",
+            ],
+        },
+    }
+
+    for bet_type, target in targets.items():
+        errors = []
+        merged_odds = {}
+        source_urls = []
+
+        for odds_url in target["urls"]:
+            try:
+                request_params = dict(common_params)
+
+                # PC版は人気順の一覧表を指定。
+                # 一覧は25件ずつのブロックでもHTML内には全件存在するため、
+                # 高配当の組合せまでまとめて取得できる。
+                if "/KeibaWeb/" in odds_url:
+                    request_params["odds_flg"] = 5
+
+                response = requests.get(
+                    odds_url,
+                    params=request_params,
+                    headers=headers,
+                    timeout=10,
+                    allow_redirects=True,
+                )
+                response.raise_for_status()
+
+                soup = BeautifulSoup(response.content, "html.parser")
+                odds_map = target["parser"](soup)
+
+                if odds_map:
+                    # PC版の全件を土台にし、後から取得したスマホ版の
+                    # 同一組合せだけ最新値として上書きする。
+                    merged_odds.update(odds_map)
+                    source_urls.append(response.url)
+                else:
+                    errors.append(
+                        f"{odds_url}：HTTP{response.status_code}・オッズ0件"
+                    )
+
+            except Exception as exc:
+                errors.append(
+                    f"{odds_url}：{type(exc).__name__}"
+                )
+
+        result[bet_type] = merged_odds
+
+        if source_urls:
+            result["取得元"][bet_type] = source_urls
+
+        if errors and not merged_odds:
+            result["エラー"][bet_type] = errors
+
+    return result
+
+
+def get_trio_odds_suffix(bet, trio_odds_map):
+    try:
+        key = tuple(sorted(get_num(horse_text) for horse_text in bet))
+    except Exception:
+        return ""
+
+    odds_value = trio_odds_map.get(key)
+    if odds_value is None:
+        return ""
+
+    return f"（{odds_value:.1f}倍）"
+
+
+def get_wide_odds_suffix(bet, wide_odds_map):
+    try:
+        key = tuple(sorted(get_num(horse_text) for horse_text in bet))
+    except Exception:
+        return ""
+
+    odds_value = wide_odds_map.get(key)
+    if odds_value is None:
+        return ""
+
+    low, high = odds_value
+    return f"（{low:.1f}〜{high:.1f}倍）"
+
+
+# 一括検証では倍率表示を使わないため、NAR公式オッズ通信を完全に省略する。
+# 通常分析では従来どおり三連複・ワイドの現在オッズを取得する。
+if st.session_state.get("batch_mode", False):
+    official_bet_odds = {
+        "三連複": {},
+        "ワイド": {},
+    }
+else:
+    official_bet_odds = get_official_bet_odds(url)
+
+trio_odds_map = official_bet_odds.get("三連複", {})
+wide_odds_map = official_bet_odds.get("ワイド", {})
+
+if debug_mode:
+    st.caption(
+        "公式オッズ取得｜"
+        f"三連複 {len(trio_odds_map)}件｜"
+        f"ワイド {len(wide_odds_map)}件"
+    )
+
+    odds_sources = official_bet_odds.get("取得元", {})
+    if odds_sources:
+        st.caption(
+            "オッズ取得元｜"
+            + "｜".join(
+                f"{bet_type}:"
+                + (" / ".join(source) if isinstance(source, list) else str(source))
+                for bet_type, source in odds_sources.items()
+            )
+        )
+
+    odds_errors = official_bet_odds.get("エラー", {})
+    if odds_errors:
+        st.caption(
+            "オッズ取得エラー｜"
+            + "｜".join(
+                f"{bet_type}:{' / '.join(messages)}"
+                for bet_type, messages in odds_errors.items()
+            )
+        )
+
+# ==================================================
 # 最終表示
 # ==================================================
 st.subheader(
@@ -15593,6 +16230,10 @@ st.subheader(
 for bet in trio_bets:
     st.write(
         f"{bet[0]} - {bet[1]} - {bet[2]}"
+        + get_trio_odds_suffix(
+            bet,
+            trio_odds_map,
+        )
     )
 
 # 通常買い目とは完全に独立した、使用者の追加1点。
@@ -15645,9 +16286,18 @@ if (
     original_trio_first != unselected_option
     and original_trio_second != unselected_option
 ):
+    original_trio_bet = (
+        popular_horse_label,
+        original_trio_first,
+        original_trio_second,
+    )
     st.write(
         f"{popular_horse_label} - "
         f"{original_trio_first} - {original_trio_second}"
+        + get_trio_odds_suffix(
+            original_trio_bet,
+            trio_odds_map,
+        )
     )
 
 st.subheader(
@@ -15657,6 +16307,10 @@ st.subheader(
 for bet in wide_bets:
     st.write(
         f"{bet[0]} - {bet[1]}"
+        + get_wide_odds_suffix(
+            bet,
+            wide_odds_map,
+        )
     )
 
 st.markdown("#### ワイドオリジナル")
@@ -15695,8 +16349,16 @@ if (
     original_wide_first != unselected_option
     and original_wide_second != unselected_option
 ):
+    original_wide_bet = (
+        original_wide_first,
+        original_wide_second,
+    )
     st.write(
         f"{original_wide_first} - {original_wide_second}"
+        + get_wide_odds_suffix(
+            original_wide_bet,
+            wide_odds_map,
+        )
     )
 
 st.markdown("### 🛟 カッパの浮き輪保険")
@@ -15704,6 +16366,10 @@ st.markdown("### 🛟 カッパの浮き輪保険")
 for bet in float_bets:
     st.write(
         f"{bet[0]} - {bet[1]}"
+        + get_wide_odds_suffix(
+            bet,
+            wide_odds_map,
+        )
     )
 
 st.caption(
