@@ -13083,11 +13083,60 @@ def build_kochi_saga_axis_bet_override(context):
     remove_ab_wide_keep_second(result)
     result["三連複"].append(["A", "B", "L"])
 
+    # --------------------------------------------------
+    # 高知限定・軸に「持続」が入っている時
+    #
+    # 主脚質が持続、または内部の副脚質タグに持続がある場合、
+    # 三連複3点目を A-G-K に固定する。
+    #
+    # 例：
+    # ・主：持続｜副：○○
+    # ・主：先行｜副：持続
+    # ・主：差し｜副脚質内に持続
+    #
+    # 高知だけの差分で、佐賀・他会場には影響させない。
+    # --------------------------------------------------
+    kochi_axis_has_sustain = (
+        context["track"] == "高知"
+        and (
+            context.get("axis_primary") == "持続"
+            or "持続" in context.get(
+                "axis_secondary_tags",
+                frozenset(),
+            )
+        )
+    )
+
+    if kochi_axis_has_sustain:
+        result["三連複"][2] = ["A", "G", "K"]
+
+    # 高知限定・軸が前受けの時は、
+    # ワイド A-E の1点だけを A-M に変更する。
+    if (
+        context["track"] == "高知"
+        and context["axis_type"] == "前受け"
+    ):
+        result["ワイド"] = [["A", "M"]]
+
+    # 高知限定・軸が差しの時は、
+    # 三連複2点目を A-M-L に変更する。
+    # 3点目 A-F-C は既存どおり維持する。
+    if (
+        context["track"] == "高知"
+        and context["axis_type"] == "差し"
+    ):
+        result["三連複"][1] = ["A", "M", "L"]
+        result["三連複"][2] = ["A", "F", "C"]
+
     if (
         context["track"] == "佐賀"
         and context["axis_type"] == "前受け"
     ):
+        # 佐賀・前受けの既存1点目 A-B-L は維持する。
         result["三連複"][0] = ["A", "B", "L"]
+
+        # 今回の変更は3点目だけ。
+        result["三連複"][2] = ["A", "M", "L"]
 
     # 佐賀・差しだけ2点目を A-D-G に固定する。
     # 共通側のA≠F時のA-F-I差し替えより後で上書きするため、
@@ -14341,6 +14390,47 @@ def build_symbol_conflicts(template):
                                 and bet_type == "ワイド"
                                 and symbol_list == ["A", "F"]
                                 and {symbol, other_symbol} == {"A", "F"}
+                            )
+                            or (
+                                # 高知・前受けのワイド A-M 専用。
+                                # AとMが同じ馬でもM本体の順位は動かさず、
+                                # ワイド生成時だけ次候補へ繰り下げる。
+                                baba_name == "高知"
+                                and bet_axis_type == "前受け"
+                                and bet_type == "ワイド"
+                                and symbol_list == ["A", "M"]
+                                and {symbol, other_symbol} == {"A", "M"}
+                            )
+                            or (
+                                # 高知・差しの三連複2点目 A-M-L 専用。
+                                # 新しい買い目を追加したことでA/M/L本体の
+                                # 選出順位が動かないよう、競合解消は
+                                # make_unique_trio_bets() 内だけで行う。
+                                baba_name == "高知"
+                                and bet_axis_type == "差し"
+                                and bet_type == "三連複"
+                                and symbol_list == ["A", "M", "L"]
+                                and {symbol, other_symbol}.issubset(
+                                    {"A", "M", "L"}
+                                )
+                            )
+                            or (
+                                # 佐賀・前受けの3点目 A-M-L 専用。
+                                #
+                                # 今回は「従来3点目 A-B-L のBだけをMへ変更」
+                                # したいので、Mの追加によってL本体の選出順位まで
+                                # 動かさないようにする。
+                                #
+                                # MとLが同じ馬になった場合の重複解消は、
+                                # make_unique_trio_bets() の買い目内処理へ任せる。
+                                #
+                                # これにより、従来の1点目・2点目の選出結果を維持し、
+                                # 3点目だけを A-M-L に変更できる。
+                                baba_name == "佐賀"
+                                and bet_axis_type == "前受け"
+                                and bet_type == "三連複"
+                                and symbol_list == ["A", "M", "L"]
+                                and {symbol, other_symbol} == {"M", "L"}
                             )
                         )
                     )
