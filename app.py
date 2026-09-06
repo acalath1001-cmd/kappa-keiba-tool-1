@@ -4240,10 +4240,10 @@ if debug_mode:
 
 
 # ==================================================
-# 🚀 2〜4角・押上ランキング（デバッグ専用）
+# 🚀 2〜4角・追い込みランキング（デバッグ専用）
 #
 # 目的：
-# 「差し」「押上」という脚質名だけではなく、
+# 「差し」「追い込み」という脚質名だけではなく、
 # 実際にどの勝負所で位置を上げたかを見る。
 #
 # ランキング：
@@ -4270,7 +4270,7 @@ def corner_push_distance_is_match(
     past_distance,
     current_distance,
 ):
-    """押上評価で今回距離と比較可能か判定する。"""
+    """追い込み評価で今回距離と比較可能か判定する。"""
 
     if current_distance <= 1000:
         return 800 <= past_distance <= 1000
@@ -4294,7 +4294,7 @@ def get_corner_push_runs(
     current_distance,
 ):
     """
-    押上ランキングに使う過去走を返す。
+    追い込みランキングに使う過去走を返す。
 
     通常会場：
       元通過順が4地点ある走だけを対象にする。
@@ -4302,10 +4302,10 @@ def get_corner_push_runs(
     盛岡だけ：
       2地点・3地点の通過順が多いため、
       既存の expand_flow_to_four() で補完済みの
-      「通過順」を押上ランキングにも使用する。
+      「通過順」を追い込みランキングにも使用する。
 
       例：10-5 → 10-10-5-5
-      この場合、2角→4角は 10→5 なので5頭押上として評価。
+      この場合、2角→4角は 10→5 なので5頭追い込みとして評価。
 
     門別・大井だけ：
       今回会場と過去走会場が同じ場合に限り、元通過順が3地点なら
@@ -4315,7 +4315,7 @@ def get_corner_push_runs(
           4-2 → 4-4-4-2
 
       大井1200mのように2地点・3地点表示が多い条件でも、
-      K＝3角→4角、L＝2角→4角の押上評価へ入れられる。
+      K＝3角→4角、L＝2角→4角の追い込み評価へ入れられる。
 
     今回距離帯があればその走だけを100％評価し、
     今回距離帯が1走もない場合だけ、
@@ -4357,7 +4357,7 @@ def get_corner_push_runs(
         )
 
         # 盛岡だけは、2地点・3地点を4地点へ補完済みの
-        # 評価用通過順を押上ランキングにも使う。
+        # 評価用通過順を追い込みランキングにも使う。
         # 門別・大井は、今回会場と過去走会場が同じ場合だけ、
         # 3地点を2角・3角・4角、2地点を3角・4角として扱う。
         # その他会場は従来どおり「元通過順4地点のみ」。
@@ -4429,7 +4429,7 @@ def get_corner_push_runs(
             "何走前": idx + 1,
             "距離": past_distance,
             "競馬場": past_place,
-            # 下流の押上計算はこのキーを参照しているため、
+            # 下流の追い込み計算はこのキーを参照しているため、
             # キー名は維持し、中身だけ盛岡・門別・大井では
             # 上記のK/L評価用通過順にする。
             "元通過順": push_flow[:4],
@@ -4517,22 +4517,22 @@ def get_corner_push_runs(
 
 
 # ==================================================
-# 🚀 K/L押上ランキング・質補正
+# 🚀 K/L追い込みランキング・質補正
 #
-# 押上頭数だけでなく、
+# 追い込み頭数だけでなく、
 # 「どのレベル・どの時計で押し上げたか」を評価する。
 #
 # 基本式：
-#   押上スコア × タイム補正 × クラス補正
+#   追い込みスコア × タイム補正 × クラス補正
 #
 # ① 走破タイム補正
 #    同じ競馬場・同じ距離の時計を優先して比較。
 #    サンプル不足時のみ同距離全体へフォールバック。
 #
 # ② クラス補正
-#    下級条件での押上は少し割り引く。
+#    下級条件での追い込みは少し割り引く。
 #
-# ※着順・押上後の失速はK/Lの質補正には入れない。
+# ※着順・追い込み後の失速はK/Lの質補正には入れない。
 # ※K＝3角→4角、L＝2角→4角の意味自体は変えない。
 # ==================================================
 
@@ -4750,7 +4750,7 @@ def calc_corner_push_class_factor(
     """
     押し上げた走のクラスを今回クラスと比較する。
 
-    下級条件ほど押上価値を割り引く。
+    下級条件ほど追い込み価値を割り引く。
     クラス不明時は中立。
     """
 
@@ -4818,7 +4818,7 @@ def calc_corner_push_ranking(
     current_class=None,
 ):
     """
-    指定区間の押上ランキングを作る。
+    指定区間の追い込みランキングを作る。
 
     start_index / end_index
       1 = 2角
@@ -4826,15 +4826,15 @@ def calc_corner_push_ranking(
       3 = 4角
 
     位置番号は小さくなるほど前進なので、
-    start_position - end_position がプラスなら押上。
+    start_position - end_position がプラスなら追い込み。
 
     K/Lで使う4角終点のランキングでは、
-    押上そのものを土台にしつつ、
+    追い込みそのものを土台にしつつ、
     ・押し上げたレースの走破タイム
     ・押し上げたレースのクラス
     だけを倍率補正する。
 
-    ※押上後の着順・失速はこのK/L補正には入れない。
+    ※追い込み後の着順・失速はこのK/L補正には入れない。
     """
 
     ranking = []
@@ -4921,14 +4921,14 @@ def calc_corner_push_ranking(
             )
 
             # --------------------------------------------------
-            # K/Lの押上「質」補正
+            # K/Lの追い込み「質」補正
             #
             # K＝3角→4角、L＝2角→4角なので、
             # 4角を終点にするランキングだけへ適用する。
             #
-            # 押上素点 × タイム倍率 × クラス倍率
+            # 追い込み素点 × タイム倍率 × クラス倍率
             #
-            # 着順・押上後の失速はここでは評価しない。
+            # 着順・追い込み後の失速はここでは評価しない。
             # --------------------------------------------------
             if end_index == 3:
 
@@ -4958,7 +4958,7 @@ def calc_corner_push_ranking(
             else:
 
                 # 2角→3角はデバッグ用ランキングなので、
-                # 従来の押上評価をそのまま残す。
+                # 従来の追い込み評価をそのまま残す。
                 time_info = {
                     "倍率": 1.00,
                     "判定": "K/L対象外・中立",
@@ -5026,7 +5026,7 @@ def calc_corner_push_ranking(
                     f"{start_position}→"
                     f"{end_position}"
                 ),
-                "押上": gain,
+                "追い込み": gain,
                 "素点": raw_applied_score,
                 "タイム倍率": time_info[
                     "倍率"
@@ -5058,14 +5058,14 @@ def calc_corner_push_ranking(
                 score,
                 1,
             ),
-            "押上素点": round(
+            "追い込み素点": round(
                 raw_push_score,
                 1,
             ),
-            "押上回数": push_count,
+            "追い込み回数": push_count,
             "質補正回数": quality_adjustment_count,
-            "合計押上頭数": total_gain,
-            "最大押上頭数": max_gain,
+            "合計追い込み頭数": total_gain,
+            "最大追い込み頭数": max_gain,
             "距離倍率": distance_weight,
             "距離モード": target[
                 "モード"
@@ -5079,8 +5079,8 @@ def calc_corner_push_ranking(
     ranking.sort(
         key=lambda x: (
             x["スコア"],
-            x["合計押上頭数"],
-            x["押上回数"],
+            x["合計追い込み頭数"],
+            x["追い込み回数"],
             -x["馬番"],
         ),
         reverse=True,
@@ -5093,7 +5093,7 @@ def render_corner_push_ranking(
     title,
     ranking,
 ):
-    """デバッグ画面へ押上ランキングTOP5を表示する。"""
+    """デバッグ画面へ追い込みランキングTOP5を表示する。"""
 
     st.markdown(
         f"#### {title}"
@@ -5101,7 +5101,7 @@ def render_corner_push_ranking(
 
     if not ranking:
         st.write(
-            "対象となる押上通過順データなし"
+            "対象となる追い込み通過順データなし"
         )
         return
 
@@ -5114,9 +5114,9 @@ def render_corner_push_ranking(
             f"{horse['馬番']}番 "
             f"{horse['馬名']} "
             f"｜{horse['スコア']}点 "
-            f"｜押上{horse['押上回数']}回 "
-            f"｜合計{horse['合計押上頭数']}頭 "
-            f"｜最大{horse['最大押上頭数']}頭 "
+            f"｜追い込み{horse['追い込み回数']}回 "
+            f"｜合計{horse['合計追い込み頭数']}頭 "
+            f"｜最大{horse['最大追い込み頭数']}頭 "
             f"｜{horse['距離モード']} "
             f"×{horse['距離倍率']}"
         )
@@ -5127,7 +5127,7 @@ def render_corner_push_ranking(
 
 
 # 2角→3角：中盤で自分から動ける力。
-# K・Lの買い目でも押上ランキングを使うため、
+# K・Lの買い目でも追い込みランキングを使うため、
 # デバッグOFFでもランキング自体は計算しておく。
 corner_push_2to3 = (
     calc_corner_push_ranking(
@@ -5140,7 +5140,7 @@ corner_push_2to3 = (
     )
 )
 
-# 3角→4角：最も重視する勝負所の押上。
+# 3角→4角：最も重視する勝負所の追い込み。
 # Kは1位から候補を開始する。Lも別ランキングの1位から開始する。
 corner_push_3to4 = (
     calc_corner_push_ranking(
@@ -5168,7 +5168,7 @@ corner_push_2to4 = (
 if debug_mode:
 
     with st.expander(
-        "🚀 2〜4角・押上ランキング",
+        "🚀 2〜4角・追い込みランキング",
         expanded=False,
     ):
         st.caption(
@@ -5186,7 +5186,7 @@ if debug_mode:
             + " K/Lはさらに走破タイム・クラスだけを質補正します。"
             + (
                 " K＝3角→4角【勝負所重視】1位、"
-                "L＝2角→4角【総合押上】1位を使用します。"
+                "L＝2角→4角【総合追い込み】1位を使用します。"
             )
         )
 
@@ -5201,7 +5201,7 @@ if debug_mode:
         )
 
         render_corner_push_ranking(
-            "2角 → 4角【総合押上】",
+            "2角 → 4角【総合追い込み】",
             corner_push_2to4,
         )
 
@@ -6263,10 +6263,10 @@ def build_marble_style_profile(
     ・逃げ   ：1番手を取った経験
     ・先行   ：1角4番手以内を複数回
     ・持続   ：前〜中団で位置を保った経験
-    ・押上   ：5番手以下から2つ以上位置を上げた経験
+    ・追い込み   ：5番手以下から2つ以上位置を上げた経験
     ・差し   ：押し上げが複数回、または平均的に明確な前進
 
-    「押上」は差しそのものではなく、
+    「追い込み」は差しそのものではなく、
     先行馬でも持っていることがある副能力として独立させる。
     """
 
@@ -6296,7 +6296,7 @@ def build_marble_style_profile(
     )
 
     # 0〜100の能力値。
-    # 押上は1回でも展開対応力として価値が高いため、
+    # 追い込みは1回でも展開対応力として価値が高いため、
     # 1回確認できれば最低55点を与える。
     ability_scores = {
         "逃げ": round(
@@ -6321,7 +6321,7 @@ def build_marble_style_profile(
                 1,
             )
         ),
-        "押上": round(
+        "追い込み": round(
             max(
                 push_count
                 / valid_count
@@ -6357,9 +6357,9 @@ def build_marble_style_profile(
 
     # 押し上げは1回でも明確なら残す。
     if push_count >= 1:
-        tags.append("押上")
+        tags.append("追い込み")
 
-    # 差しは「押上の再現性」がある時だけ独立タグにする。
+    # 差しは「追い込みの再現性」がある時だけ独立タグにする。
     is_clear_closer = (
         push_count >= 2
         or (
@@ -6389,7 +6389,7 @@ def build_marble_style_profile(
             unique_tags.append(tag)
 
     # 副脚質は主脚質以外。
-    # 差しが主脚質の場合、押上は意味がほぼ重なるため
+    # 差しが主脚質の場合、追い込みは意味がほぼ重なるため
     # 表示だけは二重に見せない。
     secondary_tags = [
         tag
@@ -6401,7 +6401,7 @@ def build_marble_style_profile(
         secondary_tags = [
             tag
             for tag in secondary_tags
-            if tag != "押上"
+            if tag != "追い込み"
         ]
 
     # 内部判定では副脚質を能力値の高い順に最大3つ保持する。
@@ -6409,7 +6409,7 @@ def build_marble_style_profile(
     def secondary_sort_score(tag):
         if tag == "差し":
             return ability_scores.get(
-                "押上",
+                "追い込み",
                 0,
             )
 
@@ -6506,7 +6506,7 @@ kyakushoku_type = classify_basic_flow_type(
 # ⑧ 最終救済
 # ここまで主脚質が決まらなくても、
 # 押し上げ実績が1回でもある馬は「差し」とする。
-# 押上実績もない馬だけ「展開待ち」に残す。
+# 追い込み実績もない馬だけ「展開待ち」に残す。
 if (
     kyakushoku_type == "展開待ち"
     and strong_push_count >= 1
@@ -6863,7 +6863,7 @@ if kyakushoku_type == "展開待ち":
 # 🎨 軸馬のマーブル脚質
 #
 # 従来の kyakushoku_type は買い目ロジック用の主脚質として維持。
-# そのうえで、逃げ・先行・持続・押上などの副能力を保持する。
+# そのうえで、逃げ・先行・持続・追い込みなどの副能力を保持する。
 # ==================================================
 axis_marble_profile = build_marble_style_profile(
     strong_style,
@@ -7255,12 +7255,12 @@ def calc_marble_tenkai_fit(
 
     特に逃げ軸では、
     「前について行けるだけ」の馬より、
-    「先行＋押上」の両方を持つ馬を強く評価する。
+    「先行＋追い込み」の両方を持つ馬を強く評価する。
 
     例：
     逃げ軸7番に対して、
     5番＝先行のみ
-    10番＝先行＋押上
+    10番＝先行＋追い込み
     なら10番を展開上位へ持ち上げる。
     """
 
@@ -7306,31 +7306,31 @@ def calc_marble_tenkai_fit(
     fit_weights = {
         "逃げ": {
             "先行": 0.35,
-            "押上": 0.45,
+            "追い込み": 0.45,
             "持続": 0.20,
             "逃げ": 0.05,
         },
         "先行": {
             "先行": 0.20,
-            "押上": 0.40,
+            "追い込み": 0.40,
             "持続": 0.35,
             "逃げ": 0.05,
         },
         "持続": {
             "先行": 0.25,
-            "押上": 0.35,
+            "追い込み": 0.35,
             "持続": 0.35,
             "逃げ": 0.05,
         },
         "差し": {
             "先行": 0.20,
-            "押上": 0.40,
+            "追い込み": 0.40,
             "持続": 0.35,
             "逃げ": 0.05,
         },
         "展開待ち": {
             "先行": 0.30,
-            "押上": 0.30,
+            "追い込み": 0.30,
             "持続": 0.30,
             "逃げ": 0.10,
         },
@@ -7363,12 +7363,12 @@ def calc_marble_tenkai_fit(
         # 今回の本命ルール。
         # 逃げ軸について行ける先行力に加え、
         # ペースが変わった時に自力で押し上げられる馬を優先。
-        if {"先行", "押上"}.issubset(
+        if {"先行", "追い込み"}.issubset(
             candidate_tags
         ):
             fit_score += 60
             reasons.append(
-                "逃げ軸×先行＋押上"
+                "逃げ軸×先行＋追い込み"
             )
 
         elif "先行" in candidate_tags:
@@ -7379,12 +7379,12 @@ def calc_marble_tenkai_fit(
 
     elif axis_type == "先行":
 
-        if {"持続", "押上"}.issubset(
+        if {"持続", "追い込み"}.issubset(
             candidate_tags
         ):
             fit_score += 45
             reasons.append(
-                "先行軸×持続＋押上"
+                "先行軸×持続＋追い込み"
             )
 
         elif {"先行", "持続"}.issubset(
@@ -7397,12 +7397,12 @@ def calc_marble_tenkai_fit(
 
     elif axis_type == "持続":
 
-        if {"持続", "押上"}.issubset(
+        if {"持続", "追い込み"}.issubset(
             candidate_tags
         ):
             fit_score += 40
             reasons.append(
-                "持続軸×持続＋押上"
+                "持続軸×持続＋追い込み"
             )
 
         elif {"先行", "持続"}.issubset(
@@ -7415,29 +7415,29 @@ def calc_marble_tenkai_fit(
 
     elif axis_type == "差し":
 
-        if {"持続", "押上"}.issubset(
+        if {"持続", "追い込み"}.issubset(
             candidate_tags
         ):
             fit_score += 45
             reasons.append(
-                "差し軸×持続＋押上"
+                "差し軸×持続＋追い込み"
             )
 
-        elif "押上" in candidate_tags:
+        elif "追い込み" in candidate_tags:
             fit_score += 20
             reasons.append(
-                "差し軸×押上"
+                "差し軸×追い込み"
             )
 
-    # 軸自身にも押上の副能力がある場合、
-    # 相手にも押上があれば「もう一つの展開」へ対応しやすい。
+    # 軸自身にも追い込みの副能力がある場合、
+    # 相手にも追い込みがあれば「もう一つの展開」へ対応しやすい。
     if (
-        "押上" in axis_tags
-        and "押上" in candidate_tags
+        "追い込み" in axis_tags
+        and "追い込み" in candidate_tags
     ):
         fit_score += 25
         reasons.append(
-            "軸副脚質の押上と一致"
+            "軸副脚質の追い込みと一致"
         )
 
     # 副脚質が複数ある馬は展開の変化に対応しやすい。
@@ -9999,7 +9999,7 @@ tenkai_best = tenkai_final_candidates[0]
 # 岩手限定（盛岡・水沢）・展開B＝K
 #
 # 岩手では軸タイプに関係なく、
-# 展開馬Bを「3角→4角【勝負所重視】押上ランキング」
+# 展開馬Bを「3角→4角【勝負所重視】追い込みランキング」
 # の最上位馬から採用する。
 #
 # Kの元ランキング1位が軸Aと同じ場合は、
@@ -10056,7 +10056,7 @@ if baba_name in {
                 ),
             ),
             # 岩手では展開表示のスコアも
-            # Kの3→4押上スコアを基準にする。
+            # Kの3→4追い込みスコアを基準にする。
             "スコア": push_h.get(
                 "スコア",
                 0,
@@ -10065,7 +10065,7 @@ if baba_name in {
                 "スコア",
                 0,
             ),
-            "K押上順位元": True,
+            "K追い込み順位元": True,
             **style_info_for_k,
         }
 
@@ -10097,7 +10097,7 @@ if baba_name in {
         )
 
         tenkai_selection_source = (
-            "岩手K＝3→4押上固定"
+            "岩手K＝3→4追い込み固定"
         )
 
 # ==================================================
@@ -10254,7 +10254,7 @@ if debug_mode:
 # 三連複Bの繰り下げ候補。
 #
 # 通常会場：最終の展開ランキング順。
-# 岩手    ：B＝Kとするため、3→4押上ランキング順。
+# 岩手    ：B＝Kとするため、3→4追い込みランキング順。
 if oi_tenkai_uses_common_top5:
     tenkai_rank_source_for_trio = (
         oi_common_tenkai_candidates
@@ -11738,11 +11738,11 @@ popular = (
 # G：穴3
 # I：穴2
 # J：大井・持続を含む軸では共通TOP5展開2位／それ以外は前進気勢3位
-# K：3角→4角【勝負所重視】押上ランキング1位（全会場共通）
-# L：2角→4角【総合押上】ランキング1位
-#    （会場別A-B-L／佐賀先行軸／園田先行＋押上軸／岩手前受け軸で使用）
+# K：3角→4角【勝負所重視】追い込みランキング1位（全会場共通）
+# L：2角→4角【総合追い込み】ランキング1位
+#    （会場別A-B-L／佐賀先行軸／園田先行＋追い込み軸／岩手前受け軸で使用）
 # M：園田専用・中間重複馬
-#    総合・地力・前進・抑え・3→4押上・2→4押上の
+#    総合・地力・前進・抑え・3→4追い込み・2→4追い込みの
 #    2〜5位に複数回入る馬を重複度で評価する。
 #
 # 異なる記号が同じ馬になった場合の優先順位：
@@ -11862,7 +11862,7 @@ axis_secondary_for_bet = (
 # 例：
 # ・主：先行｜副：持続 → 対象
 # ・主：持続｜副：先行 → 対象
-# ・主：逃げ｜副：押上   → 対象
+# ・主：逃げ｜副：追い込み   → 対象
 # ・主：差し｜副：持続   → 対象外
 # ==================================================
 axis_primary_for_bet = axis_marble_profile.get(
@@ -12025,7 +12025,7 @@ is_ooi_senko_or_jizoku = (
 #
 # 【1点目】
 # 園田                  → A-B-D
-# 先行＋押上            → A-B-C
+# 先行＋追い込み            → A-B-C
 # 先行＋持続／差し      → A-B-E
 # 先行＋逃げ／なし      → A-B-D
 #
@@ -12045,7 +12045,7 @@ if kyakushoku_type == "先行":
             "D",
         ]
 
-    elif axis_secondary_for_bet == "押上":
+    elif axis_secondary_for_bet == "追い込み":
         current_bet_template[
             "三連複"
         ][0] = [
@@ -12076,7 +12076,7 @@ if kyakushoku_type == "先行":
         ]
 
     # 園田だけ試験的に2点目を A-L-G。
-    # L＝2角→4角【総合押上】ランキング1位。
+    # L＝2角→4角【総合追い込み】ランキング1位。
     # A・Gと被ればLは2位→3位→…へ順送りする。
     if baba_name == "園田":
         current_bet_template[
@@ -12109,12 +12109,12 @@ if kyakushoku_type == "先行":
         ]
 
 # ==================================================
-# 園田限定・先行＋押上軸
+# 園田限定・先行＋追い込み軸
 #
-# 主：先行｜副：押上 のとき
+# 主：先行｜副：追い込み のとき
 # 三連複1点目を A-B-L にする。
 #
-# L＝2角→4角【総合押上】ランキング1位。
+# L＝2角→4角【総合追い込み】ランキング1位。
 # A・Bと被る場合は2位→3位→4位…へ順送りする。
 #
 # 園田の通常先行1点目 A-B-D より後で上書きし、
@@ -12123,7 +12123,7 @@ if kyakushoku_type == "先行":
 if (
     baba_name == "園田"
     and kyakushoku_type == "先行"
-    and axis_secondary_for_bet == "押上"
+    and axis_secondary_for_bet == "追い込み"
 ):
     current_bet_template[
         "三連複"
@@ -12139,7 +12139,7 @@ if (
 # 軸タイプが「先行」のとき、
 # 三連複1点目を A-B-L にする。
 #
-# L＝2角→4角【総合押上】ランキング1位。
+# L＝2角→4角【総合追い込み】ランキング1位。
 # A・Bと被る場合は2位→3位→4位…へ順送りする。
 #
 # 先行軸の通常マーブル分岐より後で上書きするため、
@@ -12296,7 +12296,7 @@ if is_sonoda_escape_senko:
 # 三連複2点目
 # A-F-K → A-D-K
 #
-# K＝3角→4角【勝負所重視】押上ランキング1位。
+# K＝3角→4角【勝負所重視】追い込みランキング1位。
 # A・Dと被る場合は既存の候補順送り／三連複3点不足救済で調整する。
 # ==================================================
 if (
@@ -12374,7 +12374,7 @@ if (
 # 三連複2点目：A-E-G
 #
 # K＝3角→4角【勝負所重視】ランキング1位（全会場共通）
-# L＝2角→4角【総合押上】ランキング1位
+# L＝2角→4角【総合追い込み】ランキング1位
 #
 # ワイドは既存ルールをそのまま使う。
 # 他会場には一切影響させない。
@@ -12472,8 +12472,8 @@ if (
 #
 # 浮き輪ワイド：K - L
 #
-# K＝3角→4角【勝負所重視】押上ランキング1位
-# L＝2角→4角【総合押上】ランキング1位
+# K＝3角→4角【勝負所重視】追い込みランキング1位
+# L＝2角→4角【総合追い込み】ランキング1位
 #
 # 盛岡の差し軸だけに適用し、
 # 三連複・通常ワイド・他会場・他脚質には影響させない。
@@ -12527,8 +12527,8 @@ append_nankan_large_field_trio(
 #   先行軸 → A-D-G
 #   持続軸 → A-K-J
 #
-# L＝2角→4角【総合押上】ランキング1位。
-# K＝3角→4角【勝負所重視】押上ランキング1位。
+# L＝2角→4角【総合追い込み】ランキング1位。
+# K＝3角→4角【勝負所重視】追い込みランキング1位。
 # J＝前進気勢3位。
 # ==================================================
 if is_ooi_senko_or_jizoku:
@@ -13014,14 +13014,19 @@ def build_urawa_funabashi_axis_bet_override(context):
     ):
         result["三連複"][1][1] = "F"
 
-    # 浦和・船橋は10頭以上の3点目を A-B-F にする。
-    # 川崎もこの共通関数を使うため同じく A-B-F になる。
+    # 浦和・船橋・川崎は頭数に関係なく、
+    # 三連複3点目を A-B-F に固定する。
+    # この共通関数は他会場からも再利用されるため、
+    # 対象3会場だけに限定して追加する。
     # Jは大井専用として残す。
-    append_nankan_large_field_trio(
-        result,
-        context["is_nankan_large_field"],
-        third_symbol="F",
-    )
+    if context["track"] in {"浦和", "船橋", "川崎"}:
+        result["三連複"].append(["A", "B", "F"])
+    else:
+        append_nankan_large_field_trio(
+            result,
+            context["is_nankan_large_field"],
+            third_symbol="F",
+        )
 
     return result
 
@@ -13390,7 +13395,7 @@ def build_sonoda_axis_bet_override(context):
     # 距離短縮補正で強化した通常Bを買い目へ直接使う。
     #
     # 1点目：A-B-D ＝ 軸＋展開＋先行（前残り筋）
-    # 2点目：A-F-I ＝ 後詰め＋押上
+    # 2点目：A-F-I ＝ 後詰め＋追い込み
     # 3点目：A-M-D
     sonoda_front_first_trio = (
         ["A", "B", "D"]
@@ -13819,14 +13824,14 @@ else:
     )
 
 # ==================================================
-# K＝3角→4角【勝負所重視】押上ランキング1位
+# K＝3角→4角【勝負所重視】追い込みランキング1位
 #
 # 全会場共通：
 #   3角→4角【勝負所重視】ランキング1位から開始。
 #   A・B・Fなど、同じ買い目内の記号と同じ馬になった場合だけ、
 #   2位 → 3位 → 4位…へ順送りする。
 #
-# Lは別枠で2角→4角【総合押上】ランキング1位。
+# Lは別枠で2角→4角【総合追い込み】ランキング1位。
 # ==================================================
 k_pool = unique_texts(
     [
@@ -13836,20 +13841,35 @@ k_pool = unique_texts(
 )
 
 # ==================================================
-# L＝押上ランキング1位
+# L＝追い込みランキング1位
 #
-# 2角→4角【総合押上】ランキングを使用する。
+# 2角→4角【総合追い込み】ランキングを使用する。
 # 1位から候補を開始し、A・Bなど同じ買い目内で被れば
 # 2位 → 3位 → 4位…へ順送りする。
 #
-# 会場別A-B-L、佐賀先行軸、園田・先行＋押上軸、および岩手前受け軸で使用。
+# 会場別A-B-L、佐賀先行軸、園田・先行＋追い込み軸、および岩手前受け軸で使用。
 # ==================================================
-l_pool = unique_texts(
-    [
-        horse_text(h)
-        for h in corner_push_2to4
-    ]
-)
+l_base_pool = [
+    horse_text(h)
+    for h in corner_push_2to4
+]
+
+# 水沢だけ、2角→4角のL候補が少ない時に
+# 3角→4角の追い込み候補 → 全出走馬の順で安全網をつなぐ。
+# 実際の2角→4角L候補が足りている時は従来順位のまま。
+if baba_name == "水沢":
+    l_pool = unique_texts(
+        l_base_pool
+        + [
+            horse_text(h)
+            for h in corner_push_3to4
+        ]
+        + all_bet_pool
+    )
+else:
+    l_pool = unique_texts(
+        l_base_pool
+    )
 
 # ==================================================
 # M＝園田専用・中間重複馬
@@ -13863,8 +13883,8 @@ l_pool = unique_texts(
 #   ・地力
 #   ・前進気勢
 #   ・抑え候補
-#   ・3角→4角【勝負所重視】押上
-#   ・2角→4角【総合押上】
+#   ・3角→4角【勝負所重視】追い込み
+#   ・2角→4角【総合追い込み】
 #
 # 点数：2位=4 / 3位=3 / 4位=2 / 5位=1
 # 2〜5位に2部門以上入った馬を最優先。
@@ -13901,10 +13921,10 @@ m_rank_maps = {
     "抑え": build_rank_map(
         ana_candidates
     ),
-    "3→4押上": build_rank_map(
+    "3→4追い込み": build_rank_map(
         corner_push_3to4
     ),
-    "2→4押上": build_rank_map(
+    "2→4追い込み": build_rank_map(
         corner_push_2to4
     ),
 }
@@ -14256,7 +14276,7 @@ alphabet_role_names = {
         "展開(M＝中間重複＋持ちタイム)"
         if sonoda_b_uses_m
         else (
-            "展開(K＝3→4押上)"
+            "展開(K＝3→4追い込み)"
             if baba_name in {"盛岡", "水沢"}
             else "展開"
         )
@@ -14269,15 +14289,15 @@ alphabet_role_names = {
         if oi_axis_has_sustain
         else "前進3位"
     ),
-    "K": "3→4押上1位",
-    "L": "総合押上1位",
+    "K": "3→4追い込み1位",
+    "L": "総合追い込み1位",
     "M": "中間重複",
 }
 
 # J・K・Lは最後に確定する。
 # 既存A〜Iの選出結果を追加記号で動かさないため。
-# K/Lが両方必要な岩手では、L＝総合押上1位を優先して確定する。
-# 同じ馬がK＝3→4押上1位にも該当した場合は、K側を次候補へ送る。
+# K/Lが両方必要な岩手では、L＝総合追い込み1位を優先して確定する。
+# 同じ馬がK＝3→4追い込み1位にも該当した場合は、K側を次候補へ送る。
 if baba_name in {"盛岡", "水沢"}:
     alphabet_priority = [
         "A",
@@ -15221,8 +15241,8 @@ def make_unique_trio_bets(
         #
         # 優先：
         #   ① 元の3頭目記号の次候補
-        #   ② K（3角→4角押上）
-        #   ③ L（2角→4角総合押上）
+        #   ② K（3角→4角追い込み）
+        #   ③ L（2角→4角総合追い込み）
         #   ④ E（抑え）
         #   ⑤ G（穴3）
         #
@@ -15442,7 +15462,7 @@ float_bets = make_bets_from_symbols(
 # 園田は逃げ・先行軸のみ3点目A-E-K、それ以外はA-B-K。
 # 笠松・佐賀・水沢・高知は3点目A-B-L。
 # 金沢・名古屋・姫路・門別は3点目A-D-G、A=DならA-B-G。
-# 浦和・船橋・川崎の10頭以上はA-B-F追加で三連複3点。
+# 浦和・船橋・川崎は頭数に関係なくA-B-F追加で三連複3点。
 # 大井の多頭数Jルールは従来どおり維持する。
 # 大井の先行軸／持続軸だけは頭数に関係なく
 # A-B-D / A-G-L / A-D-G の三連複3点へ固定。
@@ -15457,6 +15477,104 @@ if len(trio_bets) < required_trio_count:
         current_bet_template["三連複"],
         normal_bet_symbols,
     )
+    trio_symbol_source = normal_bet_symbols
+
+# ==================================================
+# 水沢限定・三連複3点の最終保証
+#
+# 通常の記号選出＋重複回避で3点作れなかった時だけ発動。
+# 既に作れた買い目はそのまま残し、A（軸）も固定する。
+# 他会場、水沢で最初から3点作れているケースには影響しない。
+# ==================================================
+if (
+    baba_name == "水沢"
+    and len(trio_bets) < required_trio_count
+):
+    rescued_trio_bets = [
+        bet[:]
+        for bet in trio_bets
+    ]
+
+    used_trio_keys = {
+        frozenset(
+            get_num(horse_name)
+            for horse_name in bet
+        )
+        for bet in rescued_trio_bets
+        if len(bet) == 3
+    }
+
+    axis_horse = (
+        normal_bet_symbols.get("A")
+        or popular
+    )
+    axis_number = get_num(
+        axis_horse
+    )
+
+    # 追い込み系を最優先し、既存の抑え・穴・地力・先行・展開候補へ広げる。
+    # all_bet_poolは最後の安全網。
+    mizusawa_rescue_pool = unique_texts(
+        l_pool
+        + k_pool
+        + e_pool
+        + g_pool
+        + i_pool
+        + c_pool
+        + d_pool
+        + b_pool
+        + all_bet_pool
+    )
+
+    mizusawa_rescue_pool = [
+        candidate
+        for candidate in mizusawa_rescue_pool
+        if get_num(candidate) != axis_number
+    ]
+
+    for second_index in range(
+        len(mizusawa_rescue_pool)
+    ):
+        if len(rescued_trio_bets) >= required_trio_count:
+            break
+
+        second_horse = mizusawa_rescue_pool[
+            second_index
+        ]
+        second_number = get_num(
+            second_horse
+        )
+
+        for third_horse in mizusawa_rescue_pool[
+            second_index + 1:
+        ]:
+            third_number = get_num(
+                third_horse
+            )
+
+            if third_number == second_number:
+                continue
+
+            test_key = frozenset({
+                axis_number,
+                second_number,
+                third_number,
+            })
+
+            if test_key in used_trio_keys:
+                continue
+
+            rescued_trio_bets.append([
+                axis_horse,
+                second_horse,
+                third_horse,
+            ])
+            used_trio_keys.add(
+                test_key
+            )
+            break
+
+    trio_bets = rescued_trio_bets
     trio_symbol_source = normal_bet_symbols
 
 required_wide_count = len(
@@ -15737,18 +15855,18 @@ if debug_mode:
             st.write(
                 "🔵 佐賀・先行軸："
                 "三連複1点目 A-B-L "
-                "（L＝2角→4角・総合押上1位）"
+                "（L＝2角→4角・総合追い込み1位）"
             )
 
         if (
             baba_name == "園田"
             and kyakushoku_type == "先行"
-            and axis_secondary_for_bet == "押上"
+            and axis_secondary_for_bet == "追い込み"
         ):
             st.write(
-                "🟢 園田・先行＋押上軸："
+                "🟢 園田・先行＋追い込み軸："
                 "三連複1点目 A-B-L "
-                "（L＝2角→4角・総合押上1位）"
+                "（L＝2角→4角・総合追い込み1位）"
             )
 
         if (
@@ -15792,7 +15910,7 @@ if debug_mode:
         if iwate_tenkai_uses_k:
             st.write(
                 "🌊 岩手・展開B固定："
-                "B＝K（3角→4角【勝負所重視】押上最上位）"
+                "B＝K（3角→4角【勝負所重視】追い込み最上位）"
             )
 
         if is_iwate_front_axis:
@@ -15838,7 +15956,7 @@ if debug_mode:
 
             st.write(
                 "K＝3角→4角【勝負所重視】1位 "
-                "｜L＝2角→4角【総合押上】1位"
+                "｜L＝2角→4角【総合追い込み】1位"
             )
 
         if baba_name == "盛岡":
@@ -15917,8 +16035,8 @@ if debug_mode:
                     "三連複 A-B-D / A-G-L / A-K-J"
                 )
                 st.write(
-                    "L＝2角→4角【総合押上】1位｜"
-                    "K＝3角→4角【勝負所重視】押上1位｜"
+                    "L＝2角→4角【総合追い込み】1位｜"
+                    "K＝3角→4角【勝負所重視】追い込み1位｜"
                     "J＝前進気勢3位"
                 )
             else:
@@ -15927,29 +16045,29 @@ if debug_mode:
                     "三連複 A-B-D / A-G-L / A-D-G"
                 )
                 st.write(
-                    "L＝2角→4角【総合押上】1位"
+                    "L＝2角→4角【総合追い込み】1位"
                 )
+
+        elif baba_name in {"浦和", "船橋", "川崎"}:
+            st.write(
+                f"🏙 {baba_name}："
+                "頭数に関係なく三連複3点目 A-B-F"
+            )
 
         elif is_nankan_large_field:
-            if baba_name in {"浦和", "船橋", "川崎"}:
-                st.write(
-                    f"🏙 {baba_name}10頭以上："
-                    "三連複3点目 A-B-F"
-                )
-            else:
-                st.write(
-                    "🏙 大井10頭以上："
-                    "三連複3点目 A-B-J"
-                )
+            st.write(
+                "🏙 大井10頭以上："
+                "三連複3点目 A-B-J"
+            )
 
-                st.write(
-                    "J候補："
-                    + (
-                        " → ".join(j_pool)
-                        if j_pool
-                        else "候補なし"
-                    )
+            st.write(
+                "J候補："
+                + (
+                    " → ".join(j_pool)
+                    if j_pool
+                    else "候補なし"
                 )
+            )
 
         if kyakushoku_type == "先行":
             st.write(
