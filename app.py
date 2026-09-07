@@ -1387,6 +1387,9 @@ def move_race(move):
         )
         return
 
+    # ------------------------------------------
+    # 移動先URLを反映
+    # ------------------------------------------
     st.session_state.race_url_input = (
         new_url
     )
@@ -1394,6 +1397,84 @@ def move_race(move):
     st.session_state.race_url = (
         new_url
     )
+
+    # ------------------------------------------
+    # 移動先Rの日付・競馬場コードを取得
+    # ------------------------------------------
+    new_params = parse_qs(
+        urlparse(new_url).query
+    )
+
+    race_date_value = new_params.get(
+        "k_raceDate",
+        [""],
+    )[0]
+
+    baba_code = new_params.get(
+        "k_babaCode",
+        [""],
+    )[0]
+
+    # ------------------------------------------
+    # 会場→レース選択から入っている場合は、
+    # 画面上の選択Rも移動先へ同期する
+    # ------------------------------------------
+    if (
+        st.session_state.get(
+            "selected_venue"
+        ) == baba_code
+    ):
+        st.session_state.selected_race = int(
+            new_race
+        )
+
+    # ------------------------------------------
+    # 移動先Rの現在の単勝1番人気を再取得
+    #
+    # 前レースの1番人気を引き継がない。
+    # ------------------------------------------
+    current_favorite = None
+
+    if (
+        race_date_value
+        and baba_code
+    ):
+        current_favorite = (
+            get_current_first_favorite_from_win_odds(
+                race_date_value,
+                baba_code,
+                new_race,
+            )
+        )
+
+    race_key = (
+        f"{race_date_value}|"
+        f"{baba_code}|"
+        f"{int(new_race)}"
+    )
+
+    st.session_state.auto_axis_race_key = (
+        race_key
+    )
+
+    st.session_state.auto_axis_info = (
+        current_favorite
+    )
+
+    # 1番人気を取得できた場合は、
+    # 移動先Rの1番人気を軸入力へセット。
+    #
+    # オッズ未発表・取得失敗時は、
+    # 前レースの軸を残さず1番へ戻す。
+    if current_favorite is not None:
+
+        st.session_state.axis_horse_input = int(
+            current_favorite["馬番"]
+        )
+
+    else:
+
+        st.session_state.axis_horse_input = 1
 
     if move > 0:
         st.session_state.race_nav_message = (
@@ -13059,6 +13140,7 @@ def build_nagoya_himeji_axis_bet_override(context):
         and context["axis_type"] == "前受け"
     ):
         result["三連複"][1] = ["A", "M", "G"]
+        result["ワイド"] = [["A", "M"]]
 
         # 名古屋のみ・主＝先行／副＝持続の時は、
         # 三連複3点目を A-I-G にする。
@@ -13166,15 +13248,21 @@ def build_iwate_axis_bet_override(context):
 
     # ----------------------------------------------
     # 前受け
-    # 1点目：展開＋穴寄りL
-    # 2点目：固めC＋穴G
+    # 1点目：盛岡・水沢ともに A-B-L
+    # 2点目：盛岡 A-C-G / 水沢 A-M-L
     # 3点目：盛岡・水沢ともに A-I-E
     # ワイド2点目 A-E を浮き輪へ移す。
     # ----------------------------------------------
     if axis_type == "前受け":
+        second_trio = (
+            ["A", "M", "L"]
+            if track == "水沢"
+            else ["A", "C", "G"]
+        )
+
         result["三連複"] = [
             ["A", "B", "L"],
-            ["A", "C", "G"],
+            second_trio,
             ["A", "I", "E"],
         ]
         result["ワイド"] = [
