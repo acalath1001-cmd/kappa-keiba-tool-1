@@ -404,6 +404,70 @@ def normalize_race_class_text(text):
     )
 
 
+def parse_japanese_group_number(text):
+    """一組〜十九組程度の組番号を整数へ変換する。"""
+    digit_map = {
+        "一": 1,
+        "二": 2,
+        "三": 3,
+        "四": 4,
+        "五": 5,
+        "六": 6,
+        "七": 7,
+        "八": 8,
+        "九": 9,
+    }
+
+    if not text:
+        return None
+
+    if text == "十":
+        return 10
+
+    if "十" in text:
+        tens_text, ones_text = text.split(
+            "十",
+            1,
+        )
+        tens = digit_map.get(
+            tens_text,
+            1 if tens_text == "" else 0,
+        )
+        ones = digit_map.get(
+            ones_text,
+            0,
+        )
+        value = tens * 10 + ones
+        return value if value > 0 else None
+
+    return digit_map.get(text)
+
+
+def extract_group_number_after_class(
+    normalized_text,
+    class_match,
+):
+    """A/B/Cの級番号直後にある「三組」などを取得する。"""
+    suffix = normalized_text[
+        class_match.end():
+    ]
+    group_match = re.match(
+        r"\s*([一二三四五六七八九十]+)\s*組",
+        suffix,
+    )
+
+    if not group_match:
+        return None, ""
+
+    group_text = group_match.group(1)
+    return (
+        parse_japanese_group_number(
+            group_text
+        ),
+        group_text,
+    )
+
+
 def extract_race_class_from_text(text):
     """
     NARの表記から A1 / B5 / C1 / C12 などを拾う。
@@ -436,11 +500,22 @@ def extract_race_class_from_text(text):
     number = int(
         match.group(2)
     )
+    group_number, group_text = (
+        extract_group_number_after_class(
+            normalized,
+            match,
+        )
+    )
 
     return {
         "記号": letter,
         "番号": number,
-        "表示": f"{letter}{number}",
+        "組番号": group_number,
+        "表示": (
+            f"{letter}{number}{group_text}組"
+            if group_number is not None
+            else f"{letter}{number}"
+        ),
     }
 
 
@@ -482,17 +557,31 @@ def extract_all_race_classes_from_text(text):
         number = int(
             match.group(2)
         )
+        group_number, group_text = (
+            extract_group_number_after_class(
+                normalized,
+                match,
+            )
+        )
 
         classes.append({
             "記号": letter,
             "番号": number,
-            "表示": f"{letter}{number}",
+            "組番号": group_number,
+            "表示": (
+                f"{letter}{number}{group_text}組"
+                if group_number is not None
+                else f"{letter}{number}"
+            ),
         })
 
     return classes
 
 
-def get_race_class_value(class_info):
+def get_race_class_value(
+    class_info,
+    include_mizusawa_group=False,
+):
     """
     数字が小さいほど強い値にする。
 
@@ -523,6 +612,24 @@ def get_race_class_value(class_info):
     ):
         return None
 
+    if include_mizusawa_group:
+        group_number = class_info.get(
+            "組番号"
+        )
+
+        # 水沢ではC2三組とC2七組を同格にしない。
+        # 級番号を10刻み、組番号を1刻みで扱うことで、
+        # C1の方がC2より上という階層も維持する。
+        return (
+            CLASS_LETTER_BASE[letter]
+            + number * 10
+            + (
+                group_number
+                if isinstance(group_number, int)
+                else 0
+            )
+        )
+
     return (
         CLASS_LETTER_BASE[letter]
         + number
@@ -549,13 +656,42 @@ def apply_positive_class_factor(
     return score
 
 
-def calc_tenkai_class_adjustment(
+def apply_mizusawa_ranking_class_factor(
+    score,
     horse,
     current_class,
     current_distance=None,
 ):
     """
-    展開馬Bだけに使うクラス補正。
+    水沢の独立ランキング用クラス補正。
+
+    展開Bと同じクラス判定から「係数」だけを共通利用し、
+    完成したランキングスコアへ1回だけ適用する。
+    経験加点は使わず、マイナス点はそのまま維持する。
+    """
+    class_adjustment = calc_tenkai_class_adjustment(
+        horse,
+        current_class,
+        current_distance,
+        use_mizusawa_group=True,
+    )
+
+    adjusted_score = apply_positive_class_factor(
+        score,
+        class_adjustment["係数"],
+    )
+
+    return adjusted_score, class_adjustment
+
+
+def calc_tenkai_class_adjustment(
+    horse,
+    current_class,
+    current_distance=None,
+    use_mizusawa_group=False,
+):
+    """
+    展開馬Bを基準にしたクラス補正。
 
     方針：
     ・下級戦で積んだプラス材料は従来どおり割り引く。
@@ -573,11 +709,15 @@ def calc_tenkai_class_adjustment(
       1回 +5
       2回以上 +10
 
-    ※総合F・地力C・先行D・抑えEには使わない。
+    ※経験加点は展開B専用。
+    ※水沢のC・D・E・Fは返却値の「係数」だけを共通利用する。
     """
 
     current_value = get_race_class_value(
-        current_class
+        current_class,
+        include_mizusawa_group=(
+            use_mizusawa_group
+        ),
     )
 
     if current_value is None:
@@ -605,7 +745,10 @@ def calc_tenkai_class_adjustment(
         )
 
         past_value = get_race_class_value(
-            past_class
+            past_class,
+            include_mizusawa_group=(
+                use_mizusawa_group
+            ),
         )
 
         if past_value is None:
@@ -4294,6 +4437,65 @@ front_top5_for_tenkai = [
     dict(h)
     for h in front_candidates[:5]
 ]
+
+# 水沢の先行Dだけ、完成した前進スコアへクラス係数を1回適用する。
+# 展開Bは従来どおりの候補順位・補正を維持するため、
+# B用TOP5を保存した後でDランキングだけを並べ直す。
+if baba_name == "水沢":
+    horse_by_number = {
+        horse["馬番"]: horse
+        for horse in horses
+    }
+
+    for candidate in front_candidates:
+        raw_score = candidate["スコア"]
+        target_horse = horse_by_number.get(
+            candidate["馬番"]
+        )
+
+        if target_horse is None:
+            continue
+
+        adjusted_score, class_adjustment = (
+            apply_mizusawa_ranking_class_factor(
+                raw_score,
+                target_horse,
+                current_race_class,
+                distance_num,
+            )
+        )
+
+        candidate["クラス補正前スコア"] = raw_score
+        candidate["クラス係数"] = class_adjustment["係数"]
+        candidate["クラス補正後スコア"] = adjusted_score
+        candidate["スコア"] = adjusted_score
+
+    front_candidates = sorted(
+        front_candidates,
+        key=lambda x: x["スコア"],
+        reverse=True,
+    )
+
+    # Jは先行Dランキングから候補を作るため、
+    # 水沢時だけJの参照用コピーにも同じD順位を継承させる。
+    adjusted_front_by_number = {
+        candidate["馬番"]: candidate
+        for candidate in front_candidates
+    }
+
+    for candidate in nankan_front_candidates:
+        adjusted = adjusted_front_by_number.get(
+            candidate["馬番"]
+        )
+
+        if adjusted is not None:
+            candidate.update(adjusted)
+
+    nankan_front_candidates = sorted(
+        nankan_front_candidates,
+        key=lambda x: x["スコア"],
+        reverse=True,
+    )
 if debug_mode:
 
     with st.expander(
@@ -4388,6 +4590,13 @@ def get_corner_push_runs(
       例：10-5 → 10-10-5-5
       この場合、2角→4角は 10→5 なので5頭追い込みとして評価。
 
+    水沢分析時：
+      過去走の元通過順が2地点なら3角・4角、
+      3地点なら2角・3角・4角としてK/L用に補完する。
+
+      例：5-3 → 5-5-5-3
+          5-3-2 → 5-5-3-2
+
     門別・大井だけ：
       今回会場と過去走会場が同じ場合に限り、元通過順が3地点なら
       2角・3角・4角、2地点なら3角・4角として扱う。
@@ -4439,6 +4648,9 @@ def get_corner_push_runs(
 
         # 盛岡だけは、2地点・3地点を4地点へ補完済みの
         # 評価用通過順を追い込みランキングにも使う。
+        # 水沢分析時は、過去走の競馬場を問わず元通過順を
+        # K/L専用の角位置として補完する。特に盛岡の
+        # 2地点・3地点表記を水沢K/Lから落とさないための処理。
         # 門別・大井は、今回会場と過去走会場が同じ場合だけ、
         # 3地点を2角・3角・4角、2地点を3角・4角として扱う。
         # その他会場は従来どおり「元通過順4地点のみ」。
@@ -4447,6 +4659,25 @@ def get_corner_push_runs(
                 "通過順",
                 [],
             )
+        elif baba_name == "水沢":
+            if len(raw_flow) >= 4:
+                push_flow = raw_flow[:4]
+            elif len(raw_flow) == 3:
+                push_flow = [
+                    raw_flow[0],
+                    raw_flow[0],
+                    raw_flow[1],
+                    raw_flow[2],
+                ]
+            elif len(raw_flow) == 2:
+                push_flow = [
+                    raw_flow[0],
+                    raw_flow[0],
+                    raw_flow[0],
+                    raw_flow[1],
+                ]
+            else:
+                push_flow = raw_flow
         elif (
             baba_name in ["門別", "大井"]
             and past_place == baba_name
@@ -4511,7 +4742,7 @@ def get_corner_push_runs(
             "距離": past_distance,
             "競馬場": past_place,
             # 下流の追い込み計算はこのキーを参照しているため、
-            # キー名は維持し、中身だけ盛岡・門別・大井では
+            # キー名は維持し、中身だけ盛岡・水沢・門別・大井では
             # 上記のK/L評価用通過順にする。
             "元通過順": push_flow[:4],
             "着順": item.get(
@@ -4827,6 +5058,7 @@ def calc_corner_push_time_factor(
 def calc_corner_push_class_factor(
     run,
     current_class,
+    use_mizusawa_group=False,
 ):
     """
     押し上げた走のクラスを今回クラスと比較する。
@@ -4836,7 +5068,10 @@ def calc_corner_push_class_factor(
     """
 
     current_value = get_race_class_value(
-        current_class
+        current_class,
+        include_mizusawa_group=(
+            use_mizusawa_group
+        ),
     )
 
     past_class = run.get(
@@ -4844,7 +5079,10 @@ def calc_corner_push_class_factor(
     )
 
     past_value = get_race_class_value(
-        past_class
+        past_class,
+        include_mizusawa_group=(
+            use_mizusawa_group
+        ),
     )
 
     if (
@@ -5023,6 +5261,9 @@ def calc_corner_push_ranking(
                     calc_corner_push_class_factor(
                         run,
                         current_class,
+                        use_mizusawa_group=(
+                            baba_name == "水沢"
+                        ),
                     )
                 )
 
@@ -5055,9 +5296,56 @@ def calc_corner_push_ranking(
 
                 quality_factor = 1.00
 
+            # 水沢Kだけ、4角で位置を上げてもゴールまでに
+            # 大きく失速した走は勝負所評価を弱める。
+            # Lや他会場のK/Lには適用しない。
+            goal_factor = 1.00
+            goal_factor_judgement = "対象外・中立"
+
+            if (
+                baba_name == "水沢"
+                and start_index == 2
+                and end_index == 3
+            ):
+                finish = run.get(
+                    "着順"
+                )
+
+                if isinstance(finish, int):
+                    goal_drop = (
+                        finish
+                        - end_position
+                    )
+
+                    if (
+                        finish >= 10
+                        or goal_drop >= 4
+                    ):
+                        goal_factor = 0.40
+                        goal_factor_judgement = "ゴールで大失速"
+
+                    elif (
+                        finish >= 8
+                        or goal_drop >= 3
+                    ):
+                        goal_factor = 0.55
+                        goal_factor_judgement = "ゴールで失速"
+
+                    elif goal_drop == 2:
+                        goal_factor = 0.75
+                        goal_factor_judgement = "ゴールで2つ後退"
+
+                    elif goal_drop == 1:
+                        goal_factor = 0.90
+                        goal_factor_judgement = "ゴールで1つ後退"
+
+                    else:
+                        goal_factor_judgement = "位置維持・前進"
+
             applied_score = round(
                 raw_applied_score
-                * quality_factor,
+                * quality_factor
+                * goal_factor,
                 1,
             )
 
@@ -5122,6 +5410,8 @@ def calc_corner_push_ranking(
                     "判定"
                 ],
                 "総合倍率": quality_factor,
+                "ゴール倍率": goal_factor,
+                "ゴール判定": goal_factor_judgement,
                 "加点": applied_score,
             })
 
@@ -5347,7 +5637,13 @@ if not front_candidates:
     )
     st.stop()
 
-front_score_map = {h["馬番"]: h["スコア"] for h in front_candidates}
+front_score_map = {
+    h["馬番"]: h.get(
+        "クラス補正前スコア",
+        h["スコア"],
+    )
+    for h in front_candidates
+}
 long_spurt_candidates = []
 
 for horse in horses:
@@ -5368,6 +5664,7 @@ for horse in horses:
     # ==================================================
 
     evaluation_pairs = []
+    mizusawa_long_distance_fallback_factor = 1.0
 
     for item in horse.get("距離付きタイム", []):
         race_distance = item["距離"]
@@ -5398,6 +5695,12 @@ for horse in horses:
             "距離付きタイム",
             []
         )
+
+        # 水沢だけ、今回距離帯の実績がなく全過去走へ戻した場合は、
+        # 近似距離の能力点を100％ではなく70％で評価する。
+        # 後段の失速減点には掛けない。
+        if baba_name == "水沢":
+            mizusawa_long_distance_fallback_factor = 0.70
 
     evaluation_pairs = evaluation_pairs[-5:]
 
@@ -5515,20 +5818,30 @@ for horse in horses:
         # ==================================================
 
         # 前〜中団で流れに乗り、大きく崩れない
-        if (
+        matches_front_flow = (
             2 <= first <= 6
             and last <= 7
             and max(flow) <= 7
-        ):
+        )
+
+        if matches_front_flow:
             score += 45 * recent_bonus
             front_keep_count += 1
 
         # 前で位置を維持している
-        if (
+        matches_strict_front_keep = (
             first <= 5
             and last <= 5
             and max(flow) <= 6
             and abs(last - first) <= 2
+        )
+
+        if (
+            matches_strict_front_keep
+            and not (
+                baba_name == "水沢"
+                and matches_front_flow
+            )
         ):
             score += 35 * recent_bonus
             front_keep_count += 1
@@ -5798,6 +6111,14 @@ for horse in horses:
         + applied_repeat_front_fade_penalty
     )
 
+    # 水沢で今回距離帯がなく全過去走へ戻した場合だけ、
+    # ここまでの距離由来のプラス能力点を70％へ弱める。
+    # この後に引く失速・前経験などの減点は軽くしない。
+    score = apply_positive_class_factor(
+        score,
+        mizusawa_long_distance_fallback_factor,
+    )
+
     score -= applied_risk_penalty
     # 直近大失速は通常の失速減点とは別枠。
     # 能力そのものではなく、次走の信用を強く下げる。
@@ -5892,6 +6213,9 @@ for horse in horses:
         "通過順": race_flows,
         "前経験回数": front_experience_count,
         "前経験減点": front_experience_penalty,
+        "水沢近似距離倍率": (
+            mizusawa_long_distance_fallback_factor
+        ),
 
         # 前で実際に3着以内へ入った回数
         "前成功回数": front_success_count,
@@ -5962,6 +6286,43 @@ long_top5_for_tenkai = [
         False,
     )
 ][:5]
+
+# 水沢の地力Cだけ、完成した地力スコアへクラス係数を1回適用する。
+# 展開B用の地力TOP5は補正前に保存済みなので、Bの既存補正は不変。
+if baba_name == "水沢":
+    horse_by_number = {
+        horse["馬番"]: horse
+        for horse in horses
+    }
+
+    for candidate in long_spurt_candidates:
+        raw_score = candidate["スコア"]
+        target_horse = horse_by_number.get(
+            candidate["馬番"]
+        )
+
+        if target_horse is None:
+            continue
+
+        adjusted_score, class_adjustment = (
+            apply_mizusawa_ranking_class_factor(
+                raw_score,
+                target_horse,
+                current_race_class,
+                distance_num,
+            )
+        )
+
+        candidate["クラス補正前スコア"] = raw_score
+        candidate["クラス係数"] = class_adjustment["係数"]
+        candidate["クラス補正後スコア"] = adjusted_score
+        candidate["スコア"] = adjusted_score
+
+    long_spurt_candidates = sorted(
+        long_spurt_candidates,
+        key=lambda x: x["スコア"],
+        reverse=True,
+    )
 # ==================================================
 # 失速不安が強い馬
 #
@@ -8512,14 +8873,17 @@ for horse in horses:
     # 脚質・マーブル・同距離タイム・リスクは
     # クラス補正の対象外。
     #
-    # これにより展開馬Bだけを調整し、
-    # 総合F・地力C・先行D・抑えEは変えない。
+    # ここでは展開馬B専用の補正だけを行う。
+    # 水沢C・D・E・Fの係数補正は各ランキング確定部で行う。
     # ==================================================
     class_adjustment = (
         calc_tenkai_class_adjustment(
             horse,
             current_race_class,
             distance_num,
+            use_mizusawa_group=(
+                baba_name == "水沢"
+            ),
         )
     )
 
@@ -8790,8 +9154,20 @@ for horse in horses:
 tenkai_selection_source = "消去法＋適応スコア"
 
 # 総合力1位を裏側で判定
-front_score_map = {h["馬番"]: h["スコア"] for h in front_candidates}
-long_score_map = {h["馬番"]: h["スコア"] for h in long_spurt_candidates}
+front_score_map = {
+    h["馬番"]: h.get(
+        "クラス補正前スコア",
+        h["スコア"],
+    )
+    for h in front_candidates
+}
+long_score_map = {
+    h["馬番"]: h.get(
+        "クラス補正前スコア",
+        h["スコア"],
+    )
+    for h in long_spurt_candidates
+}
 
 total_candidates = []
 
@@ -9732,10 +10108,33 @@ for horse in horses:
                 "適用減点": applied_race_penalty,
                 "軽減": relief_reasons,
             })
+    # 水沢の総合Fは、C/Dの補正前スコアから組み立てた
+    # 完成後のtotal_scoreへクラス係数を1回だけ適用する。
+    # これによりC/D補正との二重掛けを防ぐ。
+    total_score_before_class = total_score
+    total_class_adjustment = None
+
+    if baba_name == "水沢":
+        total_score, total_class_adjustment = (
+            apply_mizusawa_ranking_class_factor(
+                total_score_before_class,
+                horse,
+                current_race_class,
+                distance_num,
+            )
+        )
+
     total_candidates.append({
         "馬番": horse_no,
         "馬名": horse_name,
         "総合スコア": total_score,
+        "クラス補正前スコア": total_score_before_class,
+        "クラス係数": (
+            total_class_adjustment["係数"]
+            if total_class_adjustment is not None
+            else 1.0
+        ),
+        "クラス補正後スコア": total_score,
         "持ちタイムスコア": time_score,
 
         # 現在は上位2走の平均タイム
@@ -9966,6 +10365,9 @@ if not tenkai_candidates:
                 horse,
                 current_race_class,
                 distance_num,
+                use_mizusawa_group=(
+                    baba_name == "水沢"
+                ),
             )
         )
 
@@ -10077,17 +10479,19 @@ tenkai_final_candidates = tenkai_candidates
 tenkai_best = tenkai_final_candidates[0]
 
 # ==================================================
-# 岩手限定（盛岡・水沢）・展開B＝K
+# 盛岡限定・展開B＝K
 #
-# 岩手では軸タイプに関係なく、
+# 盛岡では軸タイプに関係なく、
 # 展開馬Bを「3角→4角【勝負所重視】追い込みランキング」
 # の最上位馬から採用する。
+#
+# 水沢はB＝K固定を行わず、通常の展開ランキングBを使う。
 #
 # Kの元ランキング1位が軸Aと同じ場合は、
 # 2位→3位→…へ順送りして最初の別馬を採用する。
 #
 # 目的：
-# ・岩手だけ、通常の展開適応スコアより
+# ・盛岡だけ、通常の展開適応スコアより
 #   勝負所で実際に位置を上げる能力を優先する。
 # ・他会場の展開Bロジックは一切変更しない。
 #
@@ -10096,10 +10500,7 @@ tenkai_best = tenkai_final_candidates[0]
 iwate_k_tenkai_candidates = []
 iwate_tenkai_uses_k = False
 
-if baba_name in {
-    "盛岡",
-    "水沢",
-}:
+if baba_name == "盛岡":
     for push_h in corner_push_3to4:
         push_no = push_h.get(
             "馬番"
@@ -10136,7 +10537,7 @@ if baba_name in {
                     "",
                 ),
             ),
-            # 岩手では展開表示のスコアも
+            # 盛岡では展開表示のスコアも
             # Kの3→4追い込みスコアを基準にする。
             "スコア": push_h.get(
                 "スコア",
@@ -10162,7 +10563,7 @@ if baba_name in {
         )
 
         # デバッグの最終展開候補も、
-        # 岩手ではKランキングを先頭に見せる。
+        # 盛岡ではKランキングを先頭に見せる。
         k_numbers = {
             h["馬番"]
             for h in iwate_k_tenkai_candidates
@@ -10178,7 +10579,7 @@ if baba_name in {
         )
 
         tenkai_selection_source = (
-            "岩手K＝3→4追い込み固定"
+            "盛岡K＝3→4追い込み固定"
         )
 
 # ==================================================
@@ -10335,7 +10736,7 @@ if debug_mode:
 # 三連複Bの繰り下げ候補。
 #
 # 通常会場：最終の展開ランキング順。
-# 岩手    ：B＝Kとするため、3→4追い込みランキング順。
+# 盛岡    ：B＝Kとするため、3→4追い込みランキング順。
 if oi_tenkai_uses_common_top5:
     tenkai_rank_source_for_trio = (
         oi_common_tenkai_candidates
@@ -10673,7 +11074,10 @@ for h in total_candidates:
     ana_base_candidates.append({
         "馬番": h["馬番"],
         "馬名": h["馬名"],
-        "スコア": h["総合スコア"] * 0.5
+        "スコア": h.get(
+            "クラス補正前スコア",
+            h["総合スコア"],
+        ) * 0.5
     })
 
 # ==================================================
@@ -10701,7 +11105,10 @@ long_rank_map_for_ana = {
 }
 
 long_score_map_for_ana = {
-    h["馬番"]: h["スコア"]
+    h["馬番"]: h.get(
+        "クラス補正前スコア",
+        h["スコア"],
+    )
     for h in long_spurt_candidates
 }
 
@@ -10978,7 +11385,10 @@ if len(ana_candidates) < 3:
         extra_ana_pool.append({
             "馬番": h["馬番"],
             "馬名": h["馬名"],
-            "スコア": h["総合スコア"] * 0.3
+            "スコア": h.get(
+                "クラス補正前スコア",
+                h["総合スコア"],
+            ) * 0.3
         })
 
     for h in tenkai_candidates:
@@ -11448,6 +11858,35 @@ for h in ana_candidates:
 # 垂れ減点・距離補正などを反映した
 # 最終ana_scoreで穴1〜5を決定する
 # ==================================================
+if baba_name == "水沢":
+    horse_by_number = {
+        horse["馬番"]: horse
+        for horse in horses
+    }
+
+    for candidate in ana_candidates:
+        raw_score = candidate["スコア"]
+        target_horse = horse_by_number.get(
+            candidate["馬番"]
+        )
+
+        if target_horse is None:
+            continue
+
+        adjusted_score, class_adjustment = (
+            apply_mizusawa_ranking_class_factor(
+                raw_score,
+                target_horse,
+                current_race_class,
+                distance_num,
+            )
+        )
+
+        candidate["クラス補正前スコア"] = raw_score
+        candidate["クラス係数"] = class_adjustment["係数"]
+        candidate["クラス補正後スコア"] = adjusted_score
+        candidate["スコア"] = adjusted_score
+
 ana_candidates = sorted(
     ana_candidates,
     key=lambda x: (
@@ -13040,6 +13479,20 @@ def build_kasamatsu_axis_bet_override(context):
     ):
         result["三連複"][1][1] = "F"
 
+    # 笠松だけ、主脚質が先行かつ表示上の副脚質が持続なら
+    # 三連複3点目をA-B-LからA-M-Dへ変更する。
+    # 主が先行でも副が持続以外のケース、主が持続のケース、
+    # 逃げ・差し、および他会場のルールには影響させない。
+    if (
+        context["legacy_axis_type"] == "先行"
+        and context.get("axis_secondary") == "持続"
+    ):
+        result["三連複"][2] = [
+            "A",
+            "M",
+            "D",
+        ]
+
     return result
 
 def build_urawa_funabashi_axis_bet_override(context):
@@ -14365,7 +14818,7 @@ alphabet_role_names = {
         if sonoda_b_uses_m
         else (
             "展開(K＝3→4追い込み)"
-            if baba_name in {"盛岡", "水沢"}
+            if baba_name == "盛岡"
             else "展開"
         )
     ),
@@ -15997,7 +16450,7 @@ if debug_mode:
 
         if iwate_tenkai_uses_k:
             st.write(
-                "🌊 岩手・展開B固定："
+                "🌊 盛岡・展開B固定："
                 "B＝K（3角→4角【勝負所重視】追い込み最上位）"
             )
 
