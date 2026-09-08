@@ -289,6 +289,66 @@ def calc_recent_form_bonus(finish_positions):
         bonus += 8
 
     return bonus, recent_results
+
+
+def calc_push_good_finish_fade_relief(horse):
+    """
+    押し上げ実績と好着順の両方がある馬について、
+    垂れ・失速の数値減点だけを少し弱める。
+
+    条件は全会場共通：
+    ・過去5走で通過順を2つ以上押し上げた走が1回以上
+    ・過去5走で5着以内が3回以上
+    ・そのうち3着以内が1回以上
+
+    条件を満たす場合、垂れ系減点を70％で適用する。
+    単なる大敗馬や、好着順だけで押し上げ実績のない馬は救済しない。
+    """
+
+    recent_flows = (horse.get("通過順", []) or [])[:5]
+    recent_finishes = [
+        finish
+        for finish in (horse.get("着順", []) or [])[:5]
+        if isinstance(finish, int)
+    ]
+
+    push_count = sum(
+        1
+        for flow in recent_flows
+        if (
+            len(flow) >= 2
+            and flow[-1] <= flow[0] - 2
+        )
+    )
+
+    top3_count = sum(
+        1
+        for finish in recent_finishes
+        if finish <= 3
+    )
+
+    top5_count = sum(
+        1
+        for finish in recent_finishes
+        if finish <= 5
+    )
+
+    eligible = (
+        push_count >= 1
+        and top5_count >= 3
+        and top3_count >= 1
+    )
+
+    return {
+        "対象": eligible,
+        "係数": 0.70 if eligible else 1.0,
+        "押し上げ回数": push_count,
+        "3着以内回数": top3_count,
+        "5着以内回数": top5_count,
+        "対象着順": recent_finishes,
+    }
+
+
 def extract_current_jockey(horse_row):
     """
     NAR出馬表の現在騎手だけを取得する。
@@ -3898,6 +3958,24 @@ for h in horses:
         nankan_transfer_first_horse_numbers.add(
             h["馬番"]
         )
+
+# ==================================================
+# 全会場共通・押し上げ＋好着順馬の垂れ減点救済
+#
+# 後段のC/B/F/Eで同じ条件を別々に再計算せず、
+# ここで1頭につき1回だけ判定して共通利用する。
+# ==================================================
+for h in horses:
+    fade_relief_info = (
+        calc_push_good_finish_fade_relief(h)
+    )
+
+    h["押し上げ好走垂れ救済"] = fade_relief_info[
+        "対象"
+    ]
+    h["垂れ減点係数"] = fade_relief_info["係数"]
+    h["垂れ減点救済情報"] = fade_relief_info
+
 # ==================================================
 # JRA転入馬の3段階判定
 #
@@ -6106,9 +6184,32 @@ for horse in horses:
     # 画面の「失速」には通常失速＋反復垂れをまとめて表示。
     # これにより、例えば従来 -120 の馬が
     # 反復垂れ2回なら -220 になる。
-    applied_risk_penalty = (
+    fade_relief_factor = horse.get(
+        "垂れ減点係数",
+        1.0,
+    )
+
+    fade_relief_before_risk_penalty = (
         base_applied_risk_penalty
         + applied_repeat_front_fade_penalty
+    )
+
+    relieved_base_risk_penalty = round(
+        base_applied_risk_penalty
+        * fade_relief_factor,
+        1,
+    )
+
+    relieved_repeat_front_fade_penalty = round(
+        applied_repeat_front_fade_penalty
+        * fade_relief_factor,
+        1,
+    )
+
+    applied_risk_penalty = round(
+        relieved_base_risk_penalty
+        + relieved_repeat_front_fade_penalty,
+        1,
     )
 
     # 水沢で今回距離帯がなく全過去走へ戻した場合だけ、
@@ -6129,6 +6230,12 @@ for horse in horses:
             0
         ),
         1
+    )
+
+    heavy_collapse_long_penalty = round(
+        heavy_collapse_long_penalty
+        * fade_relief_factor,
+        1,
     )
 
     score -= heavy_collapse_long_penalty
@@ -6233,13 +6340,19 @@ for horse in horses:
 
         # 能力とは別に管理した失速不安
         "元失速減点": raw_applied_risk_penalty,
+        "垂れ救済前失速減点": fade_relief_before_risk_penalty,
         "失速減点": applied_risk_penalty,
         "失速詳細": risk_details,
+        "垂れ減点係数": fade_relief_factor,
+        "垂れ減点救済情報": horse.get(
+            "垂れ減点救済情報",
+            {},
+        ),
 
         # 前半3番手以内から最終着順まで4つ以上後退した
         # レースが2回以上ある場合の追加減点。
         "反復垂れ回数": repeat_front_fade_count,
-        "反復垂れ減点": applied_repeat_front_fade_penalty,
+        "反復垂れ減点": relieved_repeat_front_fade_penalty,
         "反復垂れ詳細": repeat_front_fade_details,
 
         # 直近3走の前崩れ。
@@ -7960,6 +8073,80 @@ tenkai_type_priority = {
 # 軸タイプに合う脚質グループ内の最終タイブレークとして使う。
 # ==================================================
 
+def get_ability_distance_time(horse, purpose="total"):
+    """一般能力比較専用。専用の同距離実績判定からは呼ばない。
+
+    total/Mは従来の同距離上位2走平均、tenkaiは従来の同場優先最速。
+    同距離がない時だけ、同場・距離差100m以内の上位2走平均を使う。
+    """
+    import math
+
+    exact, nearby, rejected = [], [], []
+    for item in horse.get("距離付きタイム", []):
+        past_distance = item.get("距離")
+        same_track = bool(baba_name) and item.get("競馬場") == baba_name
+        row = {
+            "元距離": past_distance,
+            "元タイム": item.get("元タイム", item.get("タイム", "")),
+            "換算後の距離": distance_num,
+            "同競馬場": same_track,
+            "着順": item.get("着順"),
+        }
+        try:
+            if not isinstance(past_distance, (int, float)) or past_distance <= 0:
+                raise ValueError
+            is_exact = past_distance == distance_num
+            text = item.get("タイム", "") if is_exact else row["元タイム"]
+            minutes, seconds = text.split(":")
+            seconds = int(minutes) * 60 + float(seconds)
+            if not math.isfinite(seconds) or seconds <= 0:
+                raise ValueError
+        except (ValueError, TypeError, AttributeError):
+            rejected.append(dict(row, 理由="距離またはタイムが無効"))
+            continue
+        if is_exact:
+            if baba_name == "園田" and item.get("競馬場") == "姫路":
+                seconds += 5.0
+            elif baba_name == "姫路" and item.get("競馬場") == "園田":
+                seconds -= 5.0
+            exact.append(dict(row, 換算タイム=seconds))
+        elif not same_track:
+            rejected.append(dict(row, 理由="他競馬場の近似距離は対象外"))
+        elif abs(past_distance - distance_num) > 100:
+            rejected.append(dict(row, 理由="距離差が100m超"))
+        else:
+            nearby.append(dict(row, 換算タイム=seconds * distance_num / past_distance))
+
+    mode, reason, selected = "有効タイムなし", "対象となる有効タイムなし", []
+    if exact:
+        pool = exact
+        if purpose == "tenkai":
+            pool = [r for r in exact if r["同競馬場"]] or exact
+        selected = sorted(pool, key=lambda r: r["換算タイム"])[:1 if purpose == "tenkai" else 2]
+        mode, reason = "完全同距離", "完全同距離の有効タイムあり（近似距離は不使用）"
+    elif nearby:
+        selected = sorted(nearby, key=lambda r: r["換算タイム"])[:2]
+        if any(isinstance(r["着順"], (int, float)) and 1 <= r["着順"] <= 5 for r in selected):
+            mode, reason = "同競馬場・近似距離換算", ""
+        else:
+            rejected.extend(dict(r, 理由="採用上位2走に5着以内なし（着順不明を含む）") for r in selected)
+            selected = []
+            reason = "採用上位2走に5着以内なし（着順不明を含む）"
+    times = [r["換算タイム"] for r in selected]
+    representative = sum(times) / len(times) if times else None
+    return {
+        "代表タイム": representative, "秒": representative,
+        "使用タイム": times, "使用数": len(times),
+        "完全同距離": mode == "完全同距離", "モード": mode,
+        "元の距離": [r["元距離"] for r in selected],
+        "換算後の距離": distance_num,
+        "同競馬場": all(r["同競馬場"] for r in selected) if selected else None,
+        "採用走の着順": [r["着順"] for r in selected],
+        "採用走": selected, "除外走": rejected, "救済なし理由": reason,
+        "近似距離係数": 0.80 if mode == "同競馬場・近似距離換算" else 1.0,
+    }
+
+
 def get_tenkai_same_distance_best_time(horse):
     same_track_times = []
     fallback_times = []
@@ -8022,10 +8209,7 @@ def get_tenkai_same_distance_best_time(horse):
             "モード": "他場・同距離",
         }
 
-    return {
-        "秒": None,
-        "モード": "同距離タイムなし",
-    }
+    return get_ability_distance_time(horse, purpose="tenkai")
 
 
 tenkai_same_distance_time_info = {}
@@ -8049,7 +8233,10 @@ valid_tenkai_times = sorted(
         in tenkai_same_distance_time_info.items()
         if info.get("秒") is not None
     ],
-    key=lambda x: (x[0], x[1]),
+    key=lambda x: (
+        tenkai_same_distance_time_info[x[1]].get("モード") == "同競馬場・近似距離換算",
+        x[0], x[1],
+    ),
 )
 
 tenkai_time_rank_map = {
@@ -8111,12 +8298,23 @@ def judge_tenkai_elimination(
     ④ 最新走大失速＋大敗
        最新走の大失速強度が100％で、最新着順も8着以下。
 
+    ただし押し上げ実績と複数の好着順が両立する馬は、
+    ①と④を強制消去にせず、後段の数値減点へ戻す。
+
     軸馬自身は別で除外する。
     """
 
     reasons = []
 
-    if horse.get("近走前崩れ", False):
+    fade_relief_active = horse.get(
+        "押し上げ好走垂れ救済",
+        False,
+    )
+
+    if (
+        horse.get("近走前崩れ", False)
+        and not fade_relief_active
+    ):
         reasons.append("近走前崩れ")
 
     recent_finishes = [
@@ -8177,6 +8375,7 @@ def judge_tenkai_elimination(
         if (
             horse.get("直近大失速強度", 0) >= 1.0
             and recent_finishes[0] >= 8
+            and not fade_relief_active
         ):
             reasons.append(
                 "最新走大失速＋8着以下"
@@ -8857,6 +9056,19 @@ for horse in horses:
         risk_penalty += 25
         risk_reasons.append("直近大失速")
 
+    raw_risk_penalty = risk_penalty
+    fade_relief_factor = horse.get(
+        "垂れ減点係数",
+        1.0,
+    )
+    risk_penalty = round(
+        raw_risk_penalty * fade_relief_factor,
+        1,
+    )
+
+    if fade_relief_factor < 1.0 and raw_risk_penalty > 0:
+        risk_reasons.append("押し上げ＋好着順で70％")
+
     # ==================================================
     # 🌊 展開馬専用クラス補正
     #
@@ -9115,6 +9327,8 @@ for horse in horses:
             else None
         ),
         "リスク減点": risk_penalty,
+        "元リスク減点": raw_risk_penalty,
+        "垂れ減点係数": fade_relief_factor,
         "リスク理由": risk_reasons,
         "近走前崩れ": style_info.get(
             "近走前崩れ",
@@ -9253,6 +9467,12 @@ for horse in horses:
         "使用タイム": top_exact_times,
         "使用数": len(top_exact_times),
     }
+
+# 一般能力比較だけに使う共通情報。完全同距離の既存基準表は変更しない。
+ability_distance_time_map = {
+    horse["馬番"]: get_ability_distance_time(horse)
+    for horse in horses
+}
 
 # 同距離タイムを持つ馬が2頭以上いる場合だけ、
 # 総合の持ちタイム点を有効にする
@@ -9524,15 +9744,16 @@ for horse in horses:
     used_times = []
 
     # 総合評価では、
-    # 今回と完全に同じ距離のタイムだけを使用する
+    # 完全同距離を優先し、ない馬だけ共通の近似距離救済を使用する
     time_info = (
-        total_same_distance_time_map.get(
+        ability_distance_time_map.get(
             horse_no
         )
     )
 
     if (
         time_info is not None
+        and time_info.get("代表タイム") is not None
         and fastest_same_distance_average_time
         is not None
     ):
@@ -9598,6 +9819,9 @@ for horse in horses:
         # ==================================================
         if baba_name == "高知":
             time_score *= 1.25
+
+        if time_info["モード"] == "同競馬場・近似距離換算":
+            time_score = min(96.0, time_score * 0.80)
 
         total_score += time_score
 
@@ -10057,6 +10281,17 @@ for horse in horses:
             penalty_weight = 1.0
             relief_reasons = []
 
+            fade_relief_factor = horse.get(
+                "垂れ減点係数",
+                1.0,
+            )
+
+            if fade_relief_factor < 1.0:
+                penalty_weight *= fade_relief_factor
+                relief_reasons.append(
+                    "押し上げ＋好着順70％"
+                )
+
             # 南関から他地区への転入初戦は、
             # 従来どおり通常失速減点を40％へ弱める
             if is_nankan_transfer_first:
@@ -10136,6 +10371,15 @@ for horse in horses:
         ),
         "クラス補正後スコア": total_score,
         "持ちタイムスコア": time_score,
+        "持ちタイム救済詳細": dict(
+            time_info or {},
+            最終持ちタイム点=time_score,
+            比較基準タイム=fastest_same_distance_average_time,
+            点数判定理由=(
+                "完全同距離タイムを持つ馬が2頭未満のため通常方式の点数は0（NAR救済は従来どおり）"
+                if fastest_same_distance_average_time is None else "既存の完全同距離比較基準を使用"
+            ),
+        ),
 
         # 現在は上位2走の平均タイム
         "ベストタイム": best_time,
@@ -10985,6 +11229,14 @@ if debug_mode:
                 f"{h.get('最終総合順位', 99)}位"
             )
 if debug_mode:
+    with st.expander("持ちタイム・近似距離救済の詳細（全馬）", expanded=False):
+        for candidate in total_candidates:
+            st.write({
+                "馬番": candidate["馬番"], "馬名": candidate["馬名"],
+                **candidate.get("持ちタイム救済詳細", {}),
+            })
+
+if debug_mode:
 
     with st.expander(
         "👑 総合力ランキング",
@@ -11283,7 +11535,16 @@ for h in ana_base_candidates:
                     key=lambda x: x["減点"],
                 )
 
-                race_penalty = strongest["減点"]
+                base_race_penalty = strongest["減点"]
+                fade_relief_factor = target_horse.get(
+                    "垂れ減点係数",
+                    1.0,
+                )
+                race_penalty = round(
+                    base_race_penalty
+                    * fade_relief_factor,
+                    1,
+                )
 
                 # 同一レースは最大減点1回だけ
                 ana_score -= race_penalty
@@ -11295,7 +11556,9 @@ for h in ana_base_candidates:
                     "着順": finish,
                     "採用理由": strongest["理由"],
                     "深度": strongest["深度"],
+                    "元減点": base_race_penalty,
                     "減点": race_penalty,
+                    "垂れ減点係数": fade_relief_factor,
                 })
 
         # 1600m以上は差し・押し上げ型を少し評価
@@ -13766,7 +14029,7 @@ def build_iwate_axis_bet_override(context):
     return result
 
 def build_monbetsu_axis_bet_override(context):
-    """門別の買い目を正式3分類だけで作る。"""
+    """門別の3分類ルールに、主先行・副追い込みの2点目例外を適用。"""
     axis_type = context["axis_type"]
     third_trio = build_adg_or_abg_trio(
         context["d_is_a"]
@@ -13813,6 +14076,25 @@ def build_monbetsu_axis_bet_override(context):
         result["三連複"].append(["A", "C", "G"])
     else:
         result["三連複"].append(third_trio)
+
+    # 門別のみ、表示上の主：先行・副：追い込みは2点目をA-L-I。
+    if (
+        context.get("axis_primary") == "先行"
+        and context.get("axis_secondary") == "追い込み"
+    ):
+        result["三連複"][1] = ["A", "L", "I"]
+
+    # 門別のみ、主：逃げ・副：先行は1点目A-B-C、2点目A-C-E。
+    if (
+        context.get("axis_primary") == "逃げ"
+        and context.get("axis_secondary") == "先行"
+    ):
+        result["三連複"][0] = ["A", "B", "C"]
+        result["三連複"][1] = ["A", "C", "E"]
+
+    # 門別のみ、主脚質が展開待ちなら三連複2点目をA-F-C。
+    if context.get("axis_primary") == "展開待ち":
+        result["三連複"][1] = ["A", "F", "C"]
 
     return result
 
@@ -14082,8 +14364,7 @@ for track in ("盛岡", "水沢"):
         for axis_type in BET_AXIS_TYPES_3
     }
 
-# 門別は正式3分類だけで作り、旧逃げ／先行、legacy、
-# 副脚質、existing_template、A≠F分岐には依存しない。
+# 門別は正式3分類を基本とし、主先行・副追い込みの2点目だけ例外を適用。
 VENUE_AXIS_BET_OVERRIDES["門別"] = {
     axis_type: build_monbetsu_axis_bet_override
     for axis_type in BET_AXIS_TYPES_3
@@ -14587,7 +14868,7 @@ m_single = [
 # ※園田でBそのものをMへ差し替える既存仕様はこの下で維持する。
 # ==================================================
 def get_m_same_distance_time(h):
-    time_info = total_same_distance_time_map.get(
+    time_info = ability_distance_time_map.get(
         h["馬番"]
     )
 
@@ -14604,10 +14885,9 @@ def sort_m_group_by_time(group):
         group,
         key=lambda h: (
             # 同距離タイムを持つ馬を先にする
-            0
-            if get_m_same_distance_time(h)
-            is not None
-            else 1,
+            (0 if ability_distance_time_map[h["馬番"]]["完全同距離"] else 1)
+            if get_m_same_distance_time(h) is not None
+            else 2,
 
             # 持ちタイムは小さいほど速い
             get_m_same_distance_time(h)
@@ -15434,525 +15714,119 @@ def make_unique_trio_bets(
     selected_symbols,
     excluded_numbers=None,
 ):
+    """通常三連複だけを、同じ役割の候補順で最小限補正する。
+
+    他の買い目での相手馬の再使用は許可する。買い目内の重複は
+    後ろ側だけを変更し、3頭完全一致は変更頭数を最小にして
+    後ろ側の繰り下げを優先する。Aと共有の選出結果は変更しない。
     """
-    三連複を上から順番に作る。
-
-    三連複1点目にFがあり、
-    後詰めFの本来1位が軸Aと同じ馬だった場合だけ、
-    1点目のFを先行馬へ変更する。
-
-    先行馬1位が軸・別枠・斬り捨て馬と被る場合は、
-    先行馬2位、3位へ順番に繰り下げる。
-
-    有効な先行馬がいない場合は、
-    通常の後詰めFの繰り下げ馬をそのまま使う。
-
-    2点目以降のFには影響させない。
-    軸Aは固定する。
-
-    さらに、AとFが別馬のため2点目がA-F-○になり、
-    1点目と同じ3頭になった場合は、
-    本来の抑え候補を3頭目として優先する。
-    """
-
-    excluded_numbers = set(
-        excluded_numbers or set()
-    )
-
+    excluded_numbers = set(excluded_numbers or ())
     result = []
     used_trio_keys = set()
 
-    # 後詰めFと展開Bが同じ馬なら、
-    # 三連複の重複解消時にその馬を優先して残す
-    protected_fb_number = None
-
-    if (
-        f_pool
-        and b_pool
-        and get_num(f_pool[0]) == get_num(b_pool[0])
-    ):
-        protected_fb_number = get_num(
-            f_pool[0]
+    # 各役の既存ランキング順。別役や全出走馬での補充は行わない。
+    partner_rank_pools = {
+        "F": unique_texts([total_best_horse] + [horse_text(h) for h in total_candidates]),
+        "C": unique_texts([long_spurt_horse] + [horse_text(h) for h in long_spurt_candidates]),
+        "D": unique_texts([front_horse] + [horse_text(h) for h in front_candidates]),
+        "B": unique_texts(
+            [horse_text(h) for h in m_selection_candidates]
+            if sonoda_b_uses_m else
+            [tenkai_horse] + [horse_text(h) for h in tenkai_rank_for_trio]
+            + [horse_text(h) for h in tenkai_candidates]
+        ),
+        "M": unique_texts([horse_text(h) for h in m_selection_candidates]),
+        "J": list(j_pool),
+        "K": list(k_pool),
+        "L": unique_texts(l_base_pool),
+    }
+    hole_rank_numbers = {
+        get_num(h) for h in unique_texts(
+            [ana_horse, ana_second_horse, ana_third_horse,
+             ana_fourth_horse, ana_fifth_horse]
+            + [horse_text(h) for h in ana_fallback]
         )
-
-    # 三連複1点目のF置き換え専用
-    # all_bet_poolは入れず、本当の先行候補だけを使う
-    first_trio_front_pool = unique_texts(
-        [front_horse]
-        + [
-            horse_text(h)
-            for h in front_candidates
+    }
+    for symbol in ("E", "G", "I", "N"):
+        partner_rank_pools[symbol] = [
+            h for h in alphabet_candidate_pools.get(symbol, [])
+            if get_num(h) in hole_rank_numbers
         ]
-    )
 
-    for bet_index, symbol_list in enumerate(
-        symbol_templates
-    ):
-
-        # この買い目だけで使う記号
-        # 元のselected_symbolsは変更しない
-        bet_selected_symbols = dict(
-            selected_symbols
-        )
-
-        # ==================================================
-        # 三連複1点目限定
-        #
-        # 後詰めFの本来1位が軸Aと同じ馬なら、
-        # 1点目のFだけ先行馬へ変更する。
-        #
-        # 脚色タイプ名では判定しないため、
-        # どの脚色でも1点目にFがあれば共通で適用される。
-        # ==================================================
-        if (
-            bet_index == 0
-            and "F" in symbol_list
-            and f_pool
-            and get_num(f_pool[0]) == popular_horse_num
-        ):
-
-            # F以外ですでに使われる馬番
-            other_numbers = {
-                get_num(
-                    bet_selected_symbols[symbol]
-                )
-                for symbol in symbol_list
-                if (
-                    symbol != "F"
-                    and symbol in bet_selected_symbols
-                )
-            }
-
-            front_replacement = next(
-                (
-                    candidate
-                    for candidate
-                    in first_trio_front_pool
-                    if (
-                        get_num(candidate)
-                        not in excluded_numbers
-
-                        and get_num(candidate)
-                        not in other_numbers
-                    )
-                ),
-                None,
-            )
-
-            # 有効な先行馬が見つかった時だけ変更
-            # 見つからなければ通常のFを維持する
-            if front_replacement is not None:
-                bet_selected_symbols["F"] = (
-                    front_replacement
-                )
-
-        if not all(
-            symbol in bet_selected_symbols
-            for symbol in symbol_list
+    for symbol_list in symbol_templates:
+        if len(symbol_list) != 3 or any(
+            symbol not in selected_symbols for symbol in symbol_list
         ):
             continue
+        bet = [selected_symbols[symbol] for symbol in symbol_list]
+        numbers = [get_num(horse) for horse in bet]
+        key = frozenset(numbers)
+        invalid_indices = set()
+        seen = {
+            number for symbol, number in zip(symbol_list, numbers)
+            if symbol == "A"
+        }
+        for index, (symbol, number) in enumerate(zip(symbol_list, numbers)):
+            if symbol == "A":
+                continue
+            if number is None or number in excluded_numbers or number in seen:
+                invalid_indices.add(index)
+            seen.add(number)
 
-        bet = [
-            bet_selected_symbols[symbol]
-            for symbol in symbol_list
-        ]
-
-        bet_numbers = [
-            get_num(horse_name)
-            for horse_name in bet
-        ]
-
-        bet_key = frozenset(
-            bet_numbers
-        )
-
-        # 同じ買い目内で3頭が別馬、
-        # かつ過去の三連複と同じ組み合わせでなければ確定
-        if (
-            len(bet_numbers) == 3
-            and len(set(bet_numbers)) == 3
-            and bet_key not in used_trio_keys
-        ):
+        if (None not in numbers and not excluded_numbers.intersection(numbers)
+                and len(key) == 3 and key not in used_trio_keys):
             result.append(bet)
-            used_trio_keys.add(bet_key)
+            used_trio_keys.add(key)
             continue
 
-        resolved_bet = None
-
-        # ==================================================
-        # 三連複2点目 A-F-○ の重複対策
-        #
-        # Aと後詰めFが別馬のため2点目を A-F-○ にした結果、
-        # 1点目と同じ3頭になった場合は、
-        # ○を「本来の抑え候補」へ差し替える。
-        #
-        # ここでは ana_candidates だけを使い、
-        # 穴2・穴3や全出走馬への補充は行わない。
-        # 抑え候補で有効な3頭目を作れなかった場合だけ、
-        # 下の従来の重複解消ロジックへ進む。
-        # ==================================================
-        if (
-            bet_index == 1
-            and len(symbol_list) >= 2
-            and symbol_list[0] == "A"
-            and symbol_list[1] == "F"
-            and bet_key in used_trio_keys
-            and ana_candidates
-        ):
-            second_trio_osae_pool = unique_texts(
-                [
-                    horse_text(h)
-                    for h in ana_candidates
-                ]
-            )
-
-            for candidate in second_trio_osae_pool:
-
-                candidate_number = get_num(candidate)
-
-                if candidate_number in excluded_numbers:
-                    continue
-
-                test_bet = [
-                    bet[0],
-                    bet[1],
-                    candidate,
-                ]
-
-                test_numbers = [
-                    get_num(horse_name)
-                    for horse_name in test_bet
-                ]
-
-                # A・F・抑えの3頭がすべて別馬であること
-                if len(set(test_numbers)) != 3:
-                    continue
-
-                test_key = frozenset(test_numbers)
-
-                # 1点目と同じ3頭なら次の抑え候補へ
-                if test_key in used_trio_keys:
-                    continue
-
-                resolved_bet = test_bet
-                break
-
-            # 抑え候補で解決できた場合は、
-            # 後続のCや穴候補への繰り下げ処理を行わず確定する。
-            if resolved_bet is not None:
-                result.append(resolved_bet)
-                used_trio_keys.add(
-                    frozenset(
-                        get_num(horse_name)
-                        for horse_name in resolved_bet
-                    )
-                )
-                continue
-        # 右側の記号から順番に次候補を探す。
-        # Aは軸なので変更しない。
-        for change_index in range(
-            len(symbol_list) - 1,
-            -1,
-            -1,
-        ):
-
-            change_symbol = symbol_list[
-                change_index
-            ]
-
-            if change_symbol == "A":
-                continue
-
-            candidate_pool = (
-                alphabet_candidate_pools.get(
-                    change_symbol,
-                    all_bet_pool,
-                )
-            )
-
-            current_horse = (
-                bet_selected_symbols[
-                    change_symbol
-                ]
-            )
-
-            current_number = get_num(
-                current_horse
-            )
-
-            # 後詰めFと展開Bが一致した馬は、
-            # 重複解消でも動かさず優先して残す
-            if (
-                protected_fb_number is not None
-                and current_number
-                == protected_fb_number
+        # 買い目内の不成立は、その原因となった後ろ側だけを変更する。
+        # 完全重複の場合は右側1頭の全候補を優先し、足りない時だけ
+        # 左側1頭、最後に必要な複数頭の変更を検討する。
+        options = []
+        for index, (symbol, number) in enumerate(zip(symbol_list, numbers)):
+            candidates = [bet[index]]
+            if symbol != "A" and (
+                not invalid_indices or index in invalid_indices
             ):
-                continue
-
-            # 現在選ばれている馬が、
-            # 候補プールの何番目かを確認
-            current_pool_index = next(
-                (
-                    index
-                    for index, candidate
-                    in enumerate(candidate_pool)
-                    if get_num(candidate)
-                    == current_number
-                ),
-                -1,
-            )
-
-            # 現在馬より下位の候補だけを試す
-            next_candidates = candidate_pool[
-                current_pool_index + 1:
-            ]
-
-            for candidate in next_candidates:
-
-                candidate_number = get_num(
-                    candidate
+                pool = partner_rank_pools.get(symbol, [])
+                current_index = next(
+                    (i for i, horse in enumerate(pool) if get_num(horse) == number),
+                    None,
                 )
+                # ランキング外の選出馬の順位は推測しない。
+                if current_index is not None:
+                    candidates += pool[current_index + 1:]
+            options.append(unique_texts(candidates))
 
-                if (
-                    candidate_number
-                    in excluded_numbers
-                ):
+        best_bet = None
+        best_cost = None
+
+        def search(index, chosen, chosen_numbers, ranks):
+            nonlocal best_bet, best_cost
+            if index == 3:
+                if frozenset(chosen_numbers) in used_trio_keys:
+                    return
+                changes = tuple(
+                    int(number != original)
+                    for number, original in zip(chosen_numbers, numbers)
+                )
+                # 変更頭数 → 左側維持 → 同じ役割の候補順。
+                cost = (sum(changes), changes, tuple(ranks))
+                if best_cost is None or cost < best_cost:
+                    best_bet, best_cost = list(chosen), cost
+                return
+            for rank, horse in enumerate(options[index]):
+                number = get_num(horse)
+                if (number is None or number in excluded_numbers
+                        or number in chosen_numbers):
                     continue
+                search(index + 1, chosen + [horse],
+                       chosen_numbers + [number], ranks + [rank])
 
-                test_bet = bet[:]
-
-                test_bet[
-                    change_index
-                ] = candidate
-
-                test_numbers = [
-                    get_num(horse_name)
-                    for horse_name in test_bet
-                ]
-
-                # 同じ三連複内で馬が被る候補は不可
-                if len(set(test_numbers)) != 3:
-                    continue
-
-                test_key = frozenset(
-                    test_numbers
-                )
-
-                # 1点目と同じ3頭なら、
-                # さらに次候補へ進む
-                if test_key in used_trio_keys:
-                    continue
-
-                resolved_bet = test_bet
-                break
-
-            if resolved_bet is not None:
-                break
-
-        if resolved_bet is not None:
-
-            result.append(
-                resolved_bet
-            )
-
-            used_trio_keys.add(
-                frozenset(
-                    get_num(horse_name)
-                    for horse_name
-                    in resolved_bet
-                )
-            )
-
-            continue
-
-        # ==================================================
-        # 三連複の最終不足救済
-        #
-        # 記号上は別の買い目でも、実馬へ変換すると
-        # 1点目と同じ3頭になり、通常の次候補でも
-        # 解消できないことがある。
-        #
-        # 例：
-        #   A-B-E = 5-2-3
-        #   A-F-K = 5-2-3
-        #   （BとF、EとKが同じ馬）
-        #
-        # この場合、Aと2頭目の役割は固定したまま、
-        # 3頭目だけを「意味のある候補」へ救済する。
-        #
-        # 優先：
-        #   ① 元の3頭目記号の次候補
-        #   ② K（3角→4角追い込み）
-        #   ③ L（2角→4角総合追い込み）
-        #   ④ E（抑え）
-        #   ⑤ G（穴3）
-        #
-        # 同じ3頭の並び替えは三連複では同一なので不可。
-        # Aは絶対に動かさない。
-        # 1・2頭目もこの最終救済では動かさない。
-        # ==================================================
-        if (
-            len(symbol_list) == 3
-            and symbol_list[0] == "A"
-            and len(bet) == 3
-        ):
-
-            rescue_first = bet[0]
-            rescue_second = bet[1]
-
-            rescue_first_number = get_num(
-                rescue_first
-            )
-
-            rescue_second_number = get_num(
-                rescue_second
-            )
-
-            # Aと2頭目がすでに同一馬なら、
-            # 3頭目だけでは三連複を成立させられない。
-            if (
-                rescue_first_number
-                != rescue_second_number
-            ):
-
-                original_third_symbol = (
-                    symbol_list[2]
-                )
-
-                rescue_symbol_order = []
-
-                for rescue_symbol in (
-                    [original_third_symbol]
-                    + ["K", "L", "E", "G"]
-                ):
-                    if (
-                        rescue_symbol != "A"
-                        and rescue_symbol
-                        not in rescue_symbol_order
-                    ):
-                        rescue_symbol_order.append(
-                            rescue_symbol
-                        )
-
-                final_rescue_bet = None
-
-                for rescue_symbol in (
-                    rescue_symbol_order
-                ):
-
-                    rescue_pool = (
-                        alphabet_candidate_pools.get(
-                            rescue_symbol,
-                            [],
-                        )
-                    )
-
-                    if not rescue_pool:
-                        continue
-
-                    # その記号が今回すでに選出済みなら、
-                    # 本来候補から下位へ順送りする。
-                    # 未使用記号ならランキング1位から試す。
-                    selected_rescue_horse = (
-                        bet_selected_symbols.get(
-                            rescue_symbol
-                        )
-                        or selected_symbols.get(
-                            rescue_symbol
-                        )
-                    )
-
-                    rescue_start_index = 0
-
-                    if selected_rescue_horse:
-
-                        selected_rescue_number = (
-                            get_num(
-                                selected_rescue_horse
-                            )
-                        )
-
-                        found_index = next(
-                            (
-                                index
-                                for index, candidate
-                                in enumerate(
-                                    rescue_pool
-                                )
-                                if get_num(candidate)
-                                == selected_rescue_number
-                            ),
-                            -1,
-                        )
-
-                        if found_index >= 0:
-                            rescue_start_index = (
-                                found_index
-                            )
-
-                    for candidate in rescue_pool[
-                        rescue_start_index:
-                    ]:
-
-                        candidate_number = get_num(
-                            candidate
-                        )
-
-                        if (
-                            candidate_number
-                            in excluded_numbers
-                        ):
-                            continue
-
-                        if candidate_number in {
-                            rescue_first_number,
-                            rescue_second_number,
-                        }:
-                            continue
-
-                        test_bet = [
-                            rescue_first,
-                            rescue_second,
-                            candidate,
-                        ]
-
-                        test_numbers = [
-                            get_num(horse_name)
-                            for horse_name
-                            in test_bet
-                        ]
-
-                        if len(set(test_numbers)) != 3:
-                            continue
-
-                        test_key = frozenset(
-                            test_numbers
-                        )
-
-                        if test_key in used_trio_keys:
-                            continue
-
-                        final_rescue_bet = (
-                            test_bet
-                        )
-                        break
-
-                    if final_rescue_bet is not None:
-                        break
-
-                if final_rescue_bet is not None:
-
-                    result.append(
-                        final_rescue_bet
-                    )
-
-                    used_trio_keys.add(
-                        frozenset(
-                            get_num(horse_name)
-                            for horse_name
-                            in final_rescue_bet
-                        )
-                    )
+        search(0, [], [], [])
+        if best_bet is not None:
+            result.append(best_bet)
+            used_trio_keys.add(frozenset(get_num(horse) for horse in best_bet))
 
     return result
 
@@ -16020,103 +15894,8 @@ if len(trio_bets) < required_trio_count:
     )
     trio_symbol_source = normal_bet_symbols
 
-# ==================================================
-# 水沢限定・三連複3点の最終保証
-#
-# 通常の記号選出＋重複回避で3点作れなかった時だけ発動。
-# 既に作れた買い目はそのまま残し、A（軸）も固定する。
-# 他会場、水沢で最初から3点作れているケースには影響しない。
-# ==================================================
-if (
-    baba_name == "水沢"
-    and len(trio_bets) < required_trio_count
-):
-    rescued_trio_bets = [
-        bet[:]
-        for bet in trio_bets
-    ]
-
-    used_trio_keys = {
-        frozenset(
-            get_num(horse_name)
-            for horse_name in bet
-        )
-        for bet in rescued_trio_bets
-        if len(bet) == 3
-    }
-
-    axis_horse = (
-        normal_bet_symbols.get("A")
-        or popular
-    )
-    axis_number = get_num(
-        axis_horse
-    )
-
-    # 追い込み系を最優先し、既存の抑え・穴・地力・先行・展開候補へ広げる。
-    # all_bet_poolは最後の安全網。
-    mizusawa_rescue_pool = unique_texts(
-        l_pool
-        + k_pool
-        + e_pool
-        + g_pool
-        + i_pool
-        + c_pool
-        + d_pool
-        + b_pool
-        + all_bet_pool
-    )
-
-    mizusawa_rescue_pool = [
-        candidate
-        for candidate in mizusawa_rescue_pool
-        if get_num(candidate) != axis_number
-    ]
-
-    for second_index in range(
-        len(mizusawa_rescue_pool)
-    ):
-        if len(rescued_trio_bets) >= required_trio_count:
-            break
-
-        second_horse = mizusawa_rescue_pool[
-            second_index
-        ]
-        second_number = get_num(
-            second_horse
-        )
-
-        for third_horse in mizusawa_rescue_pool[
-            second_index + 1:
-        ]:
-            third_number = get_num(
-                third_horse
-            )
-
-            if third_number == second_number:
-                continue
-
-            test_key = frozenset({
-                axis_number,
-                second_number,
-                third_number,
-            })
-
-            if test_key in used_trio_keys:
-                continue
-
-            rescued_trio_bets.append([
-                axis_horse,
-                second_horse,
-                third_horse,
-            ])
-            used_trio_keys.add(
-                test_key
-            )
-            break
-
-    trio_bets = rescued_trio_bets
-    trio_symbol_source = normal_bet_symbols
+# 通常三連複の不足時も別役ランキングの混成補充は行わない。
+# 同じ役割の候補で成立する点だけを上の処理で確定する。
 
 required_wide_count = len(
     current_bet_template[
