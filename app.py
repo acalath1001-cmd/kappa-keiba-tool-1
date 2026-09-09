@@ -4368,7 +4368,21 @@ for horse in horses:
     #
     # 加点幅そのものは従来どおり。
     # ==================================================
-    if distance_num <= 1400:
+    # 850m以下は、同距離で前へ行けなかった実績を優先する。
+    # 通過順を確認できる同距離走がなければ従来の短縮加点を残す。
+    same_distance_front_flows = [
+        item.get("通過順", [])
+        for item in horse.get("距離付きタイム", [])
+        if item.get("距離") == distance_num
+        and item.get("通過順")
+    ]
+    allow_front_shortening_bonus = (
+        distance_num > 850
+        or not same_distance_front_flows
+        or any(1 <= flow[0] <= 4 for flow in same_distance_front_flows)
+    )
+
+    if distance_num <= 1400 and allow_front_shortening_bonus:
 
         max_shortening_for_front = (
             600
@@ -12448,7 +12462,7 @@ if total_best["馬番"] != popular_horse_num:
 
 # 園田では後段でM候補が確定してから、
 # この場所に「展開の向く馬」を描画する。
-# 園田・差し軸だけは従来の展開馬Bを表示する。
+# 園田・持続と差し軸は従来の展開馬Bを表示する。
 tenkai_card_placeholder = st.empty()
 
 show_card(
@@ -13756,6 +13770,13 @@ def build_kasamatsu_axis_bet_override(context):
             "D",
         ]
 
+    # 笠松・主先行／副逃げだけ、三連複3点目をA-B-Gにする。
+    if (
+        context["legacy_axis_type"] == "先行"
+        and context.get("axis_secondary") == "逃げ"
+    ):
+        result["三連複"][2] = ["A", "B", "G"]
+
     return result
 
 def build_urawa_funabashi_axis_bet_override(context):
@@ -14084,13 +14105,13 @@ def build_monbetsu_axis_bet_override(context):
     ):
         result["三連複"][1] = ["A", "L", "I"]
 
-    # 門別のみ、主：逃げ・副：先行は1点目A-B-C、2点目A-C-E。
+    # 門別のみ、主：逃げ・副：先行は1点目A-B-C、2点目A-F-E。
     if (
         context.get("axis_primary") == "逃げ"
         and context.get("axis_secondary") == "先行"
     ):
         result["三連複"][0] = ["A", "B", "C"]
-        result["三連複"][1] = ["A", "C", "E"]
+        result["三連複"][1] = ["A", "F", "E"]
 
     # 門別のみ、主脚質が展開待ちなら三連複2点目をA-F-C。
     if context.get("axis_primary") == "展開待ち":
@@ -14242,7 +14263,7 @@ def build_sonoda_axis_bet_override(context):
                 ["A", "C", "E"],
                 ["A", "B", "K"],
             ],
-            "ワイド": [["D", "C"]],
+            "ワイド": [["A", "B"]],
             "浮き輪": [["E", "D"]],
         },
         "差し": {
@@ -14865,7 +14886,7 @@ m_single = [
 # 既存のアルファベット競合処理で次のM候補へ繰り下がる。
 #
 # ※Mの取得・並び替えは全14会場共通。
-# ※園田でBそのものをMへ差し替える既存仕様はこの下で維持する。
+# ※園田・持続のBは通常の展開候補を使用し、M自体の選出は維持する。
 # ==================================================
 def get_m_same_distance_time(h):
     time_info = ability_distance_time_map.get(
@@ -14934,16 +14955,13 @@ m_pool = unique_texts(
 )
 
 # ==================================================
-# 園田・持続だけは、買い目上のB候補そのものをMプールへ差し替える。
+# 園田・持続のBは通常の展開候補を使用する（Mへの差し替えを解除）。
 #
 # 画面の「🌊 展開の向く馬」は、この時点ではまだ描画しない。
 # MやBは後段の重複回避・斬り捨て処理で次候補へ動く可能性があるため、
 # 最終買い目用の記号が確定した後に描画し、実際の買い目と一致させる。
 # ==================================================
-sonoda_b_uses_m = (
-    baba_name == "園田"
-    and bet_axis_type == "持続"
-)
+sonoda_b_uses_m = False
 
 # ==================================================
 # Mランキング・デバッグ表示
@@ -15009,15 +15027,9 @@ if debug_mode:
                 )
 
 #
-# 園田で正式3分類が「持続」の時だけ、
-# Bの候補プールを従来の展開b_poolではなく、
-# 「中間重複M＋持ちタイム優先」のm_poolへ差し替える。
-#
-# ・園田の前受けは買い目でBを使わず、Mを直接使用
-# ・園田の差し軸Bは従来どおりb_pool
-# ・他会場のBも従来どおりb_pool
-# ・画面の「展開の向く馬」欄もM馬へ連動
-# ・M記号そのものは従来どおりm_pool
+# 園田・持続も通常の展開b_poolを使用する。
+# M記号と、園田の前受けでMを直接使う既存仕様は維持する。
+# 既存の表示・繰り下げ処理も同じフラグで通常Bへ連動させる。
 # ==================================================
 sonoda_b_pool = (
     m_pool
