@@ -4043,6 +4043,43 @@ for h in horses:
         ),
     }
 
+# JRA好走実績は総合F・展開Bだけに追加する。
+# 取得済みの直近5走の最良着順を採用し、複数好走を重複加算しない。
+def calculate_jra_top5_bonus(horse):
+    recent = horse.get("全距離付きタイム", [])[:5]
+    local_count = sum(
+        item.get("競馬場", "") in LOCAL_TRACKS
+        for item in horse.get("全距離付きタイム", [])
+    )
+    factor = {0: 1.0, 1: 0.7, 2: 0.4}.get(local_count, 0.0)
+    finishes = []
+    for item in recent:
+        if item.get("競馬場", "") not in JRA_TRACKS:
+            continue
+        try:
+            finish = int(str(item.get("着順", "")).strip())
+        except (ValueError, TypeError):
+            continue
+        if 1 <= finish <= 5:
+            finishes.append(finish)
+    best = min(finishes) if finishes else None
+    total, pace = (60, 40) if best is not None and best <= 3 else (40, 25)
+    if best is None:
+        total, pace = 0, 0
+    return {
+        "総合": round(total * factor, 1),
+        "展開": round(pace * factor, 1),
+        "最良着順": best,
+        "地方走数": local_count,
+        "係数": factor,
+    }
+
+
+jra_top5_bonus_map = {
+    horse["馬番"]: calculate_jra_top5_bonus(horse)
+    for horse in horses
+}
+
 # 地方0走：JRA転入直後
 jra_horse_numbers = {
     horse_no
@@ -10119,6 +10156,9 @@ for horse in horses:
         # 従来どおり未知数として30点を加える
         total_score += 30
         debug_total_parts["JRA"] += 30
+    jra_top5_total_bonus = jra_top5_bonus_map.get(horse_no, {}).get("総合", 0)
+    total_score += jra_top5_total_bonus
+    debug_total_parts["JRA好走"] = jra_top5_total_bonus
     # ==================================================
     # 南関転入成功ボーナス
     # 南関経験があり、今回の競馬場でも好走している馬を評価
@@ -10541,7 +10581,8 @@ for candidate in tenkai_pre_candidates:
 
     final_tenkai_score = round(
         candidate["予備展開点"]
-        + total_rank_bonus,
+        + total_rank_bonus
+        + jra_top5_bonus_map.get(horse_no, {}).get("展開", 0),
         1,
     )
 
@@ -10549,6 +10590,7 @@ for candidate in tenkai_pre_candidates:
 
     candidate["最終総合順位"] = total_rank
     candidate["総合順位加点"] = total_rank_bonus
+    candidate["JRA好走加点"] = jra_top5_bonus_map.get(horse_no, {}).get("展開", 0)
     candidate["展開最終点"] = final_tenkai_score
 
     # 既存の後段処理は "スコア" を参照するため、
@@ -10660,6 +10702,7 @@ if not tenkai_candidates:
                 )
                 * 0.30,
             )
+            + jra_top5_bonus_map.get(horse_no, {}).get("展開", 0)
             + 0  # 総合順位は緊急救済でも加点しない
             + rescue_class_adjustment[
                 "経験加点"
@@ -13856,7 +13899,8 @@ def build_kawasaki_axis_bet_override(context):
     )
 
     if context["axis_type"] == "前受け":
-        result["三連複"][1] = ["A", "E", "G"]
+        result["三連複"][1] = ["A", "M", "G"]
+        result["ワイド"][1] = ["A", "M"]
 
     return result
 
@@ -14355,7 +14399,7 @@ for track in ("浦和", "船橋"):
     }
 
 # 川崎は持続・差しを浦和・船橋と共用し、
-# 前受けの三連複2点目だけA-E-Gへ変更する。
+# 前受けの三連複2点目だけA-M-Gへ変更する。
 VENUE_AXIS_BET_OVERRIDES["川崎"] = {
     axis_type: build_kawasaki_axis_bet_override
     for axis_type in BET_AXIS_TYPES_3
@@ -14692,9 +14736,75 @@ k_pool = unique_texts(
 #
 # 会場別A-B-L、佐賀先行軸、園田・先行＋追い込み軸、および岩手前受け軸で使用。
 # ==================================================
+def add_monbetsu_l_agari_bonus(ranking, horse_list, current_distance, track):
+    """門別のL候補だけに、完全同距離の上がり3F順位点を追加する。"""
+    if track != "門別":
+        return ranking
+    averages = {}
+    for horse in horse_list:
+        values = []
+        for run in horse.get("距離付きタイム", []):
+            if run.get("競馬場") != "門別":
+                continue
+            try:
+                run_distance = float(run.get("距離", 0))
+                agari = float(run.get("上がり3F"))
+            except (TypeError, ValueError):
+                continue
+            if run_distance == current_distance and 30.0 <= agari <= 50.0:
+                values.append(agari)
+        if values:
+            best = sorted(values)[:2]
+            averages[horse["馬番"]] = (round(sum(best) / len(best), 3), len(best))
+    ordered = sorted(value[0] for value in averages.values())
+    result = []
+    for horse in ranking:
+        item = dict(horse)
+        average, count = averages.get(horse["馬番"], (None, 0))
+        rank = ordered.index(average) + 1 if average is not None else None
+        bonus = {1: 50, 2: 35, 3: 20, 4: 10}.get(rank, 0)
+        item.update({
+            "L元スコア": horse["スコア"],
+            "上がり3F平均": average,
+            "上がり3F採用走数": count,
+            "上がり3F順位": rank,
+            "上がり3F加点": bonus,
+            "スコア": round(horse["スコア"] + bonus, 1),
+        })
+        result.append(item)
+    # 同点時は従来のLの並び順を維持する。
+    result.sort(key=lambda item: item["スコア"], reverse=True)
+    return result
+
+
+# L専用のコピーを使い、KやMが参照する元ランキングは変更しない。
+l_selection_ranking = add_monbetsu_l_agari_bonus(
+    corner_push_2to4, horses, distance_num, baba_name,
+)
+if debug_mode and baba_name == "門別":
+    with st.expander("門別L・同距離上がり3F加点", expanded=False):
+        st.caption(
+            f"門別{distance_num}mのみ。速い2走の平均（1走ならその値）。"
+            "全出走馬の実績で順位を付け、既存L候補に加点。"
+            "1位+50／2位+35／3位+20／4位+10、同値は同順位。"
+        )
+        for rank, horse in enumerate(l_selection_ranking, 1):
+            average = horse["上がり3F平均"]
+            evidence = (
+                f"{average:.2f}秒・{horse['上がり3F順位']}位"
+                f"（{horse['上がり3F採用走数']}走）"
+                if average is not None else "同距離の上がり実績なし"
+            )
+            st.write(
+                f"{rank}位｜{horse['馬番']}番 {horse['馬名']}｜"
+                f"元{horse['L元スコア']}点＋上がり{horse['上がり3F加点']}点"
+                f"＝{horse['スコア']}点｜{evidence}"
+            )
+
+
 l_base_pool = [
     horse_text(h)
-    for h in corner_push_2to4
+    for h in l_selection_ranking
 ]
 
 # 水沢だけ、2角→4角のL候補が少ない時に
