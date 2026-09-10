@@ -7854,6 +7854,7 @@ def classify_tenkai_candidate(horse):
 def calc_marble_tenkai_fit(
     axis_profile,
     candidate_profile,
+    time_leader_rescue=False,
 ):
     """
     軸の主・副脚質と、相手の主・副脚質を照合して
@@ -7875,7 +7876,7 @@ def calc_marble_tenkai_fit(
     if candidate_profile.get(
         "近走前崩れ",
         False,
-    ):
+    ) and not time_leader_rescue:
         return {
             "スコア": -999.0,
             "理由": [
@@ -8324,6 +8325,27 @@ axis_tenkai_time = (
 # ==================================================
 
 
+def get_tenkai_time_leader_numbers(horse_list):
+    """NAR当距離の最高タイム1位（同率含む）を返す。比較は2頭以上。"""
+    import math
+
+    records = [
+        (h["馬番"], h.get("最高タイム秒"))
+        for h in horse_list
+        if isinstance(h.get("最高タイム秒"), (int, float))
+        and not isinstance(h.get("最高タイム秒"), bool)
+        and math.isfinite(h["最高タイム秒"])
+        and h["最高タイム秒"] > 0
+    ]
+    if len(records) < 2:
+        return set()
+    fastest = min(seconds for _, seconds in records)
+    return {number for number, seconds in records if seconds == fastest}
+
+
+tenkai_time_leader_numbers = get_tenkai_time_leader_numbers(horses)
+
+
 def judge_tenkai_elimination(
     horse,
     long_distance_info=None,
@@ -8352,6 +8374,8 @@ def judge_tenkai_elimination(
     ただし押し上げ実績と複数の好着順が両立する馬は、
     ①と④を強制消去にせず、後段の数値減点へ戻す。
 
+    NAR当距離の最高タイム1位（同率含む）は①のみ免除する。
+    ②〜④と通常の垂れ減点は維持する。時計の比較は2頭以上必要。
     軸馬自身は別で除外する。
     """
 
@@ -8365,6 +8389,7 @@ def judge_tenkai_elimination(
     if (
         horse.get("近走前崩れ", False)
         and not fade_relief_active
+        and horse.get("馬番") not in tenkai_time_leader_numbers
     ):
         reasons.append("近走前崩れ")
 
@@ -9022,6 +9047,7 @@ for horse in horses:
     marble_fit = calc_marble_tenkai_fit(
         axis_marble_profile,
         style_info,
+        time_leader_rescue=horse_no in tenkai_time_leader_numbers,
     )
 
     front_rank = front_rank_map_for_tenkai.get(
@@ -10632,8 +10658,11 @@ if not tenkai_candidates:
         if horse_no == popular_horse_num:
             continue
 
-        # 近走前崩れだけは最後まで展開馬へ戻さない。
-        if horse.get("近走前崩れ", False):
+        # 前崩れの強制除外は、通常候補と同じ持ちタイム1位救済を適用。
+        if (
+            horse.get("近走前崩れ", False)
+            and horse_no not in tenkai_time_leader_numbers
+        ):
             continue
 
         style_info = classify_tenkai_candidate(
@@ -10643,6 +10672,7 @@ if not tenkai_candidates:
         marble_fit = calc_marble_tenkai_fit(
             axis_marble_profile,
             style_info,
+            time_leader_rescue=horse_no in tenkai_time_leader_numbers,
         )
 
         total_rank = final_total_rank_map.get(
@@ -11286,12 +11316,63 @@ if debug_mode:
                 f"{h.get('最終総合順位', 99)}位"
             )
 if debug_mode:
-    with st.expander("持ちタイム・近似距離救済の詳細（全馬）", expanded=False):
-        for candidate in total_candidates:
-            st.write({
-                "馬番": candidate["馬番"], "馬名": candidate["馬名"],
-                **candidate.get("持ちタイム救済詳細", {}),
+    with st.expander("持ちタイム比較・採用理由（全馬）", expanded=False):
+        def format_debug_race_time(value):
+            import math
+            if not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0:
+                return "—"
+            tenths = round(value * 10)
+            return f"{tenths // 600}:{(tenths % 600) / 10:04.1f}"
+
+        time_debug_horses = sorted(total_candidates, key=lambda h: int(h["馬番"]))
+        time_debug_rows = []
+        for candidate in time_debug_horses:
+            detail = candidate.get("持ちタイム救済詳細", {})
+            time_debug_rows.append({
+                "馬番": candidate["馬番"],
+                "馬名": candidate["馬名"],
+                "採用方式": detail.get("モード", "有効タイムなし"),
+                "評価用タイム": format_debug_race_time(detail.get("代表タイム")),
+                "採用数": detail.get("使用数", 0),
+                "元距離(m)": " / ".join(str(v) for v in detail.get("元の距離", [])) or "—",
+                "同じ競馬場": {True: "はい", False: "他場を含む", None: "—"}.get(detail.get("同競馬場"), "—"),
+                "持ちタイム点": round(detail.get("最終持ちタイム点", 0), 1),
             })
+        st.caption("馬番順に表示。評価用タイムは採用走の平均・換算値です。持ちタイム点にはNAR最高タイムによる救済も含みます。")
+        if time_debug_rows:
+            st.dataframe(time_debug_rows, use_container_width=True, hide_index=True)
+            time_debug_by_number = {h["馬番"]: h for h in time_debug_horses}
+            time_debug_selected = st.selectbox(
+                "採用走・見送り理由を確認する馬",
+                list(time_debug_by_number),
+                format_func=lambda number: f"{number}番 {time_debug_by_number[number]['馬名']}",
+                key="holding_time_debug_horse",
+            )
+            detail = time_debug_by_number[time_debug_selected].get("持ちタイム救済詳細", {})
+            st.write(f"比較基準タイム：{format_debug_race_time(detail.get('比較基準タイム'))}")
+            if detail.get("点数判定理由"):
+                st.caption(detail["点数判定理由"])
+            if detail.get("救済なし理由"):
+                st.caption(detail["救済なし理由"])
+            for label, runs in (("採用した過去走", detail.get("採用走", [])), ("見送った過去走", detail.get("除外走", []))):
+                st.markdown(f"**{label}**")
+                if not runs:
+                    st.write("該当なし")
+                    continue
+                run_rows = []
+                for run in runs:
+                    run_rows.append({
+                        "元距離(m)": run.get("元距離"),
+                        "元タイム": run.get("元タイム") or "—",
+                        "評価距離(m)": run.get("換算後の距離"),
+                        "評価用タイム": format_debug_race_time(run.get("換算タイム")),
+                        "着順": run.get("着順"),
+                        "競馬場": "同じ" if run.get("同競馬場") else "他場",
+                        "理由": run.get("理由", "採用"),
+                    })
+                st.dataframe(run_rows, use_container_width=True, hide_index=True)
+        else:
+            st.write("比較できるデータがありません。")
 
 if debug_mode:
 
@@ -12845,20 +12926,9 @@ is_nankan_large_field = (
 
 # 大井限定・逃げ軸
 # 三連複3点目 A-D-E / ワイド2点目 A-D
-is_ooi_escape = (
-    baba_name == "大井"
-    and kyakushoku_type == "逃げ"
-)
 
 # 大井限定・先行軸／持続軸
 # 頭数に関係なく三連複を専用3点へ固定する。
-is_ooi_senko_or_jizoku = (
-    baba_name == "大井"
-    and kyakushoku_type in {
-        "先行",
-        "持続",
-    }
-)
 
 # ==================================================
 # 先行軸・三連複の会場別／マーブル分岐
@@ -13332,127 +13402,6 @@ if (
     ]
 
 # ==================================================
-# 南関10頭以上
-#
-# 通常の三連複2点を残したまま、
-# 3点目だけ A-B-J を追加する。
-#
-# ただし大井・逃げ軸は専用3点目 A-D-E を使うため、
-# ここではA-B-Jを追加しない。
-#
-# 大井・先行軸／持続軸はこの後の専用処理で、
-# 頭数に関係なく三連複3点を丸ごと上書きする。
-# ==================================================
-append_nankan_large_field_trio(
-    current_bet_template,
-    (
-        is_nankan_large_field
-        and not is_ooi_escape
-    ),
-)
-
-# ==================================================
-# 大井限定・先行軸／持続軸
-#
-# 頭数に関係なく三連複を3点へ固定する。
-#
-# 1点目
-#   先行軸 → A-B-D
-#   持続軸 → A-B-C
-#
-# 2点目
-#   共通   → A-G-L
-#
-# 3点目
-#   先行軸 → A-D-G
-#   持続軸 → A-K-J
-#
-# L＝2角→4角【総合追い込み】ランキング1位。
-# K＝3角→4角【勝負所重視】追い込みランキング1位。
-# J＝前進気勢3位。
-# ==================================================
-if is_ooi_senko_or_jizoku:
-    ooi_first_trio = (
-        [
-            "A",
-            "B",
-            "C",
-        ]
-        if kyakushoku_type == "持続"
-        else [
-            "A",
-            "B",
-            "D",
-        ]
-    )
-
-    ooi_third_trio = (
-        [
-            "A",
-            "K",
-            "J",
-        ]
-        if kyakushoku_type == "持続"
-        else [
-            "A",
-            "D",
-            "G",
-        ]
-    )
-
-    current_bet_template[
-        "三連複"
-    ] = [
-        ooi_first_trio,
-        [
-            "A",
-            "G",
-            "L",
-        ],
-        ooi_third_trio,
-    ]
-
-# ==================================================
-# 大井限定・逃げ軸
-#
-# 三連複3点目：A-D-E
-# ワイド2点目：A-D
-#
-# 頭数に関係なく大井の逃げ軸では三連複を3点にする。
-# 南関10頭以上の通常3点目 A-B-J よりこちらを優先する。
-# ==================================================
-if is_ooi_escape:
-
-    ooi_escape_trio3 = [
-        "A",
-        "D",
-        "E",
-    ]
-
-    if len(
-        current_bet_template[
-            "三連複"
-        ]
-    ) >= 3:
-        current_bet_template[
-            "三連複"
-        ][2] = ooi_escape_trio3
-
-    else:
-        current_bet_template[
-            "三連複"
-        ].append(
-            ooi_escape_trio3
-        )
-
-    current_bet_template[
-        "ワイド"
-    ][1] = [
-        "A",
-        "D",
-    ]
-
-# ==================================================
 # 南関以外・A-Bワイド100円を三連複3点目へ移行
 #
 # 南関4場（浦和・船橋・大井・川崎）は完全に現状維持。
@@ -13601,71 +13550,6 @@ if is_non_nankan_bet_track:
         ].append(
             non_nankan_extra_trio_symbols
         )
-
-# ==================================================
-# 園田限定・軸に「逃げ」または「先行」が入る時
-#
-# 主脚質または副脚質に「逃げ／先行」が1つでもあれば適用。
-#
-# 三連複3点
-#   1点目 A-M-G
-#   2点目 A-D-C
-#   3点目 逃げ軸のみ A-C-L
-#          それ以外は A-M-L
-#
-# ワイド1点
-#   A-I
-#
-# 浮き輪1点
-#   D-E
-#
-# ここを園田の最終上書きにして、
-# それ以前の園田専用買い目よりこちらを優先する。
-# 他会場には影響させない。
-# ==================================================
-is_sonoda_escape_or_senko_axis = (
-    baba_name == "園田"
-    and (
-        axis_primary_for_bet in {
-            "逃げ",
-            "先行",
-        }
-        or bool(
-            axis_secondary_tags_for_bet
-            & {
-                "逃げ",
-                "先行",
-            }
-        )
-    )
-)
-
-if is_sonoda_escape_or_senko_axis:
-    sonoda_third_trio = (
-        ["A", "C", "L"]
-        if kyakushoku_type == "逃げ"
-        else ["A", "M", "L"]
-    )
-
-    current_bet_template[
-        "三連複"
-    ] = [
-        ["A", "M", "G"],
-        ["A", "D", "C"],
-        sonoda_third_trio,
-    ]
-
-    current_bet_template[
-        "ワイド"
-    ] = [
-        ["A", "I"],
-    ]
-
-    current_bet_template[
-        "浮き輪"
-    ] = [
-        ["D", "E"],
-    ]
 
 # ==================================================
 # 14会場 × 軸3タイプ＝42通り
@@ -13902,6 +13786,21 @@ def build_kawasaki_axis_bet_override(context):
         result["三連複"][1] = ["A", "M", "G"]
         result["ワイド"][1] = ["A", "M"]
 
+    # 川崎のみ、主：先行・副：追い込みは三連複3点目をA-F-G。
+    if (
+        context.get("axis_primary") == "先行"
+        and context.get("axis_secondary") == "追い込み"
+    ):
+        result["三連複"][2] = ["A", "F", "G"]
+
+    # 川崎のみ、主：逃げ・副：追い込みは2点目A-M-L、3点目A-F-L。
+    if (
+        context.get("axis_primary") == "逃げ"
+        and context.get("axis_secondary") == "追い込み"
+    ):
+        result["三連複"][1] = ["A", "M", "L"]
+        result["三連複"][2] = ["A", "F", "L"]
+
     return result
 
 
@@ -14112,7 +14011,7 @@ def build_monbetsu_axis_bet_override(context):
         "持続": {
             "三連複": [
                 ["A", "B", "C"],
-                ["A", "D", "I"],
+                ["A", "M", "E"],
             ],
             "ワイド": [["D", "C"]],
             "浮き輪": [["E", "D"]],
@@ -14160,6 +14059,13 @@ def build_monbetsu_axis_bet_override(context):
     # 門別のみ、主脚質が展開待ちなら三連複2点目をA-F-C。
     if context.get("axis_primary") == "展開待ち":
         result["三連複"][1] = ["A", "F", "C"]
+
+    # 門別のみ、主：差し・副：逃げは三連複3点目をA-D-E。
+    if (
+        context.get("axis_primary") == "差し"
+        and context.get("axis_secondary") == "逃げ"
+    ):
+        result["三連複"][2] = ["A", "D", "E"]
 
     return result
 
@@ -14366,6 +14272,21 @@ def build_sonoda_axis_bet_override(context):
             "G",
         ]
 
+    # 園田のみ、主：逃げ・副：先行は三連複3点目をA-M-E。
+    if (
+        context.get("axis_primary") == "逃げ"
+        and context.get("axis_secondary") == "先行"
+    ):
+        result["三連複"][2] = ["A", "M", "E"]
+
+    # 園田のみ、主：先行・副：持続は1点目A-M-D、3点目A-E-G。
+    if (
+        context.get("axis_primary") == "先行"
+        and context.get("axis_secondary") == "持続"
+    ):
+        result["三連複"][0] = ["A", "M", "D"]
+        result["三連複"][2] = ["A", "E", "G"]
+
     return result
 
 
@@ -14391,7 +14312,7 @@ VENUE_AXIS_BET_OVERRIDES["笠松"] = {
 }
 
 # 浦和・船橋は正式3分類の共通実ルールを使う。
-# 旧逃げ／先行、legacy、副脚質、existing_templateには依存しない。
+# 旧逃げ／先行、legacy、副脚質には依存しない。
 for track in ("浦和", "船橋"):
     VENUE_AXIS_BET_OVERRIDES[track] = {
         axis_type: build_urawa_funabashi_axis_bet_override
@@ -14462,7 +14383,6 @@ def build_venue_axis_bet_rule_context(
     horse_count,
     is_nankan_large_field,
     candidate_pools,
-    existing_template,
     current_distance,
 ):
     """
@@ -14490,10 +14410,6 @@ def build_venue_axis_bet_rule_context(
         "is_nankan_large_field": (
             is_nankan_large_field
         ),
-        "existing_template": {
-            bet_type: [bet[:] for bet in bets]
-            for bet_type, bets in existing_template.items()
-        },
         "candidate_pools": {
             symbol: tuple(pool)
             for symbol, pool
@@ -15195,9 +15111,6 @@ venue_axis_bet_rule_context = (
         ),
         candidate_pools=(
             alphabet_candidate_pools
-        ),
-        existing_template=(
-            current_bet_template
         ),
         current_distance=distance_num,
     )
@@ -16407,110 +16320,6 @@ if debug_mode:
                 "（ワイド系3点・合計5点）"
             )
 
-        if is_non_nankan_bet_track:
-
-            st.write(
-                "🌱 南関以外・買い方変更："
-                "A-Bワイドを削除 → 三連複3点目へ移行"
-            )
-
-            if baba_name in NON_NANKAN_ABK_TRACKS:
-
-                if kyakushoku_type in {
-                    "逃げ",
-                    "先行",
-                }:
-                    st.write(
-                        f"{baba_name}・{kyakushoku_type}軸："
-                        "三連複3点目 A-E-K"
-                    )
-
-                else:
-                    st.write(
-                        f"{baba_name}：三連複3点目 A-B-K"
-                    )
-
-            elif baba_name in NON_NANKAN_ABL_TRACKS:
-                st.write(
-                    f"{baba_name}：三連複3点目 A-B-L"
-                )
-
-            elif non_nankan_adg_switched_to_abg:
-                st.write(
-                    f"{baba_name}：本来のDがAと同馬のため "
-                    "三連複3点目 A-B-G"
-                )
-
-            else:
-                st.write(
-                    f"{baba_name}：三連複3点目 A-D-G"
-                )
-
-            st.write(
-                f"ワイドは1点："
-                f"{current_bet_template['ワイド']}"
-            )
-
-        if (
-            baba_name == "大井"
-            and len(horses) <= 10
-        ):
-            st.write(
-                "🔵 大井・10頭以下："
-                "三連複3点・通常ワイド1点・浮き輪1点"
-            )
-            st.write(
-                f"最終買い目：{current_bet_template}"
-            )
-
-        elif is_ooi_escape:
-            st.write(
-                "🔵 大井・逃げ軸："
-                "三連複3点目 A-D-E "
-                "｜ワイド2点目 A-D"
-            )
-
-        elif is_ooi_senko_or_jizoku:
-            if kyakushoku_type == "持続":
-                st.write(
-                    "🔵 大井・持続軸："
-                    "三連複 A-B-D / A-G-L / A-K-J"
-                )
-                st.write(
-                    "L＝2角→4角【総合追い込み】1位｜"
-                    "K＝3角→4角【勝負所重視】追い込み1位｜"
-                    "J＝前進気勢3位"
-                )
-            else:
-                st.write(
-                    "🔵 大井・先行軸："
-                    "三連複 A-B-D / A-G-L / A-D-G"
-                )
-                st.write(
-                    "L＝2角→4角【総合追い込み】1位"
-                )
-
-        elif baba_name in {"浦和", "船橋", "川崎"}:
-            st.write(
-                f"🏙 {baba_name}："
-                "頭数に関係なく三連複3点目 A-B-F"
-            )
-
-        elif is_nankan_large_field:
-            st.write(
-                "🏙 大井10頭以上："
-                "三連複3点目 A-B-J"
-            )
-
-            st.write(
-                "J候補："
-                + (
-                    " → ".join(j_pool)
-                    if j_pool
-                    else "候補なし"
-                )
-            )
-
         if kyakushoku_type == "先行":
             st.write(
                 "先行軸マーブル分岐："
@@ -16873,6 +16682,80 @@ if debug_mode:
 # ==================================================
 # 最終表示
 # ==================================================
+def replace_cut_horses_only(bets, cut_numbers, axis_number, symbols):
+    """確定買い目の切った枠だけ差し替える。非対象の枠と買い目は固定。"""
+    from itertools import product
+    cuts = set(cut_numbers) - {axis_number}
+    unchanged_keys = {
+        tuple(sorted(get_num(h) for h in bet))
+        for bet in bets if not any(get_num(h) in cuts for h in bet)
+    }
+    used = set(unchanged_keys)
+    result, missing = [], 0
+    for bet in bets:
+        positions = [i for i, h in enumerate(bet) if get_num(h) in cuts]
+        if not positions:
+            result.append(list(bet))
+            continue
+        fixed = {get_num(h) for i, h in enumerate(bet) if i not in positions}
+        choices = []
+        for position in positions:
+            # 各役の代表馬だけを指定順に参照。役内ランキングへの繰り下げはしない。
+            replacement_order = ("A", "B", "F", "M", "C", "E", "D", "G", "I", "N", "L", "K", "J")
+            candidates = [symbols[role] for role in replacement_order if symbols.get(role)]
+            seen, valid = set(), []
+            for h in candidates:
+                n = get_num(h)
+                if n is None or n in seen or n in cuts or n in fixed:
+                    continue
+                seen.add(n)
+                valid.append(h)
+            choices.append(valid)
+        replacement = None
+        for combination in product(*choices):
+            candidate = list(bet)
+            for position, horse in zip(positions, combination):
+                candidate[position] = horse
+            numbers = [get_num(h) for h in candidate]
+            key = tuple(sorted(numbers))
+            if len(set(numbers)) == len(numbers) and key not in used:
+                replacement = candidate
+                used.add(key)
+                break
+        if replacement is None:
+            missing += 1
+        else:
+            result.append(replacement)
+    return result, missing
+
+
+st.markdown("#### ⚔️ 斬り捨て御免馬")
+st.caption("軸以外から2頭まで。選んだ馬の枠だけ、A → B → F → M → C → E → D → G → I → N → L → K → J の順で補充します。同じ買い目の馬・斬った馬は飛ばします。")
+cut_options = [f"{h['馬番']}番 {h['馬名']}" for h in horses if int(h["馬番"]) != int(popular_horse_num)]
+cut_selected = st.multiselect(
+    "買い目から外す馬",
+    cut_options,
+    max_selections=2,
+    key=f"cut_horses_{race_date}_{params.get('k_babaCode', [''])[0]}_{race_no}_{popular_horse_num}",
+)
+cut_numbers_for_bets = {get_num(h) for h in cut_selected}
+if cut_numbers_for_bets:
+    cut_missing_count = 0
+    trio_bets, cut_missing = replace_cut_horses_only(
+        trio_bets, cut_numbers_for_bets, int(popular_horse_num), final_bet_symbols,
+    )
+    cut_missing_count += cut_missing
+    wide_bets, cut_missing = replace_cut_horses_only(
+        wide_bets, cut_numbers_for_bets, int(popular_horse_num), final_bet_symbols,
+    )
+    cut_missing_count += cut_missing
+    float_bets, cut_missing = replace_cut_horses_only(
+        float_bets, cut_numbers_for_bets, int(popular_horse_num), final_bet_symbols,
+    )
+    cut_missing_count += cut_missing
+    if cut_missing_count:
+        st.warning(f"差し替え候補が足りない買い目が{cut_missing_count}点あります。その買い目は表示していません。")
+
 st.subheader(
     f"おすすめの三連複 {len(trio_bets)}点"
 )
