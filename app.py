@@ -16730,12 +16730,12 @@ def replace_cut_horses_only(bets, cut_numbers, axis_number, symbols):
 
 
 st.markdown("#### ⚔️ 斬り捨て御免馬")
-st.caption("軸以外から2頭まで。選んだ馬の枠だけ、A → B → F → M → C → E → D → G → I → N → L → K → J の順で補充します。同じ買い目の馬・斬った馬は飛ばします。")
 cut_options = [f"{h['馬番']}番 {h['馬名']}" for h in horses if int(h["馬番"]) != int(popular_horse_num)]
 cut_selected = st.multiselect(
     "買い目から外す馬",
     cut_options,
     max_selections=2,
+    placeholder="２頭まで斬ることができます",
     key=f"cut_horses_{race_date}_{params.get('k_babaCode', [''])[0]}_{race_no}_{popular_horse_num}",
 )
 cut_numbers_for_bets = {get_num(h) for h in cut_selected}
