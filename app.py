@@ -6310,6 +6310,12 @@ for horse in horses:
         "望月"
     ):
         score += 80
+
+    # 塚本征吾騎手は望月騎手より少し弱めの地力補正
+    elif current_jockey.startswith(
+        "塚本征"
+    ):
+        score += 70
     # ==================================================
     # 善戦止まり・決め手不足減点
     #
@@ -10253,6 +10259,12 @@ for horse in horses:
     ):
         jockey_bonus = 35
 
+    # 「塚本征吾」「塚本征」などの表記に対応。望月より少し弱め。
+    elif current_jockey.startswith(
+        "塚本征"
+    ):
+        jockey_bonus = 30
+
     total_score += jockey_bonus
 
     debug_total_parts[
@@ -13704,6 +13716,14 @@ def build_kasamatsu_axis_bet_override(context):
     ):
         result["三連複"][2] = ["A", "B", "G"]
 
+    # 笠松のみ、主：先行・副：追い込みのとき、
+    # 三連複3点目だけをA-B-Kに変更する。
+    if (
+        context.get("axis_primary") == "先行"
+        and context.get("axis_secondary") == "追い込み"
+    ):
+        result["三連複"][2] = ["A", "B", "K"]
+
     return result
 
 def build_urawa_funabashi_axis_bet_override(context):
@@ -13786,6 +13806,14 @@ def build_kawasaki_axis_bet_override(context):
         result["三連複"][1] = ["A", "M", "G"]
         result["ワイド"][1] = ["A", "M"]
 
+    # 川崎900mのみ、主：逃げの時は三連複1点目をA-B-E。
+    # 副脚質は問わず、他距離・他主脚質には影響させない。
+    if (
+        context.get("current_distance") == 900
+        and context.get("axis_primary") == "逃げ"
+    ):
+        result["三連複"][0] = ["A", "B", "E"]
+
     # 川崎のみ、主：先行・副：追い込みは三連複3点目をA-F-G。
     if (
         context.get("axis_primary") == "先行"
@@ -13800,6 +13828,21 @@ def build_kawasaki_axis_bet_override(context):
     ):
         result["三連複"][1] = ["A", "M", "L"]
         result["三連複"][2] = ["A", "F", "L"]
+
+    # 川崎のみ、主：差し・副：なしは三連複3点目をA-F-E。
+    if (
+        context.get("axis_primary") == "差し"
+        and context.get("axis_secondary") == "なし"
+    ):
+        result["三連複"][2] = ["A", "F", "E"]
+
+    # 川崎2000mのみ、主：逃げの時は浮き輪をD-G。
+    # 副脚質は問わず、他距離・他主脚質には影響させない。
+    if (
+        context.get("current_distance") == 2000
+        and context.get("axis_primary") == "逃げ"
+    ):
+        result["浮き輪"] = [["D", "G"]]
 
     return result
 
@@ -13830,12 +13873,39 @@ def build_nagoya_himeji_axis_bet_override(context):
         ):
             result["三連複"][2] = ["A", "I", "G"]
 
+        # 名古屋のみ・主＝逃げ／副＝追い込みの時は、
+        # 三連複3点目を A-F-M にする。
+        if (
+            context.get("axis_primary") == "逃げ"
+            and context.get("axis_secondary") == "追い込み"
+        ):
+            result["三連複"][2] = ["A", "F", "M"]
+
+        # 名古屋のみ・主＝逃げ／副＝先行の時は、
+        # 三連複1点目を A-B-K にする。
+        if (
+            context.get("axis_primary") == "逃げ"
+            and context.get("axis_secondary") == "先行"
+        ):
+            result["三連複"][0] = ["A", "B", "K"]
+
     if (
         context["track"] == "名古屋"
         and context["axis_type"] == "差し"
     ):
+        # 名古屋のみ・差し軸は三連複1点目を A-N-E にする。
+        result["三連複"][0] = ["A", "N", "E"]
         result["三連複"][1] = ["A", "N", "I"]
         result["三連複"][2] = ["A", "L", "G"]
+
+        # 名古屋のみ・主＝差し／副＝持続の時は、
+        # 三連複3点目を A-B-I にする。
+        if (
+            context.get("axis_primary") == "差し"
+            and context.get("axis_secondary") == "持続"
+        ):
+            result["三連複"][2] = ["A", "B", "I"]
+
         result["ワイド"] = [["A", "E"]]
 
     return result
@@ -14273,19 +14343,44 @@ def build_sonoda_axis_bet_override(context):
         ]
 
     # 園田のみ、主：逃げ・副：先行は三連複3点目をA-M-E。
+    # ただし820mだけはA-D-Lにする。
     if (
         context.get("axis_primary") == "逃げ"
         and context.get("axis_secondary") == "先行"
     ):
-        result["三連複"][2] = ["A", "M", "E"]
+        result["三連複"][2] = (
+            ["A", "D", "L"]
+            if current_distance == 820
+            else ["A", "M", "E"]
+        )
 
-    # 園田のみ、主：先行・副：持続は1点目A-M-D、3点目A-E-G。
+    # 園田のみ、主：先行・副：持続は
+    # 1点目A-M-D、2点目A-F-E、3点目A-E-G。
     if (
         context.get("axis_primary") == "先行"
         and context.get("axis_secondary") == "持続"
     ):
         result["三連複"][0] = ["A", "M", "D"]
+        result["三連複"][1] = ["A", "F", "E"]
         result["三連複"][2] = ["A", "E", "G"]
+
+    # 最終保証：園田820m・主逃げ・副先行だけは、
+    # 他の園田分岐より後で三連複3点目を必ずA-D-Lへ固定する。
+    if (
+        context.get("axis_primary") == "逃げ"
+        and context.get("axis_secondary") == "先行"
+        and int(current_distance or 0) == 820
+    ):
+        result["三連複"][2] = ["A", "D", "L"]
+
+    # 園田820m・主先行・副逃げだけは、
+    # 三連複1点目をA-B-Cへ固定する。
+    if (
+        context.get("axis_primary") == "先行"
+        and context.get("axis_secondary") == "逃げ"
+        and int(current_distance or 0) == 820
+    ):
+        result["三連複"][0] = ["A", "B", "C"]
 
     return result
 
@@ -14327,7 +14422,7 @@ VENUE_AXIS_BET_OVERRIDES["川崎"] = {
 }
 
 # 名古屋・姫路は共通3分類ルールを使い、
-# 名古屋の前受け2点目A-M-Gと、差しA-N-I／A-L-G／A-Eを差分上書きする。
+# 名古屋の前受け2点目A-M-Gと、差しA-N-E／A-N-I／A-L-G／A-Eを差分上書きする。
 for track in ("名古屋", "姫路"):
     VENUE_AXIS_BET_OVERRIDES[track] = {
         axis_type: build_nagoya_himeji_axis_bet_override
@@ -15328,6 +15423,15 @@ required_symbols = collect_required_symbols(
     current_bet_template
 )
 
+# 園田・持続の三連複3点目は通常 A-B-K。
+# Kで3頭を成立させられない場合だけ A-B-M へ救済するため、
+# 通常買い目を変えずにM候補も先に確定しておく。
+if (
+    baba_name == "園田"
+    and bet_axis_type == "持続"
+):
+    required_symbols.add("M")
+
 symbol_conflicts = build_symbol_conflicts(
     current_bet_template
 )
@@ -15754,6 +15858,9 @@ def make_unique_trio_bets(
     他の買い目での相手馬の再使用は許可する。買い目内の重複は
     後ろ側だけを変更し、3頭完全一致は変更頭数を最小にして
     後ろ側の繰り下げを優先する。Aと共有の選出結果は変更しない。
+
+    園田・持続の3点目 A-B-K だけは、K候補で成立しない場合に限り
+    同じ3点目の中だけで A-B-M へ救済する。
     """
     excluded_numbers = set(excluded_numbers or ())
     result = []
@@ -15788,44 +15895,74 @@ def make_unique_trio_bets(
             if get_num(h) in hole_rank_numbers
         ]
 
-    for symbol_list in symbol_templates:
-        if len(symbol_list) != 3 or any(
-            symbol not in selected_symbols for symbol in symbol_list
+    def resolve_one_trio(symbol_list):
+        """1点だけ解決する。used_trio_keys は外側の既確定点を参照。"""
+        if (
+            len(symbol_list) != 3
+            or any(
+                symbol not in selected_symbols
+                for symbol in symbol_list
+            )
         ):
-            continue
-        bet = [selected_symbols[symbol] for symbol in symbol_list]
-        numbers = [get_num(horse) for horse in bet]
+            return None
+
+        bet = [
+            selected_symbols[symbol]
+            for symbol in symbol_list
+        ]
+        numbers = [
+            get_num(horse)
+            for horse in bet
+        ]
         key = frozenset(numbers)
         invalid_indices = set()
         seen = {
-            number for symbol, number in zip(symbol_list, numbers)
+            number
+            for symbol, number
+            in zip(symbol_list, numbers)
             if symbol == "A"
         }
-        for index, (symbol, number) in enumerate(zip(symbol_list, numbers)):
+
+        for index, (symbol, number) in enumerate(
+            zip(symbol_list, numbers)
+        ):
             if symbol == "A":
                 continue
-            if number is None or number in excluded_numbers or number in seen:
+            if (
+                number is None
+                or number in excluded_numbers
+                or number in seen
+            ):
                 invalid_indices.add(index)
             seen.add(number)
 
-        if (None not in numbers and not excluded_numbers.intersection(numbers)
-                and len(key) == 3 and key not in used_trio_keys):
-            result.append(bet)
-            used_trio_keys.add(key)
-            continue
+        if (
+            None not in numbers
+            and not excluded_numbers.intersection(numbers)
+            and len(key) == 3
+            and key not in used_trio_keys
+        ):
+            return bet
 
         # 買い目内の不成立は、その原因となった後ろ側だけを変更する。
         # 完全重複の場合は右側1頭の全候補を優先し、足りない時だけ
         # 左側1頭、最後に必要な複数頭の変更を検討する。
         options = []
-        for index, (symbol, number) in enumerate(zip(symbol_list, numbers)):
+        for index, (symbol, number) in enumerate(
+            zip(symbol_list, numbers)
+        ):
             candidates = [bet[index]]
             if symbol != "A" and (
-                not invalid_indices or index in invalid_indices
+                not invalid_indices
+                or index in invalid_indices
             ):
                 pool = partner_rank_pools.get(symbol, [])
                 current_index = next(
-                    (i for i, horse in enumerate(pool) if get_num(horse) == number),
+                    (
+                        i
+                        for i, horse in enumerate(pool)
+                        if get_num(horse) == number
+                    ),
                     None,
                 )
                 # ランキング外の選出馬の順位は推測しない。
@@ -15843,25 +15980,66 @@ def make_unique_trio_bets(
                     return
                 changes = tuple(
                     int(number != original)
-                    for number, original in zip(chosen_numbers, numbers)
+                    for number, original
+                    in zip(chosen_numbers, numbers)
                 )
                 # 変更頭数 → 左側維持 → 同じ役割の候補順。
-                cost = (sum(changes), changes, tuple(ranks))
+                cost = (
+                    sum(changes),
+                    changes,
+                    tuple(ranks),
+                )
                 if best_cost is None or cost < best_cost:
-                    best_bet, best_cost = list(chosen), cost
+                    best_bet = list(chosen)
+                    best_cost = cost
                 return
+
             for rank, horse in enumerate(options[index]):
                 number = get_num(horse)
-                if (number is None or number in excluded_numbers
-                        or number in chosen_numbers):
+                if (
+                    number is None
+                    or number in excluded_numbers
+                    or number in chosen_numbers
+                ):
                     continue
-                search(index + 1, chosen + [horse],
-                       chosen_numbers + [number], ranks + [rank])
+                search(
+                    index + 1,
+                    chosen + [horse],
+                    chosen_numbers + [number],
+                    ranks + [rank],
+                )
 
         search(0, [], [], [])
-        if best_bet is not None:
-            result.append(best_bet)
-            used_trio_keys.add(frozenset(get_num(horse) for horse in best_bet))
+        return best_bet
+
+    for symbol_list in symbol_templates:
+        resolved_bet = resolve_one_trio(
+            symbol_list
+        )
+
+        # 園田・持続の3点目だけの局所救済。
+        # A-B-Kが成立する時は従来どおりKを使用し、
+        # Kで作れない時に限ってA-B-Mを試す。
+        if (
+            resolved_bet is None
+            and baba_name == "園田"
+            and bet_axis_type == "持続"
+            and symbol_list == ["A", "B", "K"]
+        ):
+            resolved_bet = resolve_one_trio(
+                ["A", "B", "M"]
+            )
+
+        if resolved_bet is None:
+            continue
+
+        result.append(resolved_bet)
+        used_trio_keys.add(
+            frozenset(
+                get_num(horse)
+                for horse in resolved_bet
+            )
+        )
 
     return result
 
@@ -16577,7 +16755,9 @@ def get_official_bet_odds(source_url):
                     odds_url,
                     params=request_params,
                     headers=headers,
-                    timeout=10,
+                    # オッズ取得が遅い時でも、予想買い目の表示を
+                    # 長時間止めない。接続2秒・読込3秒で打ち切る。
+                    timeout=(2, 3),
                     allow_redirects=True,
                 )
                 response.raise_for_status()
@@ -16586,10 +16766,12 @@ def get_official_bet_odds(source_url):
                 odds_map = target["parser"](soup)
 
                 if odds_map:
-                    # PC版の全件を土台にし、後から取得したスマホ版の
-                    # 同一組合せだけ最新値として上書きする。
                     merged_odds.update(odds_map)
                     source_urls.append(response.url)
+
+                    # PC版で取得できた時点で十分。
+                    # スマホ版への追加通信で買い目表示を待たせない。
+                    break
                 else:
                     errors.append(
                         f"{odds_url}：HTTP{response.status_code}・オッズ0件"
