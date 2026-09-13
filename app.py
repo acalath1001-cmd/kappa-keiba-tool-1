@@ -13957,13 +13957,28 @@ def build_kochi_saga_axis_bet_override(context):
 
     # 高知限定・軸が差しの時は、
     # 三連複2点目を A-M-L に変更する。
-    # 3点目 A-F-C は既存どおり維持する。
+    #
+    # ただし「主：差し｜副：持続」のように軸へ持続が入っている時は、
+    # 直前で設定した3点目 A-G-K を上書きしない。
+    # 持続が入っていない差し軸だけ、3点目を A-F-C にする。
     if (
         context["track"] == "高知"
         and context["axis_type"] == "差し"
     ):
         result["三連複"][1] = ["A", "M", "L"]
-        result["三連複"][2] = ["A", "F", "C"]
+
+        if not kochi_axis_has_sustain:
+            result["三連複"][2] = ["A", "F", "C"]
+
+    # 高知のみ・主：逃げ｜副：先行の時は、
+    # 三連複3点目だけを A-F-G に変更する。
+    # 他の高知脚質・佐賀・他会場には影響させない。
+    if (
+        context["track"] == "高知"
+        and context.get("axis_primary") == "逃げ"
+        and context.get("axis_secondary") == "先行"
+    ):
+        result["三連複"][2] = ["A", "F", "G"]
 
     if (
         context["track"] == "佐賀"
