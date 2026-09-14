@@ -3327,6 +3327,84 @@ for i, horse in enumerate(real_horses, start=1):
         recent_front_break_count >= 2
     )
 
+    # ==================================================
+    # 全会場共通・4角からゴールの「大垂れ」判定
+    #
+    # 条件はユーザー指定どおり、
+    # 4角位置から最終着順まで7つ以上順位を落とした走だけ。
+    # 4角の位置そのものは問わない。
+    #
+    # 過去5走を対象に、最新走ほど重くする。
+    # 1走前 -300 / 2走前 -240 / 3走前 -180 /
+    # 4走前 -120 / 5走前 -80 を共通基準点として蓄積し、
+    # 主要5系統（総合・展開・地力・先行・抑え）で
+    # 役割ごとの倍率を掛けて強めに減点する。
+    #
+    # この大垂れ減点は「押し上げ＋好着順」の垂れ救済では
+    # 軽減しない。大きく止まった事実を独立して見る。
+    # ==================================================
+    big_fourth_fade_count = 0
+    big_fourth_fade_details = []
+    big_fourth_fade_base_penalty = 0
+
+    big_fourth_fade_recent_penalties = [
+        300,
+        240,
+        180,
+        120,
+        80,
+    ]
+
+    big_fourth_fade_check_count = min(
+        5,
+        len(race_flows),
+        len(finish_positions),
+    )
+
+    for idx in range(big_fourth_fade_check_count):
+        flow = race_flows[idx]
+        finish = finish_positions[idx]
+
+        if (
+            finish is None
+            or len(flow) < 1
+        ):
+            continue
+
+        fourth_position = flow[-1]
+        goal_drop = finish - fourth_position
+
+        # 4角から7つ以上順位を落とした走だけ対象。
+        if goal_drop < 7:
+            continue
+
+        race_penalty = (
+            big_fourth_fade_recent_penalties[idx]
+        )
+
+        big_fourth_fade_count += 1
+        big_fourth_fade_base_penalty += race_penalty
+
+        big_fourth_fade_details.append({
+            "何走前": idx + 1,
+            "通過順": flow,
+            "4角位置": fourth_position,
+            "着順": finish,
+            "4角からの後退": goal_drop,
+            "共通基準減点": race_penalty,
+        })
+
+    # 何度も大垂れしている馬は強く下げるが、
+    # 5走すべて該当でも無制限にはしない。
+    big_fourth_fade_base_penalty = min(
+        big_fourth_fade_base_penalty,
+        700,
+    )
+
+    is_big_fourth_fade = (
+        big_fourth_fade_count >= 1
+    )
+
     # 出走取消・競走除外判定
     is_scratched = any(
         word in horse_text
@@ -3381,6 +3459,12 @@ for i, horse in enumerate(real_horses, start=1):
         "近走前崩れ回数": recent_front_break_count,
         "近走前崩れ詳細": recent_front_break_details,
 
+        # 全会場共通。4角から着順まで7つ以上後退した大垂れ。
+        "4角大垂れ": is_big_fourth_fade,
+        "4角大垂れ回数": big_fourth_fade_count,
+        "4角大垂れ基準減点": big_fourth_fade_base_penalty,
+        "4角大垂れ詳細": big_fourth_fade_details,
+
         "取得テキスト": horse_text,
     })
 # ==================================================
@@ -3400,6 +3484,56 @@ horses = [
     h for h in horses
     if not h.get("取消除外", False)
 ]
+
+# ==================================================
+# 全会場共通・主要5系統用「4角大垂れ」減点
+#
+# 共通基準点は過去5走の該当回数と新しさで作り、
+# 各ランキングの点数スケールに合わせて倍率だけ変える。
+#
+# 総合F：既存の失速減点があるため 50％
+# 展開B：展開点のスケールに合わせ 60％
+# 地力C：既存の失速減点があるため 50％
+# 先行D：従来は失速を見ていなかったため 80％
+# 抑えE：既存の抑え失速減点があるため 60％
+# ==================================================
+def calc_major_list_big_fourth_fade_penalty(
+    horse,
+    role,
+):
+    # 大井だけは、追加した「4角からの大垂れ」減点を使わない。
+    # 従来の失速・垂れ評価はそのまま残し、買い目ルールにも影響させない。
+    if baba_name == "大井":
+        return 0.0
+
+    base_penalty = horse.get(
+        "4角大垂れ基準減点",
+        0,
+    )
+
+    role_factors = {
+        "総合": 0.50,
+        "展開": 0.60,
+        "地力": 0.50,
+        "先行": 0.80,
+        "抑え": 0.60,
+    }
+
+    factor = role_factors.get(
+        role,
+        0.0,
+    )
+
+    return round(
+        base_penalty * factor,
+        1,
+    )
+
+
+horse_by_number_for_big_fourth_fade = {
+    horse["馬番"]: horse
+    for horse in horses
+}
 
 # ==================================================
 # 🔥 持続上がり評価
@@ -4474,6 +4608,17 @@ for horse in horses:
     #
     # 先行Dでは失速を減点しない。
     # ==================================================
+    # 全会場共通・4角から7つ以上落とした大垂れは、
+    # 主要5役の先行Dにも強めに反映する。
+    # 「前へ行ける」だけで代表Dに残り続けるのを防ぐ。
+    big_fourth_fade_front_penalty = (
+        calc_major_list_big_fourth_fade_penalty(
+            horse,
+            "先行",
+        )
+    )
+    front_score -= big_fourth_fade_front_penalty
+
     # 長距離では、短距離だけの先行実績を少し弱める
     if distance_num >= 1900:
         short_distance_count = len(re.findall(r"(?:右|左)?(?:800|900|1000|1200|1300|1400)", horse_text))
@@ -4487,6 +4632,7 @@ for horse in horses:
         "馬番": horse_no,
         "馬名": horse_name,
         "スコア": front_score,
+        "4角大垂れ減点": big_fourth_fade_front_penalty,
 
         # 全過去走の1角位置は確認用に残す
         "1角位置": [
@@ -6316,6 +6462,17 @@ for horse in horses:
         "塚本征"
     ):
         score += 70
+
+    # 全会場共通・4角から7つ以上落とした大垂れを
+    # 地力Cにも追加で反映する。
+    big_fourth_fade_long_penalty = (
+        calc_major_list_big_fourth_fade_penalty(
+            horse,
+            "地力",
+        )
+    )
+    score -= big_fourth_fade_long_penalty
+
     # ==================================================
     # 善戦止まり・決め手不足減点
     #
@@ -6429,6 +6586,7 @@ for horse in horses:
 
         "南関転入初戦": is_nankan_transfer_first,
         "大失速減点": heavy_collapse_long_penalty,
+        "4角大垂れ減点": big_fourth_fade_long_penalty,
         # 善戦止まり確認用
         "決め手不足減点": decisive_penalty,
     })
@@ -10435,6 +10593,20 @@ for horse in horses:
                 "適用減点": applied_race_penalty,
                 "軽減": relief_reasons,
             })
+    # 全会場共通・4角から7つ以上落とした大垂れを
+    # 総合Fにも追加で反映する。
+    big_fourth_fade_total_penalty = (
+        calc_major_list_big_fourth_fade_penalty(
+            horse,
+            "総合",
+        )
+    )
+
+    total_score -= big_fourth_fade_total_penalty
+    debug_total_parts["減点"] -= (
+        big_fourth_fade_total_penalty
+    )
+
     # 水沢の総合Fは、C/Dの補正前スコアから組み立てた
     # 完成後のtotal_scoreへクラス係数を1回だけ適用する。
     # これによりC/D補正との二重掛けを防ぐ。
@@ -10486,6 +10658,7 @@ for horse in horses:
         # デバッグ確認用。
         # 同一レース最大1回・850m以下軽減の内容を保存。
         "総合失速詳細": total_risk_details,
+        "4角大垂れ減点": big_fourth_fade_total_penalty,
 
         "内訳": debug_total_parts
     })
@@ -10617,10 +10790,24 @@ for candidate in tenkai_pre_candidates:
     # 同点時のタイブレークとしてだけ後段の並び替えで使う。
     total_rank_bonus = 0
 
+    target_horse_for_big_fade = (
+        horse_by_number_for_big_fourth_fade.get(
+            horse_no
+        )
+    )
+
+    big_fourth_fade_tenkai_penalty = (
+        calc_major_list_big_fourth_fade_penalty(
+            target_horse_for_big_fade or {},
+            "展開",
+        )
+    )
+
     final_tenkai_score = round(
         candidate["予備展開点"]
         + total_rank_bonus
-        + jra_top5_bonus_map.get(horse_no, {}).get("展開", 0),
+        + jra_top5_bonus_map.get(horse_no, {}).get("展開", 0)
+        - big_fourth_fade_tenkai_penalty,
         1,
     )
 
@@ -10629,6 +10816,7 @@ for candidate in tenkai_pre_candidates:
     candidate["最終総合順位"] = total_rank
     candidate["総合順位加点"] = total_rank_bonus
     candidate["JRA好走加点"] = jra_top5_bonus_map.get(horse_no, {}).get("展開", 0)
+    candidate["4角大垂れ減点"] = big_fourth_fade_tenkai_penalty
     candidate["展開最終点"] = final_tenkai_score
 
     # 既存の後段処理は "スコア" を参照するため、
@@ -10734,6 +10922,13 @@ if not tenkai_candidates:
                 60,
             )
 
+        big_fourth_fade_rescue_penalty = (
+            calc_major_list_big_fourth_fade_penalty(
+                horse,
+                "展開",
+            )
+        )
+
         rescue_score = (
             rescue_recent_score
             + max(
@@ -10749,6 +10944,7 @@ if not tenkai_candidates:
             + rescue_class_adjustment[
                 "経験加点"
             ]
+            - big_fourth_fade_rescue_penalty
         )
 
         emergency_candidates.append({
@@ -10756,6 +10952,7 @@ if not tenkai_candidates:
             "馬名": horse["馬名"],
             "スコア": round(rescue_score, 1),
             "展開最終点": round(rescue_score, 1),
+            "4角大垂れ減点": big_fourth_fade_rescue_penalty,
             "候補脚質": style_info.get("候補脚質", "展開待ち"),
             "主脚質": style_info.get("主脚質", "展開待ち"),
             "副脚質": style_info.get("副脚質", []),
@@ -11483,6 +11680,22 @@ for h in total_candidates:
     })
 
 # ==================================================
+# 抑え候補用・総合スコアマップ
+#
+# 名古屋のみ、抑えEが地力寄りになりすぎないように
+# 最終抑えスコアへ総合スコアの25％を加点するために使う。
+# 総合スコアがマイナスの場合は「加点」には使わない。
+# ==================================================
+total_score_map_for_ana = {
+    h["馬番"]: h.get(
+        "総合スコア",
+        0,
+    )
+    for h in total_candidates
+}
+
+
+# ==================================================
 # 抑え候補用・地力TOP5マップ
 #
 # 抑え候補でも「地力が高いのに主要5役から漏れた馬」を
@@ -11739,10 +11952,21 @@ for h in ana_base_candidates:
                 if avg_front >= 7 and avg_last <= 5:
                     ana_score += 50
 
+    # 全会場共通・4角から7つ以上落とした大垂れを
+    # 抑えEにも追加で反映する。
+    big_fourth_fade_ana_penalty = (
+        calc_major_list_big_fourth_fade_penalty(
+            target_horse or {},
+            "抑え",
+        )
+    )
+    ana_score -= big_fourth_fade_ana_penalty
+
     ana_candidates.append({
         "馬番": h["馬番"],
         "馬名": h["馬名"],
         "スコア": ana_score,
+        "4角大垂れ減点": big_fourth_fade_ana_penalty,
 
         # デバッグ確認用
         "抑え地力順位": (
@@ -12300,6 +12524,37 @@ if baba_name == "水沢":
         candidate["クラス補正後スコア"] = adjusted_score
         candidate["スコア"] = adjusted_score
 
+# ==================================================
+# 名古屋のみ・抑えEへ総合力25％を反映
+#
+# 名古屋では抑えEが地力TOP5加点の影響を受けすぎないように、
+# 最終スコアに総合スコアの25％を追加する。
+#
+# ・名古屋以外は従来どおりで変更なし
+# ・既存の展開・地力・失速減点などはそのまま維持
+# ・総合スコアがマイナスなら追加加点は0
+# ==================================================
+if baba_name == "名古屋":
+    for candidate in ana_candidates:
+        ana_total_score = total_score_map_for_ana.get(
+            candidate["馬番"],
+            0,
+        )
+
+        ana_total_bonus = round(
+            max(
+                ana_total_score,
+                0,
+            )
+            * 0.25,
+            1,
+        )
+
+        candidate["抑え総合元スコア"] = ana_total_score
+        candidate["抑え総合加点"] = ana_total_bonus
+        candidate["スコア"] += ana_total_bonus
+
+
 ana_candidates = sorted(
     ana_candidates,
     key=lambda x: (
@@ -12386,6 +12641,16 @@ if debug_mode:
                     f" ｜地力"
                     f"{h['抑え地力順位']}位"
                     f"+{round(h.get('抑え地力加点', 0), 1)}"
+                )
+
+            if h.get(
+                "抑え総合加点",
+                0
+            ) > 0:
+
+                extra_debug += (
+                    f" ｜総合25%"
+                    f"+{round(h.get('抑え総合加点', 0), 1)}"
                 )
 
             if h.get(
@@ -13865,6 +14130,12 @@ def build_nagoya_himeji_axis_bet_override(context):
         result["三連複"][1] = ["A", "M", "G"]
         result["ワイド"] = [["A", "M"]]
 
+        # 名古屋のみ・主＝先行の時は、
+        # 浮き輪ワイドを M-E にする。
+        # 副脚質は問わず、他の主脚質・他会場には影響させない。
+        if context.get("axis_primary") == "先行":
+            result["浮き輪"] = [["M", "E"]]
+
         # 名古屋のみ・主＝先行／副＝持続の時は、
         # 三連複3点目を A-I-G にする。
         if (
@@ -14034,6 +14305,17 @@ def build_iwate_axis_bet_override(context):
             ["A", "B"],
         ]
         result["浮き輪"] = [["A", "E"]]
+
+        # 水沢のみ・主＝先行／副＝追い込みの時は、
+        # 三連複3点目を A-E-L にする。
+        # 盛岡・他の水沢脚質には影響させない。
+        if (
+            track == "水沢"
+            and context.get("axis_primary") == "先行"
+            and context.get("axis_secondary") == "追い込み"
+        ):
+            result["三連複"][2] = ["A", "E", "L"]
+
         return result
 
     # ----------------------------------------------
@@ -14074,6 +14356,15 @@ def build_iwate_axis_bet_override(context):
         ["A", "B"],
     ]
     result["浮き輪"] = [["A", "C"]]
+
+    # 水沢のみ・主＝差し／副＝持続の時は、
+    # 三連複3点目を A-C-L にする。
+    if (
+        track == "水沢"
+        and context.get("axis_primary") == "差し"
+        and context.get("axis_secondary") == "持続"
+    ):
+        result["三連複"][2] = ["A", "C", "L"]
 
     return result
 
@@ -14204,9 +14495,9 @@ def build_ooi_axis_bet_override(context):
     }
 
     # 大井・前受けのマーブル脚質差分。
-    # ・主＝先行・副＝持続 → 三連複2点目 A-D-N
+    # ・主＝先行・副＝持続 → 三連複2点目 A-M-L／3点目 A-K-L／ワイド2点目 A-L
     # ・主＝逃げ・副＝先行 → 三連複2点目 A-B-J
-    # ・主＝先行/逃げ・副＝持続 → 三連複3点目 A-E-I
+    # ・主＝逃げ・副＝持続 → 三連複3点目 A-E-I
     # それ以外の前受け・持続・差しには影響させない。
     if (
         axis_type == "前受け"
@@ -14215,8 +14506,17 @@ def build_ooi_axis_bet_override(context):
     ):
         result["三連複"][1] = [
             "A",
-            "D",
-            "N",
+            "M",
+            "L",
+        ]
+        result["三連複"][2] = [
+            "A",
+            "K",
+            "L",
+        ]
+        result["ワイド"][1] = [
+            "A",
+            "L",
         ]
 
     if (
@@ -14230,9 +14530,21 @@ def build_ooi_axis_bet_override(context):
             "J",
         ]
 
+    # 大井のみ・主＝先行／副＝逃げの時は、三連複3点目を A-F-C にする。
     if (
         axis_type == "前受け"
-        and context.get("axis_primary") in {"先行", "逃げ"}
+        and context.get("axis_primary") == "先行"
+        and context.get("axis_secondary") == "逃げ"
+    ):
+        result["三連複"][2] = [
+            "A",
+            "F",
+            "C",
+        ]
+
+    if (
+        axis_type == "前受け"
+        and context.get("axis_primary") == "逃げ"
         and context.get("axis_secondary") == "持続"
     ):
         result["三連複"][2] = [
@@ -14247,13 +14559,8 @@ def build_ooi_axis_bet_override(context):
             context["a_is_not_f"],
         )
 
-        if is_ten_or_less:
-            result["三連複"].append(["A", "D", "E"])
-        else:
-            append_nankan_large_field_trio(
-                result,
-                context["is_nankan_large_field"],
-            )
+        # 大井のみ・軸差しの三連複3点目は頭数に関係なく A-B-L。
+        result["三連複"].append(["A", "B", "L"])
 
     # 大井10頭以下は通常ワイド1点＋浮き輪1点にする。
     # 全3タイプとも先頭はA-Fなので、1点目だけを外す。
