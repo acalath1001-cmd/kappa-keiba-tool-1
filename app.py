@@ -14160,6 +14160,16 @@ def build_nagoya_himeji_axis_bet_override(context):
         ):
             result["三連複"][0] = ["A", "B", "K"]
 
+    # 名古屋のみ・主＝持続／副＝なしの時は、
+    # 三連複2点目を A-F-K にする。
+    if (
+        context["track"] == "名古屋"
+        and context["axis_type"] == "持続"
+        and context.get("axis_primary") == "持続"
+        and context.get("axis_secondary") == "なし"
+    ):
+        result["三連複"][1] = ["A", "F", "K"]
+
     if (
         context["track"] == "名古屋"
         and context["axis_type"] == "差し"
@@ -14169,6 +14179,11 @@ def build_nagoya_himeji_axis_bet_override(context):
         result["三連複"][1] = ["A", "N", "I"]
         result["三連複"][2] = ["A", "L", "G"]
 
+        # 名古屋のみ・元の主脚質が展開待ちの時は、
+        # 三連複1点目だけ A-B-E にする。
+        if context.get("axis_primary") == "展開待ち":
+            result["三連複"][0] = ["A", "B", "E"]
+
         # 名古屋のみ・主＝差し／副＝持続の時は、
         # 三連複3点目を A-B-I にする。
         if (
@@ -14176,6 +14191,14 @@ def build_nagoya_himeji_axis_bet_override(context):
             and context.get("axis_secondary") == "持続"
         ):
             result["三連複"][2] = ["A", "B", "I"]
+
+        # 名古屋のみ・主＝差し／副＝なしの時は、
+        # 三連複3点目を A-B-G にする。
+        if (
+            context.get("axis_primary") == "差し"
+            and context.get("axis_secondary") == "なし"
+        ):
+            result["三連複"][2] = ["A", "B", "G"]
 
         result["ワイド"] = [["A", "E"]]
 
