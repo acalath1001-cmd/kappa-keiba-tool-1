@@ -3272,21 +3272,26 @@ for i, horse in enumerate(real_horses, start=1):
     # 近走前崩れ判定
     #
     # 目的：
-    # 「昔は前で残せた」実績だけで、現在も持続型・展開型として
-    # 高く評価されるのを防ぐ。
+    # 「前で運んで4〜5着まで粘れている馬」を、
+    # 単なる位置取り後退だけで展開馬から消さない。
     #
-    # 直近3走のうち、
+    # 全会場共通ルール：
+    # ・5着以内  → 近走前崩れに数えない
+    # ・6〜7着   → 前崩れとして記録するが、これだけではBを強制消去しない
+    # ・8着以下  → 重い前崩れとして数える
+    #
+    # 共通条件：
+    # ・直近3走
     # ・前半4番手以内
     # ・最終着順までに3つ以上後退
-    # が2回以上あれば「近走前崩れ」とする。
     #
-    # これは「前へ行ける能力」そのものを消す判定ではない。
-    # そのため先行力Dには残せるが、
-    # ・地力代表C（持続して脚を使える馬）
-    # ・展開馬B
-    # には採用しない。
+    # 「近走前崩れ」は6着以下の該当が2回以上で警戒扱い。
+    # 「展開消去前崩れ」は8着以下の該当が2回以上の場合だけTrue。
+    #
+    # 4角大垂れ・直近大失速などの強い減点は別判定のまま維持する。
     # ==================================================
     recent_front_break_count = 0
+    recent_front_break_elimination_count = 0
     recent_front_break_details = []
 
     recent_front_break_check_count = min(
@@ -3310,21 +3315,41 @@ for i, horse in enumerate(real_horses, start=1):
         first = flow[0]
         total_drop = finish - first
 
-        if (
+        is_front_break_this_race = (
             first <= 4
             and total_drop >= 3
-        ):
-            recent_front_break_count += 1
+            and finish >= 6
+        )
 
-            recent_front_break_details.append({
-                "何走前": idx + 1,
-                "通過順": flow,
-                "着順": finish,
-                "前半から着順の後退": total_drop,
-            })
+        if not is_front_break_this_race:
+            continue
 
+        recent_front_break_count += 1
+
+        is_elimination_level = (
+            finish >= 8
+        )
+
+        if is_elimination_level:
+            recent_front_break_elimination_count += 1
+
+        recent_front_break_details.append({
+            "何走前": idx + 1,
+            "通過順": flow,
+            "着順": finish,
+            "前半から着順の後退": total_drop,
+            "展開強制消去対象": is_elimination_level,
+        })
+
+    # 6〜7着を含む警戒判定。
     is_recent_front_break = (
         recent_front_break_count >= 2
+    )
+
+    # 展開馬Bからの強制消去は、
+    # 8着以下まで崩れた走が直近3走で2回以上の場合だけ。
+    is_tenkai_front_break_elimination = (
+        recent_front_break_elimination_count >= 2
     )
 
     # ==================================================
@@ -3458,6 +3483,10 @@ for i, horse in enumerate(real_horses, start=1):
         "近走前崩れ": is_recent_front_break,
         "近走前崩れ回数": recent_front_break_count,
         "近走前崩れ詳細": recent_front_break_details,
+
+        # 展開馬Bの強制消去専用。
+        "展開消去前崩れ": is_tenkai_front_break_elimination,
+        "展開消去前崩れ回数": recent_front_break_elimination_count,
 
         # 全会場共通。4角から着順まで7つ以上後退した大垂れ。
         "4角大垂れ": is_big_fourth_fade,
@@ -4242,12 +4271,19 @@ jra_count = len(
 )
 
 # 直近3走で前から繰り返し崩れている馬。
-# 前進気勢・先行力Dには残すが、
-# 地力代表Cと展開馬Bには採用しない。
+# 6〜7着までの前崩れも含む警戒判定。
 recent_front_break_horse_numbers = {
     h["馬番"]
     for h in horses
     if h.get("近走前崩れ", False)
+}
+
+# 展開馬Bの強制消去専用。
+# 前で運んで8着以下まで崩れた走が直近3走で2回以上の馬だけ。
+tenkai_front_break_elimination_horse_numbers = {
+    h["馬番"]
+    for h in horses
+    if h.get("展開消去前崩れ", False)
 }
 
 
@@ -7904,10 +7940,10 @@ common_top5_numbers_for_tenkai.discard(
     popular_horse_num
 )
 
-# 近走で前から崩れ続けている馬は、
-# 前進TOP5×地力TOP5の共通候補からも外す。
+# 展開Bの共通候補から強制的に外すのは重度前崩れだけ。
+# 6〜7着止まりの前崩れは候補に残す。
 common_top5_numbers_for_tenkai -= (
-    recent_front_break_horse_numbers
+    tenkai_front_break_elimination_horse_numbers
 )
 
 
@@ -7978,6 +8014,11 @@ def classify_tenkai_candidate(horse):
         False,
     )
 
+    tenkai_front_break_elimination = horse.get(
+        "展開消去前崩れ",
+        False,
+    )
+
     # 直近で前から崩れ続けている馬を、
     # 古い位置維持実績だけで「持続」と分類しない。
     if (
@@ -8012,6 +8053,7 @@ def classify_tenkai_candidate(horse):
         "持続回数": stable_count,
         "押し上げ回数": push_count,
         "近走前崩れ": recent_front_break,
+        "展開消去前崩れ": tenkai_front_break_elimination,
     }
 
 
@@ -8035,16 +8077,16 @@ def calc_marble_tenkai_fit(
     なら10番を展開上位へ持ち上げる。
     """
 
-    # 近走で前から崩れ続けている馬は、
-    # 前進能力は認めても展開馬には採用しない。
+    # 展開馬から即除外するのは重度近走前崩れだけ。
+    # 6〜7着止まりは警戒扱いに留めて候補として残す。
     if candidate_profile.get(
-        "近走前崩れ",
+        "展開消去前崩れ",
         False,
     ) and not time_leader_rescue:
         return {
             "スコア": -999.0,
             "理由": [
-                "近走前崩れのため展開対象外"
+                "重度近走前崩れのため展開対象外"
             ],
         }
 
@@ -8522,8 +8564,10 @@ def judge_tenkai_elimination(
     ただし「今の状態で展開馬として推しづらい」馬を先に落とす。
 
     強制消去：
-    ① 近走前崩れ
-       直近3走で前半4番手以内→3つ以上後退が2回以上。
+    ① 重度近走前崩れ
+       直近3走で前半4番手以内→3つ以上後退し、
+       さらに8着以下まで崩れた走が2回以上。
+       4〜5着はノーカウント、6〜7着は警戒止まり。
 
     ② 近走低調
        直近3走のうち8着以下が2回以上、かつ3着以内なし。
@@ -8551,11 +8595,11 @@ def judge_tenkai_elimination(
     )
 
     if (
-        horse.get("近走前崩れ", False)
+        horse.get("展開消去前崩れ", False)
         and not fade_relief_active
         and horse.get("馬番") not in tenkai_time_leader_numbers
     ):
-        reasons.append("近走前崩れ")
+        reasons.append("重度近走前崩れ")
 
     recent_finishes = [
         finish
@@ -9164,7 +9208,7 @@ def calc_sonoda_820_shortening_bonus(
 # ・直近2走連続大敗条件
 # を消去理由から外す。
 #
-# 近走前崩れと最新走大失速＋大敗は従来どおり残す。
+# 重度近走前崩れと最新走大失速＋大敗は強制消去として残す。
 # --------------------------------------------------
 tenkai_pre_candidates = []
 tenkai_eliminated_candidates = []
@@ -10845,7 +10889,7 @@ tenkai_candidates = sorted(
 
 
 # 万一、消去条件が厳しすぎて全馬消えた時だけ、
-# 強制消去を緩めて「近走前崩れ」以外から救済する。
+# 強制消去を緩めて「重度近走前崩れ」以外から救済する。
 # 通常時には発動しない安全網。
 if not tenkai_candidates:
 
@@ -10860,7 +10904,7 @@ if not tenkai_candidates:
 
         # 前崩れの強制除外は、通常候補と同じ持ちタイム1位救済を適用。
         if (
-            horse.get("近走前崩れ", False)
+            horse.get("展開消去前崩れ", False)
             and horse_no not in tenkai_time_leader_numbers
         ):
             continue
@@ -11125,25 +11169,38 @@ if baba_name == "盛岡":
 # ==================================================
 # 大井限定・軸に「持続」が含まれる時の展開B
 #
+# 共通仕様：
 # 主脚質または副脚質に「持続」が1つでも含まれる場合、
 # 展開候補を「前進TOP5 ∩ 地力TOP5＝共通TOP5」に限定する。
 #
-# 共通TOP5内の順位は、既存の展開最終点ランキング順をそのまま使う。
-# 例：共通TOP5の展開順位が 1番 → 13番 → 15番 なら、
-#   B＝1位の1番
-#   J＝2位の13番（後段で設定）
-# とする。
+# 追加仕様：
+# 軸の「主脚質」が持続の時だけ、共通TOP5内を持続寄りに並べ替える。
 #
-# 主：先行｜副：持続 のようなマーブル軸でも発動する。
-# 他会場・大井の持続非該当軸には影響させない。
+# 優先順：
+# ① 持続タグを持つ馬
+# ② 持続能力点が高い馬
+# ③ 従来の展開最終点が高い馬
+# ④ 総合順位
+#
+# B＝この順位の1位
+# J＝この順位の2位（後段で設定）
+#
+# 主：先行｜副：持続など、
+# 主脚質が持続ではない場合は従来の展開順位をそのまま使う。
+# 他会場には影響させない。
 # ==================================================
+oi_axis_primary_is_sustain = (
+    baba_name == "大井"
+    and axis_marble_profile.get(
+        "主脚質",
+        kyakushoku_type,
+    ) == "持続"
+)
+
 oi_axis_has_sustain = (
     baba_name == "大井"
     and (
-        axis_marble_profile.get(
-            "主脚質",
-            kyakushoku_type,
-        ) == "持続"
+        oi_axis_primary_is_sustain
         or "持続" in set(
             axis_marble_profile.get(
                 "副脚質",
@@ -11163,6 +11220,51 @@ if oi_axis_has_sustain:
         if h.get("馬番")
         in common_top5_numbers_for_tenkai
     ]
+
+    # 大井・主持続だけ、共通TOP5内を「持続寄り」に並べ替える。
+    # 持続タグが1頭もいない場合は、実質的に従来の展開順位へ戻る。
+    if (
+        oi_axis_primary_is_sustain
+        and oi_common_tenkai_candidates
+    ):
+        oi_common_tenkai_candidates = sorted(
+            oi_common_tenkai_candidates,
+            key=lambda h: (
+                0
+                if "持続" in set(
+                    h.get(
+                        "脚質タグ",
+                        [],
+                    )
+                )
+                else 1,
+                -(
+                    h.get(
+                        "脚質能力点",
+                        {},
+                    ).get(
+                        "持続",
+                        0,
+                    )
+                    or 0
+                ),
+                -(
+                    h.get(
+                        "展開最終点",
+                        -9999,
+                    )
+                    or -9999
+                ),
+                h.get(
+                    "最終総合順位",
+                    99,
+                ),
+                h.get(
+                    "馬番",
+                    99,
+                ),
+            ),
+        )
 
     if oi_common_tenkai_candidates:
         oi_tenkai_uses_common_top5 = True
@@ -11189,7 +11291,9 @@ if oi_axis_has_sustain:
         )
 
         tenkai_selection_source = (
-            "大井・軸持続含む＝共通TOP5固定"
+            "大井・主持続＝共通TOP5持続寄り"
+            if oi_axis_primary_is_sustain
+            else "大井・軸持続含む＝共通TOP5固定"
         )
 
 selected_target_type = tenkai_best.get(
@@ -11354,7 +11458,11 @@ if debug_mode:
             )
 
             st.write(
-                "大井・持続系 共通TOP5展開順位："
+                (
+                    "大井・主持続 共通TOP5持続寄り順位："
+                    if oi_axis_primary_is_sustain
+                    else "大井・持続系 共通TOP5展開順位："
+                )
                 + oi_common_rank_text
             )
 
@@ -14137,12 +14245,24 @@ def build_nagoya_himeji_axis_bet_override(context):
             result["浮き輪"] = [["M", "E"]]
 
         # 名古屋のみ・主＝先行／副＝持続の時は、
-        # 三連複3点目を A-I-G にする。
+        # 三連複2点目を A-M-E、3点目を A-I-G、
+        # ワイドを A-L にする。
         if (
             context.get("axis_primary") == "先行"
             and context.get("axis_secondary") == "持続"
         ):
+            result["三連複"][1] = ["A", "M", "E"]
             result["三連複"][2] = ["A", "I", "G"]
+            result["ワイド"] = [["A", "L"]]
+
+        # 名古屋のみ・主＝先行／副＝追い込みの時は、
+        # 三連複3点目を A-F-D、ワイドを A-B にする。
+        if (
+            context.get("axis_primary") == "先行"
+            and context.get("axis_secondary") == "追い込み"
+        ):
+            result["三連複"][2] = ["A", "F", "D"]
+            result["ワイド"] = [["A", "B"]]
 
         # 名古屋のみ・主＝逃げ／副＝追い込みの時は、
         # 三連複3点目を A-F-M にする。
@@ -14412,8 +14532,8 @@ def build_monbetsu_axis_bet_override(context):
                 ["A", "B", "C"],
                 ["A", "M", "E"],
             ],
-            "ワイド": [["D", "C"]],
-            "浮き輪": [["E", "D"]],
+            "ワイド": [["A", "B"]],
+            "浮き輪": [["M", "G"]],
         },
         "差し": {
             "三連複": [
@@ -14431,12 +14551,12 @@ def build_monbetsu_axis_bet_override(context):
     }
 
     # 門別・前受けは3点目 A-E-G。
-    # 門別・持続は3点目 A-C-G。
+    # 門別・持続は3点目 A-M-C。
     # 差しだけ従来の D=A 重複回避付き3点目を維持する。
     if axis_type == "前受け":
         result["三連複"].append(["A", "E", "G"])
     elif axis_type == "持続":
-        result["三連複"].append(["A", "C", "G"])
+        result["三連複"].append(["A", "M", "C"])
     else:
         result["三連複"].append(third_trio)
 
@@ -14447,6 +14567,13 @@ def build_monbetsu_axis_bet_override(context):
     ):
         result["三連複"][1] = ["A", "L", "I"]
 
+    # 門別のみ、主：先行・副：持続の時は浮き輪をE-L。
+    if (
+        context.get("axis_primary") == "先行"
+        and context.get("axis_secondary") == "持続"
+    ):
+        result["浮き輪"] = [["E", "L"]]
+
     # 門別のみ、主：逃げ・副：先行は1点目A-B-C、2点目A-F-E。
     if (
         context.get("axis_primary") == "逃げ"
@@ -14455,9 +14582,11 @@ def build_monbetsu_axis_bet_override(context):
         result["三連複"][0] = ["A", "B", "C"]
         result["三連複"][1] = ["A", "F", "E"]
 
-    # 門別のみ、主脚質が展開待ちなら三連複2点目をA-F-C。
+    # 門別のみ、主脚質が展開待ちなら
+    # 三連複2点目をA-F-C、3点目をA-M-I。
     if context.get("axis_primary") == "展開待ち":
         result["三連複"][1] = ["A", "F", "C"]
+        result["三連複"][2] = ["A", "E", "I"]
 
     # 門別のみ、主：差し・副：逃げは三連複3点目をA-D-E。
     if (
@@ -14472,7 +14601,6 @@ def build_monbetsu_axis_bet_override(context):
 def build_ooi_axis_bet_override(context):
     """大井の買い目を正式3分類だけで作る。"""
     axis_type = context["axis_type"]
-    is_ten_or_less = context["horse_count"] <= 10
 
     rules = {
         "前受け": {
@@ -14576,19 +14704,35 @@ def build_ooi_axis_bet_override(context):
             "I",
         ]
 
+    # 大井1200mのみ・主脚質＝先行の時は、
+    # 副脚質に関係なく三連複3点目を A-D-N にする。
+    if (
+        axis_type == "前受け"
+        and context.get("axis_primary") == "先行"
+        and context.get("current_distance") == 1200
+    ):
+        result["三連複"][2] = [
+            "A",
+            "D",
+            "N",
+        ]
+
     if axis_type == "差し":
         result["三連複"][1] = build_second_trio_with_f(
             result["三連複"][1],
             context["a_is_not_f"],
         )
 
+        # 大井1800m以上・軸差しのみ、
+        # 三連複2点目を A-F-K に固定する。
+        if (
+            context.get("current_distance") is not None
+            and context.get("current_distance") >= 1800
+        ):
+            result["三連複"][1] = ["A", "F", "K"]
+
         # 大井のみ・軸差しの三連複3点目は頭数に関係なく A-B-L。
         result["三連複"].append(["A", "B", "L"])
-
-    # 大井10頭以下は通常ワイド1点＋浮き輪1点にする。
-    # 全3タイプとも先頭はA-Fなので、1点目だけを外す。
-    if is_ten_or_less:
-        result["ワイド"] = result["ワイド"][1:]
 
     return result
 
@@ -15022,7 +15166,8 @@ n_pool = unique_texts(
 # J
 #
 # 大井で軸の主・副脚質に「持続」が含まれる時：
-#   共通TOP5に残った展開ランキングの2位から開始する。
+#   共通TOP5に残った順位の2位から開始する。
+#   主持続時は、この順位自体が「持続タグ→持続能力点→展開最終点」順。
 #   例：1番 → 13番 → 15番 なら J＝13番。
 #   同じ買い目内でKなどと被れば15番へ繰り下げる。
 #
