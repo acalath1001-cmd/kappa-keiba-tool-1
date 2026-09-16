@@ -14244,6 +14244,14 @@ def build_nagoya_himeji_axis_bet_override(context):
         if context.get("axis_primary") == "先行":
             result["浮き輪"] = [["M", "E"]]
 
+        # 名古屋のみ・主＝先行／副＝逃げの時は、
+        # 浮き輪ワイドを E-G にする。
+        if (
+            context.get("axis_primary") == "先行"
+            and context.get("axis_secondary") == "逃げ"
+        ):
+            result["浮き輪"] = [["E", "G"]]
+
         # 名古屋のみ・主＝先行／副＝持続の時は、
         # 三連複2点目を A-M-E、3点目を A-I-G、
         # ワイドを A-L にする。
@@ -14273,12 +14281,13 @@ def build_nagoya_himeji_axis_bet_override(context):
             result["三連複"][2] = ["A", "F", "M"]
 
         # 名古屋のみ・主＝逃げ／副＝先行の時は、
-        # 三連複1点目を A-B-K にする。
+        # 三連複1点目を A-B-K、3点目を A-D-I にする。
         if (
             context.get("axis_primary") == "逃げ"
             and context.get("axis_secondary") == "先行"
         ):
             result["三連複"][0] = ["A", "B", "K"]
+            result["三連複"][2] = ["A", "D", "I"]
 
     # 名古屋のみ・主＝持続／副＝なしの時は、
     # 三連複2点目を A-F-K にする。
@@ -14647,7 +14656,7 @@ def build_ooi_axis_bet_override(context):
 
     # 大井・前受けのマーブル脚質差分。
     # ・主＝先行・副＝持続 → 三連複2点目 A-M-L／3点目 A-K-L／ワイド2点目 A-L
-    # ・主＝逃げ・副＝先行 → 三連複2点目 A-B-J
+    # ・主＝逃げ・副＝先行 → 三連複2点目 A-B-J／3点目 A-D-K
     # ・主＝逃げ・副＝持続 → 三連複3点目 A-E-I
     # それ以外の前受け・持続・差しには影響させない。
     if (
@@ -14679,6 +14688,11 @@ def build_ooi_axis_bet_override(context):
             "A",
             "B",
             "J",
+        ]
+        result["三連複"][2] = [
+            "A",
+            "D",
+            "K",
         ]
 
     # 大井のみ・主＝先行／副＝逃げの時は、三連複3点目を A-F-C にする。
@@ -15922,6 +15936,16 @@ if (
 ):
     required_symbols.add("M")
 
+# 大井・主先行／副持続の三連複3点目 A-K-L が
+# 候補不足で成立しない場合だけ A-D-G へ救済するため、
+# 通常買い目を変えずにG候補も先に確定しておく。
+if (
+    baba_name == "大井"
+    and bet_axis_type == "前受け"
+    and ["A", "K", "L"] in current_bet_template["三連複"]
+):
+    required_symbols.add("G")
+
 symbol_conflicts = build_symbol_conflicts(
     current_bet_template
 )
@@ -16184,6 +16208,32 @@ def make_unique_wide_bets(
                 resolved_ooi_af = test_bet
                 break
 
+            # F3位以降に有効馬がいない場合だけ、
+            # 最終救済としてF2位を1回だけ試す。
+            if (
+                resolved_ooi_af is None
+                and len(f_pool) >= 2
+            ):
+                candidate = f_pool[1]
+                candidate_number = get_num(candidate)
+
+                if (
+                    candidate_number not in excluded_numbers
+                    and candidate_number != get_num(bet[0])
+                ):
+                    test_bet = [
+                        bet[0],
+                        candidate,
+                    ]
+
+                    test_key = frozenset(
+                        get_num(horse_name)
+                        for horse_name in test_bet
+                    )
+
+                    if test_key not in used_wide_keys:
+                        resolved_ooi_af = test_bet
+
             if resolved_ooi_af is not None:
                 result.append(
                     resolved_ooi_af
@@ -16197,8 +16247,7 @@ def make_unique_wide_bets(
                 )
                 continue
 
-            # F3位以降に有効馬がいない場合は、
-            # F2位へ戻さず、このA-Fワイドは作らない。
+            # F2位でも成立しない場合だけ、このA-Fワイドは作らない。
             continue
 
         # 2頭が別馬で、
@@ -16518,6 +16567,26 @@ def make_unique_trio_bets(
         ):
             resolved_bet = resolve_one_trio(
                 ["A", "B", "M"]
+            )
+
+        # 大井限定・候補不足時だけの局所救済。
+        # 通常のA-M-L / A-K-Lが成立する時は一切変更しない。
+        if (
+            resolved_bet is None
+            and baba_name == "大井"
+            and symbol_list == ["A", "M", "L"]
+        ):
+            resolved_bet = resolve_one_trio(
+                ["A", "F", "L"]
+            )
+
+        if (
+            resolved_bet is None
+            and baba_name == "大井"
+            and symbol_list == ["A", "K", "L"]
+        ):
+            resolved_bet = resolve_one_trio(
+                ["A", "D", "G"]
             )
 
         if resolved_bet is None:
