@@ -4208,6 +4208,8 @@ for h in horses:
 
 # JRA好走実績は総合F・展開Bだけに追加する。
 # 取得済みの直近5走の最良着順を採用し、複数好走を重複加算しない。
+# 1〜3着：総合+80 / 展開+60
+# 4〜7着：総合+70 / 展開+40
 def calculate_jra_top5_bonus(horse):
     recent = horse.get("全距離付きタイム", [])[:5]
     local_count = sum(
@@ -4223,10 +4225,10 @@ def calculate_jra_top5_bonus(horse):
             finish = int(str(item.get("着順", "")).strip())
         except (ValueError, TypeError):
             continue
-        if 1 <= finish <= 5:
+        if 1 <= finish <= 7:
             finishes.append(finish)
     best = min(finishes) if finishes else None
-    total, pace = (60, 40) if best is not None and best <= 3 else (40, 25)
+    total, pace = (80, 60) if best is not None and best <= 3 else (70, 40)
     if best is None:
         total, pace = 0, 0
     return {
@@ -14331,6 +14333,12 @@ def build_nagoya_himeji_axis_bet_override(context):
 
         result["ワイド"] = [["A", "E"]]
 
+        # 名古屋のみ・元の主脚質が差しの時は、
+        # 浮き輪ワイドを A-F にする。
+        # 展開待ち・他会場・他の買い目には影響させない。
+        if context.get("axis_primary") == "差し":
+            result["浮き輪"] = [["A", "F"]]
+
     return result
 
 
@@ -14347,7 +14355,7 @@ def build_kochi_saga_axis_bet_override(context):
     # 高知限定・軸に「持続」が入っている時
     #
     # 主脚質が持続、または内部の副脚質タグに持続がある場合、
-    # 三連複3点目を A-G-K に固定する。
+    # 三連複3点目を A-B-K に固定する。
     #
     # 例：
     # ・主：持続｜副：○○
@@ -14368,7 +14376,7 @@ def build_kochi_saga_axis_bet_override(context):
     )
 
     if kochi_axis_has_sustain:
-        result["三連複"][2] = ["A", "G", "K"]
+        result["三連複"][2] = ["A", "B", "K"]
 
     # 高知限定・軸が前受けの時は、
     # ワイド A-E の1点だけを A-M に変更する。
@@ -14382,7 +14390,7 @@ def build_kochi_saga_axis_bet_override(context):
     # 三連複2点目を A-M-L に変更する。
     #
     # ただし「主：差し｜副：持続」のように軸へ持続が入っている時は、
-    # 直前で設定した3点目 A-G-K を上書きしない。
+    # 直前で設定した3点目 A-B-K を上書きしない。
     # 持続が入っていない差し軸だけ、3点目を A-F-C にする。
     if (
         context["track"] == "高知"
@@ -14438,7 +14446,7 @@ def build_iwate_axis_bet_override(context):
     # 前受け
     # 1点目：盛岡・水沢ともに A-B-L
     # 2点目：盛岡 A-C-G / 水沢 A-M-L
-    # 3点目：盛岡・水沢ともに A-I-E
+    # 3点目：盛岡 A-M-E / 水沢 A-I-E
     # ワイド2点目 A-E を浮き輪へ移す。
     # ----------------------------------------------
     if axis_type == "前受け":
@@ -14448,10 +14456,16 @@ def build_iwate_axis_bet_override(context):
             else ["A", "C", "G"]
         )
 
+        third_trio = (
+            ["A", "M", "E"]
+            if track == "盛岡"
+            else ["A", "I", "E"]
+        )
+
         result["三連複"] = [
             ["A", "B", "L"],
             second_trio,
-            ["A", "I", "E"],
+            third_trio,
         ]
         result["ワイド"] = [
             ["A", "B"],
@@ -14560,14 +14574,22 @@ def build_monbetsu_axis_bet_override(context):
     }
 
     # 門別・前受けは3点目 A-E-G。
-    # 門別・持続は3点目 A-M-C。
+    # 門別・持続は3点目 A-C-G。
     # 差しだけ従来の D=A 重複回避付き3点目を維持する。
     if axis_type == "前受け":
         result["三連複"].append(["A", "E", "G"])
     elif axis_type == "持続":
-        result["三連複"].append(["A", "M", "C"])
+        result["三連複"].append(["A", "C", "G"])
     else:
         result["三連複"].append(third_trio)
+
+    # 門別のみ、主：持続・副：追い込みの時は
+    # 三連複1点目だけを A-B-L にする。
+    if (
+        context.get("axis_primary") == "持続"
+        and context.get("axis_secondary") == "追い込み"
+    ):
+        result["三連複"][0] = ["A", "B", "L"]
 
     # 門別のみ、表示上の主：先行・副：追い込みは2点目をA-L-I。
     if (
@@ -14603,6 +14625,17 @@ def build_monbetsu_axis_bet_override(context):
         and context.get("axis_secondary") == "逃げ"
     ):
         result["三連複"][2] = ["A", "D", "E"]
+
+    # 門別1600m・2000mのみ・主脚質が逃げの時だけ、
+    # 三連複2点目を A-B-F に固定する。
+    # 先行を含む他の前受け軸には適用しない。
+    # 門別内の他の主副脚質例外より後で最終上書きすることで、
+    # 1600m・2000m以外・他脚質・他会場には影響させない。
+    if (
+        context.get("axis_primary") == "逃げ"
+        and int(context.get("current_distance") or 0) in {1600, 2000}
+    ):
+        result["三連複"][1] = ["A", "B", "F"]
 
     return result
 
@@ -14718,6 +14751,24 @@ def build_ooi_axis_bet_override(context):
             "I",
         ]
 
+    # 大井1400mのみ・前受け軸の時は、
+    # 三連複2点目を A-B-M、3点目を A-M-K にする。
+    # 主脚質・副脚質は問わず、1400mの前受けだけに限定する。
+    if (
+        axis_type == "前受け"
+        and context.get("current_distance") == 1400
+    ):
+        result["三連複"][1] = [
+            "A",
+            "B",
+            "M",
+        ]
+        result["三連複"][2] = [
+            "A",
+            "M",
+            "K",
+        ]
+
     # 大井1200mのみ・主脚質＝先行の時は、
     # 副脚質に関係なく三連複3点目を A-D-N にする。
     if (
@@ -14729,6 +14780,21 @@ def build_ooi_axis_bet_override(context):
             "A",
             "D",
             "N",
+        ]
+
+    # 大井1200mのみ・主：先行／副：持続の時は、
+    # 上の1200m共通ルール A-D-N より後で、3点目だけ A-M-G に上書きする。
+    # G＝穴3。他距離・他副脚質・他会場には影響させない。
+    if (
+        axis_type == "前受け"
+        and context.get("axis_primary") == "先行"
+        and context.get("axis_secondary") == "持続"
+        and context.get("current_distance") == 1200
+    ):
+        result["三連複"][2] = [
+            "A",
+            "M",
+            "G",
         ]
 
     if axis_type == "差し":
@@ -14824,15 +14890,16 @@ def build_sonoda_axis_bet_override(context):
         )
 
     # 園田・元の主脚質が展開待ちの時だけ
-    # 三連複1点目を A-F-E、2点目を A-D-E、3点目を A-D-G にする。
+    # 三連複1点目を A-B-C にする。
+    # 2点目 A-D-E、3点目 A-D-G は従来どおり維持する。
     if (
         axis_type == "差し"
         and context.get("axis_primary") == "展開待ち"
     ):
         result["三連複"][0] = [
             "A",
-            "F",
-            "E",
+            "B",
+            "C",
         ]
         result["三連複"][1] = [
             "A",
@@ -14845,12 +14912,13 @@ def build_sonoda_axis_bet_override(context):
             "G",
         ]
 
-    # 園田のみ、主：逃げ・副：先行は三連複3点目をA-M-E。
-    # ただし820mだけはA-D-Lにする。
+    # 園田のみ、主：逃げ・副：先行は三連複1点目をA-B-F。
+    # 3点目は従来どおり、820mだけA-D-L、それ以外はA-M-E。
     if (
         context.get("axis_primary") == "逃げ"
         and context.get("axis_secondary") == "先行"
     ):
+        result["三連複"][0] = ["A", "B", "F"]
         result["三連複"][2] = (
             ["A", "D", "L"]
             if current_distance == 820
@@ -14866,6 +14934,34 @@ def build_sonoda_axis_bet_override(context):
         result["三連複"][0] = ["A", "M", "D"]
         result["三連複"][1] = ["A", "F", "E"]
         result["三連複"][2] = ["A", "E", "G"]
+
+    # 園田のみ、主：先行・副：追い込みの時は、
+    # 三連複3点目だけを A-F-D に変更する。
+    # 1点目・2点目・ワイド・他会場には影響させない。
+    if (
+        context.get("axis_primary") == "先行"
+        and context.get("axis_secondary") == "追い込み"
+    ):
+        result["三連複"][2] = ["A", "F", "D"]
+
+    # 園田のみ、主：差し・副：持続の時は、
+    # 三連複2点目だけを A-D-C に変更する。
+    # 1点目・3点目・ワイド・他会場には影響させない。
+    if (
+        context.get("axis_primary") == "差し"
+        and context.get("axis_secondary") == "持続"
+    ):
+        result["三連複"][1] = ["A", "D", "C"]
+
+    # 園田のみ、元の主脚質が差しの時は、
+    # 三連複2点目を A-F-K、3点目を A-M-L に固定する。
+    # 副脚質に関係なく、1点目・ワイド・浮き輪は変更しない。
+    if (
+        axis_type == "差し"
+        and context.get("axis_primary") == "差し"
+    ):
+        result["三連複"][1] = ["A", "F", "K"]
+        result["三連複"][2] = ["A", "M", "L"]
 
     # 最終保証：園田820m・主逃げ・副先行だけは、
     # 他の園田分岐より後で三連複3点目を必ずA-D-Lへ固定する。
@@ -14884,6 +14980,26 @@ def build_sonoda_axis_bet_override(context):
         and int(current_distance or 0) == 820
     ):
         result["三連複"][0] = ["A", "B", "C"]
+
+    # 最終保証：園田820m・軸前受けの時だけ、
+    # 三連複2点目をA-F-E、3点目をA-D-Eへ固定する。
+    # 1点目・ワイド・浮き輪・他距離・他軸タイプには影響させない。
+    if (
+        axis_type == "前受け"
+        and int(current_distance or 0) == 820
+    ):
+        result["三連複"][1] = ["A", "F", "E"]
+        result["三連複"][2] = ["A", "D", "E"]
+
+    # 最終保証：園田のみ、元の主脚質が先行の時は、
+    # 三連複3点目をA-B-Eへ固定する。
+    # 820mでも主先行ならこの最新指定を優先し、
+    # 2点目・1点目・ワイド・浮き輪・他会場には影響させない。
+    if (
+        axis_type == "前受け"
+        and context.get("axis_primary") == "先行"
+    ):
+        result["三連複"][2] = ["A", "B", "E"]
 
     return result
 
@@ -16862,10 +16978,17 @@ elif sonoda_b_uses_m:
 
 with tenkai_card_placeholder.container():
     if sonoda_display_m_horse:
+        # 園田でMを展開馬として表示する場合も、
+        # 他会場と同じく内部ロジック名ではなく
+        # その馬自身の「主脚質｜副脚質」を表示する。
+        sonoda_display_profile = get_cd_overlap_profile(
+            get_num(sonoda_display_m_horse)
+        )
+
         show_card(
             "🌊",
             "展開の向く馬",
-            "M：中間重複＋同距離持ちタイム",
+            format_marble_style(sonoda_display_profile),
             sonoda_display_m_horse,
             "#e0f2fe",
             "#7dd3fc",
