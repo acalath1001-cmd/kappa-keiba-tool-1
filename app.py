@@ -14168,6 +14168,16 @@ def build_urawa_funabashi_axis_bet_override(context):
             third_symbol="F",
         )
 
+    # 浦和1400mのみ、元の主脚質が先行の時は、
+    # 三連複1点目をA-B-Lへ固定する。
+    # 他距離・他主脚質・2点目3点目・ワイド・浮き輪・船橋には影響させない。
+    if (
+        context.get("track") == "浦和"
+        and int(context.get("current_distance") or 0) == 1400
+        and context.get("axis_primary") == "先行"
+    ):
+        result["三連複"][0] = ["A", "B", "L"]
+
     return result
 
 
@@ -14783,7 +14793,8 @@ def build_ooi_axis_bet_override(context):
         ]
 
     # 大井1200mのみ・主：先行／副：持続の時は、
-    # 上の1200m共通ルール A-D-N より後で、3点目だけ A-M-G に上書きする。
+    # 上の1200m共通ルール A-D-N より後で、3点目を A-M-G に上書きし、
+    # ワイド2点目を A-B にする。
     # G＝穴3。他距離・他副脚質・他会場には影響させない。
     if (
         axis_type == "前受け"
@@ -14795,6 +14806,10 @@ def build_ooi_axis_bet_override(context):
             "A",
             "M",
             "G",
+        ]
+        result["ワイド"][1] = [
+            "A",
+            "B",
         ]
 
     if axis_type == "差し":
@@ -15000,6 +15015,17 @@ def build_sonoda_axis_bet_override(context):
         and context.get("axis_primary") == "先行"
     ):
         result["三連複"][2] = ["A", "B", "E"]
+
+    # 最終保証：園田1700m以上・元の主脚質が逃げの時だけ、
+    # 三連複3点目をA-B-Iへ固定する。
+    # 副脚質は問わず、1700m未満・他の軸タイプ・
+    # 1点目・2点目・ワイド・浮き輪・他会場には影響させない。
+    if (
+        axis_type == "前受け"
+        and context.get("axis_primary") == "逃げ"
+        and int(current_distance or 0) >= 1700
+    ):
+        result["三連複"][2] = ["A", "B", "I"]
 
     return result
 
