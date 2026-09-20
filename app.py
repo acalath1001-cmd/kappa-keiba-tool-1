@@ -14474,6 +14474,15 @@ def build_kochi_saga_axis_bet_override(context):
     ):
         result["三連複"][1] = ["A", "F", "G"]
 
+    # 佐賀のみ・元の主脚質が展開待ちの時だけ、
+    # 三連複1点目を A-B-G に変更する。
+    # 2点目・3点目・ワイド・浮き輪・他の佐賀脚質・他会場は変更しない。
+    if (
+        context["track"] == "佐賀"
+        and context.get("axis_primary") == "展開待ち"
+    ):
+        result["三連複"][0] = ["A", "B", "G"]
+
     return result
 
 
