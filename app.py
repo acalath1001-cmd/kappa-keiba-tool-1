@@ -14412,7 +14412,8 @@ def build_kochi_saga_axis_bet_override(context):
             result["三連複"][2] = ["A", "F", "C"]
 
     # 高知のみ・主：逃げ｜副：先行の時は、
-    # 三連複3点目だけを A-F-G に変更する。
+    # 三連複3点目 A-F-G は維持し、
+    # ワイドだけを A-F に変更する。
     # 他の高知脚質・佐賀・他会場には影響させない。
     if (
         context["track"] == "高知"
@@ -14420,6 +14421,18 @@ def build_kochi_saga_axis_bet_override(context):
         and context.get("axis_secondary") == "先行"
     ):
         result["三連複"][2] = ["A", "F", "G"]
+        result["ワイド"] = [["A", "F"]]
+
+    # 高知のみ・主：先行｜副：逃げの時だけ、
+    # 三連複2点目を A-F-E、浮き輪を F-E に変更する。
+    # 1点目・3点目・ワイド・他の高知脚質・佐賀・他会場は変更しない。
+    if (
+        context["track"] == "高知"
+        and context.get("axis_primary") == "先行"
+        and context.get("axis_secondary") == "逃げ"
+    ):
+        result["三連複"][1] = ["A", "F", "E"]
+        result["浮き輪"] = [["F", "E"]]
 
     if (
         context["track"] == "佐賀"
@@ -14428,8 +14441,19 @@ def build_kochi_saga_axis_bet_override(context):
         # 佐賀・前受けの既存1点目 A-B-L は維持する。
         result["三連複"][0] = ["A", "B", "L"]
 
-        # 今回の変更は3点目だけ。
+        # 佐賀・前受けの通常3点目。
         result["三連複"][2] = ["A", "M", "L"]
+
+    # 佐賀のみ・主：逃げ｜副：先行の時だけ、
+    # 三連複2点目・3点目を指定買い目へ上書きする。
+    # 1点目・ワイド・浮き輪・他脚質・他会場は変更しない。
+    if (
+        context["track"] == "佐賀"
+        and context.get("axis_primary") == "逃げ"
+        and context.get("axis_secondary") == "先行"
+    ):
+        result["三連複"][1] = ["A", "C", "L"]
+        result["三連複"][2] = ["A", "M", "G"]
 
     # 佐賀・差しだけ2点目を A-D-G に固定する。
     # 共通側のA≠F時のA-F-I差し替えより後で上書きするため、
@@ -14439,6 +14463,16 @@ def build_kochi_saga_axis_bet_override(context):
         and context["axis_type"] == "差し"
     ):
         result["三連複"][1] = ["A", "D", "G"]
+
+    # 佐賀のみ・主：差し｜副：なしの時だけ、
+    # 三連複2点目を A-F-G に変更する。
+    # 1点目・3点目・ワイド・浮き輪・他の佐賀脚質・他会場は変更しない。
+    if (
+        context["track"] == "佐賀"
+        and context.get("axis_primary") == "差し"
+        and context.get("axis_secondary") == "なし"
+    ):
+        result["三連複"][1] = ["A", "F", "G"]
 
     return result
 
@@ -16049,6 +16083,18 @@ def build_symbol_conflicts(template):
                                 and symbol_list == ["A", "M", "L"]
                                 and {symbol, other_symbol} == {"M", "L"}
                             )
+                            or (
+                                # 佐賀・主逃げ｜副先行の3点目 A-M-G 専用。
+                                # M/Gが同じ実馬でも共有記号の順位は動かさず、
+                                # この三連複3点目の中だけで重複回避する。
+                                baba_name == "佐賀"
+                                and bet_axis_type == "前受け"
+                                and axis_primary_for_bet == "逃げ"
+                                and axis_secondary_for_bet == "先行"
+                                and bet_type == "三連複"
+                                and symbol_list == ["A", "M", "G"]
+                                and {symbol, other_symbol} == {"M", "G"}
+                            )
                         )
                     )
                 )
@@ -16558,7 +16604,21 @@ def make_unique_trio_bets(
             [tenkai_horse] + [horse_text(h) for h in tenkai_rank_for_trio]
             + [horse_text(h) for h in tenkai_candidates]
         ),
-        "M": unique_texts([horse_text(h) for h in m_selection_candidates]),
+        # 佐賀・前受けの3点目 A-M-L は、1点目 A-B-L と
+        # 実馬3頭が完全一致した場合でも3点目を落とさない。
+        # M本来の順位を最優先し、足りない時だけ既存m_poolの
+        # 後続候補（最後は全出走馬の安全網）へ送る。
+        # 他会場・他軸タイプのM候補順は変更しない。
+        "M": (
+            list(m_pool)
+            if (
+                baba_name == "佐賀"
+                and bet_axis_type == "前受け"
+            )
+            else unique_texts(
+                [horse_text(h) for h in m_selection_candidates]
+            )
+        ),
         "J": list(j_pool),
         "K": list(k_pool),
         "L": unique_texts(l_base_pool),
@@ -16808,8 +16868,317 @@ if len(trio_bets) < required_trio_count:
     )
     trio_symbol_source = normal_bet_symbols
 
+# ==================================================
+# 佐賀・前受け専用の最終3点目救済
+#
+# 目的：
+#   1点目 A-B-L と3点目 A-M-L が実馬で同じ3頭になった場合など、
+#   make_unique_trio_bets() の通常重複回避だけでは3点目が作れず
+#   最終表示が2点になるケースを防ぐ。
+#
+# 重要：
+#   ・佐賀かつ前受けの時だけ。
+#   ・既存1点目・2点目は絶対に変更しない。
+#   ・通常は3点目 A-M-L、主逃げ｜副先行だけ A-M-G を優先する。
+#   ・対象記号の本来候補順から順に試し、成立しない時だけ
+#     all_bet_pool を最後の安全網として使う。
+#   ・他会場・他軸タイプ・他の買い目には影響させない。
+# ==================================================
+def ensure_saga_front_third_trio(
+    existing_trio_bets,
+    primary_symbols,
+    fallback_symbols,
+    excluded_numbers=None,
+):
+    if not (
+        baba_name == "佐賀"
+        and bet_axis_type == "前受け"
+        and required_trio_count >= 3
+        and len(existing_trio_bets) < required_trio_count
+    ):
+        return existing_trio_bets
+
+    excluded_numbers = set(
+        excluded_numbers or set()
+    )
+
+    # Aは現在の最終選出を最優先。
+    axis_horse = (
+        primary_symbols.get("A")
+        or fallback_symbols.get("A")
+    )
+
+    if axis_horse is None:
+        return existing_trio_bets
+
+    axis_number = get_num(axis_horse)
+
+    if axis_number is None:
+        return existing_trio_bets
+
+    existing_keys = {
+        frozenset(
+            get_num(horse)
+            for horse in bet
+        )
+        for bet in existing_trio_bets
+        if len(bet) == 3
+    }
+
+    # Mは現在選出馬 → 本来ランキング → 全出走馬の順。
+    m_candidates = unique_texts(
+        [
+            horse
+            for horse in [
+                primary_symbols.get("M"),
+                fallback_symbols.get("M"),
+            ]
+            if horse is not None
+        ]
+        + list(m_pool)
+        + list(all_bet_pool)
+    )
+
+    # 佐賀・主逃げ｜副先行だけ3点目は A-M-G。
+    # それ以外の佐賀前受けは従来どおり A-M-L。
+    saga_escape_front = (
+        axis_primary_for_bet == "逃げ"
+        and axis_secondary_for_bet == "先行"
+    )
+
+    third_symbol = "G" if saga_escape_front else "L"
+
+    if third_symbol == "G":
+        third_candidates = unique_texts(
+            [
+                horse
+                for horse in [
+                    primary_symbols.get("G"),
+                    fallback_symbols.get("G"),
+                ]
+                if horse is not None
+            ]
+            + list(alphabet_candidate_pools.get("G", []))
+            + list(all_bet_pool)
+        )
+    else:
+        third_candidates = unique_texts(
+            [
+                horse
+                for horse in [
+                    primary_symbols.get("L"),
+                    fallback_symbols.get("L"),
+                ]
+                if horse is not None
+            ]
+            + list(l_base_pool)
+            + list(all_bet_pool)
+        )
+
+    for m_horse in m_candidates:
+        m_number = get_num(m_horse)
+
+        if (
+            m_number is None
+            or m_number == axis_number
+            or m_number in excluded_numbers
+        ):
+            continue
+
+        for third_horse in third_candidates:
+            third_number = get_num(third_horse)
+
+            if (
+                third_number is None
+                or third_number == axis_number
+                or third_number == m_number
+                or third_number in excluded_numbers
+            ):
+                continue
+
+            trio_key = frozenset({
+                axis_number,
+                m_number,
+                third_number,
+            })
+
+            if (
+                len(trio_key) != 3
+                or trio_key in existing_keys
+            ):
+                continue
+
+            return existing_trio_bets + [
+                [axis_horse, m_horse, third_horse]
+            ]
+
+    return existing_trio_bets
+
+
+trio_bets = ensure_saga_front_third_trio(
+    trio_bets,
+    final_bet_symbols,
+    normal_bet_symbols,
+    excluded_numbers=kirisute_horse_numbers,
+)
+
+
+# ==================================================
+# 高知専用・三連複3点の「2頭目」重複回避
+#
+# 目的：
+#   高知で三連複3点すべてが
+#   A-X-○ / A-X-○ / A-X-○ のように、
+#   2頭目だけ同じ実馬になった場合、3点目の2頭目だけを
+#   その記号本来の候補ランキング内で次候補へ繰り下げる。
+#
+# 重要：
+#   ・高知だけ。軸タイプ・主副脚質は問わない。
+#   ・1点目・2点目は変更しない。
+#   ・3点目のAと3頭目は変更しない。
+#   ・3点目テンプレの2番目の記号（F/M/B/C/D/E/G/I/N/J/K/L等）の
+#     候補プール内だけで次候補を探す。
+#   ・3点とも2頭目が同じ実馬でない時は何もしない。
+#   ・ワイド・浮き輪・他会場には影響させない。
+# ==================================================
+def avoid_kochi_third_second_partner_repeat(
+    existing_trio_bets,
+    excluded_numbers=None,
+):
+    if not (
+        baba_name == "高知"
+        and len(existing_trio_bets) >= 3
+        and len(current_bet_template.get("三連複", [])) >= 3
+    ):
+        return existing_trio_bets
+
+    first_three = existing_trio_bets[:3]
+
+    if any(len(bet) != 3 for bet in first_three):
+        return existing_trio_bets
+
+    # 実際に表示される三連複の2頭目が3点とも同じ馬の時だけ発動。
+    second_numbers = [
+        get_num(bet[1])
+        for bet in first_three
+    ]
+
+    if (
+        None in second_numbers
+        or len(set(second_numbers)) != 1
+    ):
+        return existing_trio_bets
+
+    third_template = current_bet_template["三連複"][2]
+
+    if len(third_template) != 3:
+        return existing_trio_bets
+
+    second_symbol = third_template[1]
+
+    # A自体を2頭目に置くテンプレは対象外。
+    if second_symbol == "A":
+        return existing_trio_bets
+
+    candidate_pool = unique_texts(
+        alphabet_candidate_pools.get(
+            second_symbol,
+            [],
+        )
+    )
+
+    if not candidate_pool:
+        return existing_trio_bets
+
+    third_bet = list(existing_trio_bets[2])
+    axis_number = get_num(third_bet[0])
+    current_second_number = get_num(third_bet[1])
+    third_number = get_num(third_bet[2])
+
+    if (
+        axis_number is None
+        or current_second_number is None
+        or third_number is None
+    ):
+        return existing_trio_bets
+
+    excluded_numbers = set(excluded_numbers or set())
+
+    # 現在の2頭目が役割プールにいる場合は、その次候補から。
+    # 見つからない場合でも役割順位を崩さず、先頭から
+    # 「現在馬以外」の候補を探す。
+    current_index = next(
+        (
+            idx
+            for idx, horse in enumerate(candidate_pool)
+            if get_num(horse) == current_second_number
+        ),
+        None,
+    )
+
+    if current_index is not None:
+        search_pool = candidate_pool[current_index + 1:]
+    else:
+        search_pool = candidate_pool
+
+    existing_keys = {
+        frozenset(
+            get_num(horse)
+            for horse in bet
+        )
+        for bet in existing_trio_bets[:2]
+        if len(bet) == 3
+    }
+
+    for candidate in search_pool:
+        candidate_number = get_num(candidate)
+
+        if (
+            candidate_number is None
+            or candidate_number == current_second_number
+            or candidate_number == axis_number
+            or candidate_number == third_number
+            or candidate_number in excluded_numbers
+        ):
+            continue
+
+        new_key = frozenset({
+            axis_number,
+            candidate_number,
+            third_number,
+        })
+
+        if (
+            len(new_key) != 3
+            or new_key in existing_keys
+        ):
+            continue
+
+        updated = [
+            list(bet)
+            for bet in existing_trio_bets
+        ]
+
+        # 3点目の2頭目だけ変更。
+        updated[2] = [
+            third_bet[0],
+            candidate,
+            third_bet[2],
+        ]
+
+        return updated
+
+    return existing_trio_bets
+
+
+trio_bets = avoid_kochi_third_second_partner_repeat(
+    trio_bets,
+    excluded_numbers=kirisute_horse_numbers,
+)
+
 # 通常三連複の不足時も別役ランキングの混成補充は行わない。
-# 同じ役割の候補で成立する点だけを上の処理で確定する。
+# ただし佐賀・前受けの3点目だけは上の専用救済で
+# 指定された3点目の役割を保ちながら成立させる。
 
 required_wide_count = len(
     current_bet_template[
@@ -17619,6 +17988,118 @@ def replace_cut_horses_only(bets, cut_numbers, axis_number, symbols):
     return result, missing
 
 
+def avoid_float_wide_duplicate(
+    current_float_bets,
+    float_templates,
+    wide_bets,
+    selected_symbols,
+    excluded_numbers=None,
+):
+    """
+    浮き輪が通常ワイドと同じ実馬2頭になった時だけ、
+    浮き輪側を次候補へずらす。
+
+    ・三連複は変更しない
+    ・通常ワイドは変更しない
+    ・浮き輪の記号ルールは維持する
+    ・各記号の候補順を優先し、最後だけ全出走馬を安全網にする
+    """
+    from itertools import product
+
+    excluded_numbers = set(excluded_numbers or set())
+
+    wide_keys = {
+        frozenset(
+            get_num(horse_name)
+            for horse_name in bet
+        )
+        for bet in wide_bets
+        if len(bet) == 2
+    }
+
+    # すでに通常ワイドと別買い目なら、そのまま維持する。
+    for bet in current_float_bets:
+        if len(bet) != 2:
+            continue
+
+        numbers = [
+            get_num(horse_name)
+            for horse_name in bet
+        ]
+
+        if (
+            len(set(numbers)) == 2
+            and not excluded_numbers.intersection(numbers)
+            and frozenset(numbers) not in wide_keys
+        ):
+            return [bet]
+
+    # 重複した時だけ、浮き輪の記号ごとの次候補を探す。
+    for symbol_list in float_templates:
+        if len(symbol_list) != 2:
+            continue
+
+        candidate_lists = []
+
+        for index, symbol in enumerate(symbol_list):
+            preferred = []
+
+            # 現在表示されていた浮き輪の馬を最優先で残す。
+            for bet in current_float_bets:
+                if len(bet) == 2:
+                    preferred.append(bet[index])
+
+            if symbol in selected_symbols:
+                preferred.append(
+                    selected_symbols[symbol]
+                )
+
+            candidates = unique_texts(
+                preferred
+                + alphabet_candidate_pools.get(
+                    symbol,
+                    all_bet_pool,
+                )
+                + all_bet_pool
+            )
+
+            candidates = [
+                horse_name
+                for horse_name in candidates
+                if get_num(horse_name)
+                not in excluded_numbers
+            ]
+
+            candidate_lists.append(
+                candidates
+            )
+
+        for combination in product(
+            *candidate_lists
+        ):
+            numbers = [
+                get_num(horse_name)
+                for horse_name in combination
+            ]
+
+            if len(set(numbers)) != 2:
+                continue
+
+            bet_key = frozenset(
+                numbers
+            )
+
+            if bet_key in wide_keys:
+                continue
+
+            return [
+                list(combination)
+            ]
+
+    # 通常はここへ来ないが、候補不足時だけ従来買い目を維持する。
+    return current_float_bets
+
+
 st.markdown("#### ⚔️ 斬り捨て御免馬")
 cut_options = [f"{h['馬番']}番 {h['馬名']}" for h in horses if int(h["馬番"]) != int(popular_horse_num)]
 cut_selected = st.multiselect(
@@ -17645,6 +18126,21 @@ if cut_numbers_for_bets:
     cut_missing_count += cut_missing
     if cut_missing_count:
         st.warning(f"差し替え候補が足りない買い目が{cut_missing_count}点あります。その買い目は表示していません。")
+
+# ==================================================
+# 通常ワイドと浮き輪の実馬重複を回避
+#
+# ワイドは一切動かさず、同じ2頭になった時だけ
+# 浮き輪側をその記号の次候補へ繰り下げる。
+# 斬り捨て差し替え後に行うため、最終表示上でも重複しない。
+# ==================================================
+float_bets = avoid_float_wide_duplicate(
+    float_bets,
+    current_bet_template["浮き輪"],
+    wide_bets,
+    float_symbol_source,
+    excluded_numbers=cut_numbers_for_bets,
+)
 
 st.subheader(
     f"おすすめの三連複 {len(trio_bets)}点"
