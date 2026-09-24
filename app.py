@@ -14218,6 +14218,16 @@ def build_urawa_funabashi_axis_bet_override(context):
     ):
         result["三連複"][1] = ["A", "C", "E"]
 
+    # 浦和1400m・1500mのみ、軸タイプが差しの時は、
+    # 三連複3点目を A-M-M2 に固定する。
+    # 副脚質の有無は問わず、他距離・他軸タイプ・船橋には影響させない。
+    if (
+        context.get("track") == "浦和"
+        and int(context.get("current_distance") or 0) in {1400, 1500}
+        and axis_type == "差し"
+    ):
+        result["三連複"][2] = ["A", "M", "M2"]
+
     return result
 
 
