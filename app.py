@@ -14099,6 +14099,24 @@ def build_kasamatsu_axis_bet_override(context):
     ):
         result["三連複"][2] = ["A", "B", "K"]
 
+    # 笠松のみ、主：先行・副：なしのとき、
+    # 三連複3点目だけをA-M-Eに変更する。
+    # 副脚質がある先行軸・他軸タイプ・他会場には影響させない。
+    if (
+        context.get("axis_primary") == "先行"
+        and context.get("axis_secondary") == "なし"
+    ):
+        result["三連複"][2] = ["A", "M", "E"]
+
+    # 笠松のみ、主：差し・副：なしのとき、
+    # 三連複3点目だけをA-M-Dに変更する。
+    # 副脚質がある差し軸・他軸タイプ・他会場には影響させない。
+    if (
+        context.get("axis_primary") == "差し"
+        and context.get("axis_secondary") == "なし"
+    ):
+        result["三連複"][2] = ["A", "M", "D"]
+
     return result
 
 def build_urawa_funabashi_axis_bet_override(context):
@@ -14177,6 +14195,28 @@ def build_urawa_funabashi_axis_bet_override(context):
         and context.get("axis_primary") == "先行"
     ):
         result["三連複"][0] = ["A", "B", "L"]
+
+    # 浦和1400mのみ・元の主脚質が逃げの時は、
+    # 三連複2点目を A-F-D、ワイド2点目を A-D に固定する。
+    # 他距離・他主脚質・1点目3点目・浮き輪・船橋には影響させない。
+    if (
+        context.get("track") == "浦和"
+        and int(context.get("current_distance") or 0) == 1400
+        and context.get("axis_primary") == "逃げ"
+    ):
+        result["三連複"][1] = ["A", "F", "D"]
+        result["ワイド"][1] = ["A", "D"]
+
+    # 浦和1500mのみ・主：逃げ・副：先行の時だけ、
+    # 三連複2点目を A-C-E に固定する。
+    # 他距離・他主副脚質・ワイド・浮き輪・船橋には影響させない。
+    if (
+        context.get("track") == "浦和"
+        and int(context.get("current_distance") or 0) == 1500
+        and context.get("axis_primary") == "逃げ"
+        and context.get("axis_secondary") == "先行"
+    ):
+        result["三連複"][1] = ["A", "C", "E"]
 
     return result
 
@@ -14651,6 +14691,16 @@ def build_monbetsu_axis_bet_override(context):
     ):
         result["三連複"][1] = ["A", "L", "I"]
 
+    # 門別1000m・1200mのみ、主：先行・副：追い込みの時は、
+    # 三連複3点目を A-F-M にする。
+    # 1100mを含む他距離・他主副脚質・他会場には影響させない。
+    if (
+        context.get("axis_primary") == "先行"
+        and context.get("axis_secondary") == "追い込み"
+        and int(context.get("current_distance") or 0) in {1000, 1200}
+    ):
+        result["三連複"][2] = ["A", "F", "M"]
+
     # 門別のみ、主：先行・副：持続の時は浮き輪をE-L。
     if (
         context.get("axis_primary") == "先行"
@@ -14665,6 +14715,17 @@ def build_monbetsu_axis_bet_override(context):
     ):
         result["三連複"][0] = ["A", "B", "C"]
         result["三連複"][1] = ["A", "F", "E"]
+
+    # 門別1000m・1200mのみ、主：逃げ・副：先行の時は、
+    # 三連複2点目を A-F-D、ワイドを A-F にする。
+    # 1100mを含む他距離・他主副脚質・他会場には影響させない。
+    if (
+        context.get("axis_primary") == "逃げ"
+        and context.get("axis_secondary") == "先行"
+        and int(context.get("current_distance") or 0) in {1000, 1200}
+    ):
+        result["三連複"][1] = ["A", "F", "D"]
+        result["ワイド"] = [["A", "F"]]
 
     # 門別のみ、主脚質が展開待ちなら
     # 三連複2点目をA-F-C、3点目をA-M-I。
@@ -14689,6 +14750,15 @@ def build_monbetsu_axis_bet_override(context):
         and int(context.get("current_distance") or 0) in {1600, 2000}
     ):
         result["三連複"][1] = ["A", "B", "F"]
+
+    # 門別1700mのみ・主脚質が逃げの時だけ、
+    # 三連複2点目を A-D-L に固定する。
+    # 副脚質は問わず、他距離・他脚質・他会場には影響させない。
+    if (
+        context.get("axis_primary") == "逃げ"
+        and int(context.get("current_distance") or 0) == 1700
+    ):
+        result["三連複"][1] = ["A", "D", "L"]
 
     return result
 
@@ -14985,6 +15055,7 @@ def build_sonoda_axis_bet_override(context):
 
     # 園田のみ、主：先行・副：持続は
     # 1点目A-M-D、2点目A-F-E、3点目A-E-G。
+    # ワイドはA-B、浮き輪はM-M2（Mランキング1位-2位）にする。
     if (
         context.get("axis_primary") == "先行"
         and context.get("axis_secondary") == "持続"
@@ -14992,6 +15063,8 @@ def build_sonoda_axis_bet_override(context):
         result["三連複"][0] = ["A", "M", "D"]
         result["三連複"][1] = ["A", "F", "E"]
         result["三連複"][2] = ["A", "E", "G"]
+        result["ワイド"] = [["A", "B"]]
+        result["浮き輪"] = [["M", "M2"]]
 
     # 園田のみ、主：先行・副：追い込みの時は、
     # 三連複3点目だけを A-F-D に変更する。
@@ -15756,12 +15829,25 @@ m_selection_candidates = (
     + m_single
 )
 
-m_pool = unique_texts(
+m_ranked_pool = unique_texts(
     [
         horse_text(h)
         for h in m_selection_candidates
     ]
+)
+
+m_pool = unique_texts(
+    m_ranked_pool
     + all_bet_pool
+)
+
+# M2＝Mランキング2位専用。
+# 全馬フォールバックは混ぜず、純粋なMランキングの2位以下だけを候補にする。
+# 園田・主先行／副持続の浮き輪 M-M2 で使用する。
+m2_pool = (
+    m_ranked_pool[1:]
+    if len(m_ranked_pool) >= 2
+    else []
 )
 
 # ==================================================
@@ -15861,6 +15947,7 @@ alphabet_candidate_pools = {
     "K": k_pool,
     "L": l_pool,
     "M": m_pool,
+    "M2": m2_pool,
 }
 
 # ==================================================
@@ -15931,7 +16018,8 @@ alphabet_role_names = {
     ),
     "K": "3→4追い込み1位",
     "L": "総合追い込み1位",
-    "M": "中間重複",
+    "M": "中間重複1位",
+    "M2": "中間重複2位",
 }
 
 # J・K・Lは最後に確定する。
@@ -15953,6 +16041,7 @@ if baba_name in {"盛岡", "水沢"}:
         "L",
         "K",
         "M",
+        "M2",
     ]
 else:
     alphabet_priority = [
@@ -15969,6 +16058,7 @@ else:
         "L",
         "K",
         "J",
+        "M2",
     ]
 
 
