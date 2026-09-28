@@ -14228,6 +14228,26 @@ def build_urawa_funabashi_axis_bet_override(context):
     ):
         result["三連複"][2] = ["A", "M", "M2"]
 
+    # 船橋1200mのみ・元の主脚質が逃げの時は、
+    # 浮き輪を F-D に変更する。
+    # 他距離・他主脚質・三連複・ワイド・浦和には影響させない。
+    if (
+        context.get("track") == "船橋"
+        and int(context.get("current_distance") or 0) == 1200
+        and context.get("axis_primary") == "逃げ"
+    ):
+        result["浮き輪"] = [["F", "D"]]
+
+    # 船橋1600mのみ・元の主脚質が先行の時は、
+    # ワイド2点目を A-D に変更する。
+    # 他距離・他主脚質・三連複・浮き輪・浦和には影響させない。
+    if (
+        context.get("track") == "船橋"
+        and int(context.get("current_distance") or 0) in {1500, 1600}
+        and context.get("axis_primary") == "先行"
+    ):
+        result["ワイド"][1] = ["A", "D"]
+
     return result
 
 
@@ -14474,14 +14494,14 @@ def build_kochi_saga_axis_bet_override(context):
         result["ワイド"] = [["A", "F"]]
 
     # 高知のみ・主：先行｜副：逃げの時だけ、
-    # 三連複2点目を A-F-E、浮き輪を F-E に変更する。
+    # 三連複2点目を A-E-D、浮き輪を F-E に変更する。
     # 1点目・3点目・ワイド・他の高知脚質・佐賀・他会場は変更しない。
     if (
         context["track"] == "高知"
         and context.get("axis_primary") == "先行"
         and context.get("axis_secondary") == "逃げ"
     ):
-        result["三連複"][1] = ["A", "F", "E"]
+        result["三連複"][1] = ["A", "E", "D"]
         result["浮き輪"] = [["F", "E"]]
 
     if (
@@ -14490,6 +14510,15 @@ def build_kochi_saga_axis_bet_override(context):
     ):
         # 佐賀・前受けの既存1点目 A-B-L は維持する。
         result["三連複"][0] = ["A", "B", "L"]
+
+        # 佐賀1400mのみ・主：先行｜副：持続の時は、
+        # 三連複1点目を A-B-E に変更する。
+        if (
+            context.get("current_distance") == 1400
+            and context.get("axis_primary") == "先行"
+            and context.get("axis_secondary") == "持続"
+        ):
+            result["三連複"][0] = ["A", "B", "E"]
 
         # 佐賀・前受けの通常3点目。
         result["三連複"][2] = ["A", "M", "L"]
