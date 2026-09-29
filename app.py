@@ -8596,18 +8596,32 @@ def judge_tenkai_elimination(
         False,
     )
 
+    # JRA履歴馬は、展開馬の消去判定でJRA時代の着順を使わない。
+    # 地方走がある場合は地方競馬の着順だけを見る。
+    # 地方未出走のJRA転入馬は、着順による消去を行わない。
+    is_jra_history_horse = horse.get("JRA履歴あり", False)
+
     if (
         horse.get("展開消去前崩れ", False)
+        and not is_jra_history_horse
         and not fade_relief_active
         and horse.get("馬番") not in tenkai_time_leader_numbers
     ):
         reasons.append("重度近走前崩れ")
 
-    recent_finishes = [
-        finish
-        for finish in horse.get("着順", [])[:3]
-        if isinstance(finish, int)
-    ]
+    if is_jra_history_horse:
+        recent_finishes = [
+            pair.get("着順")
+            for pair in horse.get("全距離付きタイム", [])
+            if pair.get("競馬場", "") in LOCAL_PLACES
+            and isinstance(pair.get("着順"), int)
+        ][:3]
+    else:
+        recent_finishes = [
+            finish
+            for finish in horse.get("着順", [])[:3]
+            if isinstance(finish, int)
+        ]
 
     if recent_finishes:
         bottom8_count = sum(
@@ -13767,7 +13781,7 @@ if (
 # ==================================================
 # 盛岡限定・差し軸
 #
-# 浮き輪ワイド：K - L
+# 追加ワイド：K - L
 #
 # K＝3角→4角【勝負所重視】追い込みランキング1位
 # L＝2角→4角【総合追い込み】ランキング1位
@@ -14022,6 +14036,14 @@ def build_kanazawa_axis_bet_override(context):
     ):
         result["三連複"][1][1] = "F"
 
+    # 金沢のみ・主＝差し／副＝なしの時は、三連複2点目だけA-E-I。
+    if (
+        axis_type == "差し"
+        and context.get("axis_primary") == "差し"
+        and context.get("axis_secondary") == "なし"
+    ):
+        result["三連複"][1] = ["A", "E", "I"]
+
     return result
 
 def build_kasamatsu_axis_bet_override(context):
@@ -14127,7 +14149,7 @@ def build_urawa_funabashi_axis_bet_override(context):
         "前受け": {
             "三連複": [
                 ["A", "B", "D"],
-                ["A", "C", "G"],
+                ["A", "F", "G"],
             ],
             "ワイド": [
                 ["A", "B"],
@@ -14138,7 +14160,7 @@ def build_urawa_funabashi_axis_bet_override(context):
         "持続": {
             "三連複": [
                 ["A", "B", "C"],
-                ["A", "C", "E"],
+                ["A", "F", "E"],
             ],
             "ワイド": [
                 ["A", "B"],
@@ -14149,7 +14171,7 @@ def build_urawa_funabashi_axis_bet_override(context):
         "差し": {
             "三連複": [
                 ["A", "B", "E"],
-                ["A", "D", "I"],
+                ["A", "F", "I"],
             ],
             "ワイド": [
                 ["A", "B"],
@@ -14238,6 +14260,40 @@ def build_urawa_funabashi_axis_bet_override(context):
     ):
         result["浮き輪"] = [["F", "D"]]
 
+    # 船橋1200mのみ・主＝先行／副＝持続の時は、
+    # 三連複2点目を A-C-E に変更する。
+    # 他距離・他主副脚質・1点目3点目・ワイド・浮き輪・浦和には影響させない。
+    if (
+        context.get("track") == "船橋"
+        and int(context.get("current_distance") or 0) == 1200
+        and context.get("axis_primary") == "先行"
+        and context.get("axis_secondary") == "持続"
+    ):
+        result["三連複"][1] = ["A", "C", "E"]
+
+    # 船橋1200mのみ・主＝持続の時は、副脚質を問わず、
+    # 三連複3点目を A-F-I、ワイド2点目を A-F に変更する。
+    # 他距離・他主脚質・他の買い目・浦和には影響させない。
+    if (
+        context.get("track") == "船橋"
+        and int(context.get("current_distance") or 0) == 1200
+        and context.get("axis_primary") == "持続"
+    ):
+        result["三連複"][2] = ["A", "F", "I"]
+        result["ワイド"][1] = ["A", "F"]
+
+    # 船橋1800mのみ・主＝先行／副＝持続の時は、
+    # 三連複3点目を A-D-L、ワイド2点目を A-D に変更する。
+    # 他距離・他主副脚質・1点目2点目・浮き輪・浦和には影響させない。
+    if (
+        context.get("track") == "船橋"
+        and int(context.get("current_distance") or 0) == 1800
+        and context.get("axis_primary") == "先行"
+        and context.get("axis_secondary") == "持続"
+    ):
+        result["三連複"][2] = ["A", "D", "L"]
+        result["ワイド"][1] = ["A", "D"]
+
     # 船橋1600mのみ・元の主脚質が先行の時は、
     # ワイド2点目を A-D に変更する。
     # 他距離・他主脚質・三連複・浮き輪・浦和には影響させない。
@@ -14321,13 +14377,13 @@ def build_nagoya_himeji_axis_bet_override(context):
         result["ワイド"] = [["A", "M"]]
 
         # 名古屋のみ・主＝先行の時は、
-        # 浮き輪ワイドを M-E にする。
+        # 追加ワイドを M-E にする。
         # 副脚質は問わず、他の主脚質・他会場には影響させない。
         if context.get("axis_primary") == "先行":
             result["浮き輪"] = [["M", "E"]]
 
         # 名古屋のみ・主＝先行／副＝逃げの時は、
-        # 浮き輪ワイドを E-G にする。
+        # 追加ワイドを E-G にする。
         if (
             context.get("axis_primary") == "先行"
             and context.get("axis_secondary") == "逃げ"
@@ -14336,7 +14392,7 @@ def build_nagoya_himeji_axis_bet_override(context):
 
         # 名古屋のみ・主＝先行／副＝持続の時は、
         # 三連複2点目を A-M-E、3点目を A-I-G、
-        # ワイドを A-L にする。
+        # ワイドを A-L、浮き輪ワイドを A-I にする。
         if (
             context.get("axis_primary") == "先行"
             and context.get("axis_secondary") == "持続"
@@ -14344,6 +14400,7 @@ def build_nagoya_himeji_axis_bet_override(context):
             result["三連複"][1] = ["A", "M", "E"]
             result["三連複"][2] = ["A", "I", "G"]
             result["ワイド"] = [["A", "L"]]
+            result["浮き輪"] = [["A", "I"]]
 
         # 名古屋のみ・主＝先行／副＝追い込みの時は、
         # 三連複3点目を A-F-D、ワイドを A-B にする。
@@ -14354,6 +14411,38 @@ def build_nagoya_himeji_axis_bet_override(context):
             result["三連複"][2] = ["A", "F", "D"]
             result["ワイド"] = [["A", "B"]]
 
+        # 名古屋1500mのみ・主脚質が逃げの時は、
+        # 副脚質を問わず三連複2点目をA-F-Mに固定する。
+        if (
+            int(context.get("current_distance") or 0) == 1500
+            and context.get("axis_primary") == "逃げ"
+        ):
+            result["三連複"][1] = ["A", "F", "M"]
+
+        # 名古屋920mのみ・主脚質が逃げの時は、
+        # 副脚質を問わず三連複3点目をA-F-Lに固定する。
+        if (
+            int(context.get("current_distance") or 0) == 920
+            and context.get("axis_primary") == "逃げ"
+        ):
+            result["三連複"][2] = ["A", "F", "L"]
+
+        # 名古屋920mのみ・主脚質が先行の時は、
+        # 副脚質を問わず三連複3点目を A-B-E にする。
+        if (
+            int(context.get("current_distance") or 0) == 920
+            and context.get("axis_primary") == "先行"
+        ):
+            result["三連複"][2] = ["A", "B", "E"]
+
+        # 名古屋2100mのみ・主脚質が先行の時は、
+        # 副脚質を問わず三連複3点目をA-D-Gに固定する。
+        if (
+            int(context.get("current_distance") or 0) == 2100
+            and context.get("axis_primary") == "先行"
+        ):
+            result["三連複"][2] = ["A", "D", "G"]
+
         # 名古屋のみ・主＝逃げ／副＝追い込みの時は、
         # 三連複3点目を A-F-M にする。
         if (
@@ -14363,12 +14452,13 @@ def build_nagoya_himeji_axis_bet_override(context):
             result["三連複"][2] = ["A", "F", "M"]
 
         # 名古屋のみ・主＝逃げ／副＝先行の時は、
-        # 三連複1点目を A-B-K、3点目を A-D-I にする。
+        # 三連複1点目を A-B-K、2点目を A-M-E、3点目を A-D-I にする。
         if (
             context.get("axis_primary") == "逃げ"
             and context.get("axis_secondary") == "先行"
         ):
             result["三連複"][0] = ["A", "B", "K"]
+            result["三連複"][1] = ["A", "M", "E"]
             result["三連複"][2] = ["A", "D", "I"]
 
     # 名古屋のみ・主＝持続／副＝なしの時は、
@@ -14413,8 +14503,18 @@ def build_nagoya_himeji_axis_bet_override(context):
 
         result["ワイド"] = [["A", "E"]]
 
+        # 名古屋のみ・主＝差し／副＝逃げの時は、
+        # 三連複1点目を A-B-D、ワイドを A-B に変更する。
+        # 2点目3点目・浮き輪・他の名古屋脚質・他会場には影響させない。
+        if (
+            context.get("axis_primary") == "差し"
+            and context.get("axis_secondary") == "逃げ"
+        ):
+            result["三連複"][0] = ["A", "B", "D"]
+            result["ワイド"] = [["A", "B"]]
+
         # 名古屋のみ・元の主脚質が差しの時は、
-        # 浮き輪ワイドを A-F にする。
+        # 追加ワイドを A-F にする。
         # 展開待ち・他会場・他の買い目には影響させない。
         if context.get("axis_primary") == "差し":
             result["浮き輪"] = [["A", "F"]]
@@ -14605,13 +14705,14 @@ def build_iwate_axis_bet_override(context):
         result["浮き輪"] = [["A", "E"]]
 
         # 水沢のみ・主＝先行／副＝追い込みの時は、
-        # 三連複3点目を A-E-L にする。
+        # 三連複1点目を A-B-E、3点目を A-E-L にする。
         # 盛岡・他の水沢脚質には影響させない。
         if (
             track == "水沢"
             and context.get("axis_primary") == "先行"
             and context.get("axis_secondary") == "追い込み"
         ):
+            result["三連複"][0] = ["A", "B", "E"]
             result["三連複"][2] = ["A", "E", "L"]
 
         return result
@@ -18266,10 +18367,10 @@ if cut_numbers_for_bets:
         st.warning(f"差し替え候補が足りない買い目が{cut_missing_count}点あります。その買い目は表示していません。")
 
 # ==================================================
-# 通常ワイドと浮き輪の実馬重複を回避
+# ワイド同士の実馬重複を回避
 #
 # ワイドは一切動かさず、同じ2頭になった時だけ
-# 浮き輪側をその記号の次候補へ繰り下げる。
+# 追加ワイド側をその記号の次候補へ繰り下げる。
 # 斬り捨て差し替え後に行うため、最終表示上でも重複しない。
 # ==================================================
 float_bets = avoid_float_wide_duplicate(
@@ -18357,70 +18458,13 @@ if (
         )
     )
 
+all_wide_bets = list(wide_bets) + list(float_bets)
+
 st.subheader(
-    f"おすすめのワイド {len(wide_bets)}点"
+    f"おすすめのワイド {len(all_wide_bets)}点"
 )
 
-for bet in wide_bets:
-    st.write(
-        f"{bet[0]} - {bet[1]}"
-        + get_wide_odds_suffix(
-            bet,
-            wide_odds_map,
-        )
-    )
-
-st.markdown("#### ワイドオリジナル")
-
-if st.session_state.get("original_wide_first") not in (
-    [unselected_option] + all_horse_options
-):
-    st.session_state.pop("original_wide_first", None)
-
-wide_original_col1, wide_original_col2 = st.columns(2)
-
-with wide_original_col1:
-    original_wide_first = st.selectbox(
-        "馬1",
-        [unselected_option] + all_horse_options,
-        key="original_wide_first",
-    )
-
-with wide_original_col2:
-    original_wide_second_options = [
-        horse_label
-        for horse_label in all_horse_options
-        if horse_label != original_wide_first
-    ]
-    if st.session_state.get("original_wide_second") not in (
-        [unselected_option] + original_wide_second_options
-    ):
-        st.session_state.pop("original_wide_second", None)
-    original_wide_second = st.selectbox(
-        "馬2",
-        [unselected_option] + original_wide_second_options,
-        key="original_wide_second",
-    )
-
-if (
-    original_wide_first != unselected_option
-    and original_wide_second != unselected_option
-):
-    original_wide_bet = (
-        original_wide_first,
-        original_wide_second,
-    )
-    st.write(
-        f"{original_wide_first} - {original_wide_second}"
-        + get_wide_odds_suffix(
-            original_wide_bet,
-            wide_odds_map,
-        )
-    )
-
-st.markdown("### 🛟 カッパの浮き輪保険")
-
-for bet in float_bets:
+for bet in all_wide_bets:
     st.write(
         f"{bet[0]} - {bet[1]}"
         + get_wide_odds_suffix(
@@ -18840,7 +18884,7 @@ if check_result:
                 })
 
             # --------------------------------------
-            # 浮き輪ワイド
+            # 追加ワイド
             # --------------------------------------
             for index, bet in enumerate(
                 float_bets,
@@ -18862,11 +18906,7 @@ if check_result:
 
                 total_return += payout
 
-                label = (
-                    "浮き輪"
-                    if len(float_bets) == 1
-                    else f"浮き輪{index}"
-                )
+                label = f"ワイド{len(wide_bets) + index}"
 
                 ticket_rows.append({
                     "券種": label,
