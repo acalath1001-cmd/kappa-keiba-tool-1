@@ -14260,6 +14260,17 @@ def build_urawa_funabashi_axis_bet_override(context):
     ):
         result["浮き輪"] = [["F", "D"]]
 
+    # 船橋1200mのみ・主＝逃げ／副＝先行の時は、
+    # ワイド2点目を M-E に変更する。
+    # 他距離・他主副脚質・三連複・浮き輪・浦和には影響させない。
+    if (
+        context.get("track") == "船橋"
+        and int(context.get("current_distance") or 0) == 1200
+        and context.get("axis_primary") == "逃げ"
+        and context.get("axis_secondary") == "先行"
+    ):
+        result["ワイド"][1] = ["M", "E"]
+
     # 船橋1200mのみ・主＝先行／副＝持続の時は、
     # 三連複2点目を A-C-E に変更する。
     # 他距離・他主副脚質・1点目3点目・ワイド・浮き輪・浦和には影響させない。
@@ -14411,6 +14422,16 @@ def build_nagoya_himeji_axis_bet_override(context):
             result["三連複"][2] = ["A", "F", "D"]
             result["ワイド"] = [["A", "B"]]
 
+        # 名古屋1500mのみ・主＝先行／副＝追い込みの時は、
+        # ワイド2点目を F-M にする。1点目A-Bはそのまま維持。
+        # 三連複・他距離・他脚質・他会場には影響させない。
+        if (
+            int(context.get("current_distance") or 0) == 1500
+            and context.get("axis_primary") == "先行"
+            and context.get("axis_secondary") == "追い込み"
+        ):
+            result["ワイド"] = [["A", "B"], ["F", "M"]]
+
         # 名古屋1500mのみ・主脚質が逃げの時は、
         # 副脚質を問わず三連複2点目をA-F-Mに固定する。
         if (
@@ -14470,6 +14491,19 @@ def build_nagoya_himeji_axis_bet_override(context):
         and context.get("axis_secondary") == "なし"
     ):
         result["三連複"][1] = ["A", "F", "K"]
+
+    # 名古屋1500mのみ・主＝持続／副＝追い込みの時は、
+    # 三連複1点目だけを A-B-M に変更する。
+    # 他距離・他主副脚質・2点目3点目・ワイド・浮き輪・他会場には影響させない。
+    if (
+        context["track"] == "名古屋"
+        and context["axis_type"] == "持続"
+        and int(context.get("current_distance") or 0) == 1500
+        and context.get("axis_primary") == "持続"
+        and context.get("axis_secondary") == "追い込み"
+    ):
+        result["三連複"][0] = ["A", "B", "M"]
+
 
     if (
         context["track"] == "名古屋"
@@ -14625,7 +14659,8 @@ def build_kochi_saga_axis_bet_override(context):
 
     # 佐賀のみ・主：逃げ｜副：先行の時だけ、
     # 三連複2点目・3点目を指定買い目へ上書きする。
-    # 1点目・ワイド・浮き輪・他脚質・他会場は変更しない。
+    # さらに佐賀1400mだけは、ワイド2点目（浮き輪枠）を B-M にする。
+    # 1点目・他距離・他脚質・他会場は変更しない。
     if (
         context["track"] == "佐賀"
         and context.get("axis_primary") == "逃げ"
@@ -14633,6 +14668,9 @@ def build_kochi_saga_axis_bet_override(context):
     ):
         result["三連複"][1] = ["A", "C", "L"]
         result["三連複"][2] = ["A", "M", "G"]
+
+        if int(context.get("current_distance") or 0) == 1400:
+            result["浮き輪"] = [["B", "M"]]
 
     # 佐賀・差しだけ2点目を A-D-G に固定する。
     # 共通側のA≠F時のA-F-I差し替えより後で上書きするため、
@@ -14847,6 +14885,12 @@ def build_monbetsu_axis_bet_override(context):
         and context.get("axis_secondary") == "持続"
     ):
         result["浮き輪"] = [["E", "L"]]
+
+        # 門別1000mのみ、主：先行・副：持続の時は、
+        # 三連複2点目を A-C-L にする。
+        # 他距離・他主副脚質・他会場には影響させない。
+        if int(context.get("current_distance") or 0) == 1000:
+            result["三連複"][1] = ["A", "C", "L"]
 
     # 門別のみ、主：逃げ・副：先行は1点目A-B-C、2点目A-F-E。
     if (
@@ -15215,6 +15259,13 @@ def build_sonoda_axis_bet_override(context):
     ):
         result["三連複"][2] = ["A", "F", "D"]
 
+        # 園田1230mのみ・主＝先行／副＝追い込みの時は、
+        # 三連複2点目をA-F-G、ワイド1点目をA-Bにする。
+        # 他距離・他主副脚質・他会場には影響させない。
+        if int(current_distance or 0) == 1230:
+            result["三連複"][1] = ["A", "F", "G"]
+            result["ワイド"][0] = ["A", "B"]
+
     # 園田のみ、主：差し・副：持続の時は、
     # 三連複2点目だけを A-D-C に変更する。
     # 1点目・3点目・ワイド・他会場には影響させない。
@@ -15233,6 +15284,19 @@ def build_sonoda_axis_bet_override(context):
     ):
         result["三連複"][1] = ["A", "F", "K"]
         result["三連複"][2] = ["A", "M", "L"]
+
+    # 園田1400mのみ・主＝差し／副＝なしの時は、
+    # おすすめワイドを2点のまま維持する。
+    # 1点目は既存の通常ワイドA-Eをそのまま残し、
+    # 2点目（浮き輪）だけをA-Mに変更する。
+    # 他距離・他主副脚質・三連複・通常ワイド・他会場には影響させない。
+    if (
+        axis_type == "差し"
+        and context.get("axis_primary") == "差し"
+        and context.get("axis_secondary") == "なし"
+        and int(current_distance or 0) == 1400
+    ):
+        result["浮き輪"] = [["A", "M"]]
 
     # 最終保証：園田820m・主逃げ・副先行だけは、
     # 他の園田分岐より後で三連複3点目を必ずA-D-Lへ固定する。
@@ -17255,6 +17319,182 @@ def ensure_saga_front_third_trio(
 
 
 trio_bets = ensure_saga_front_third_trio(
+    trio_bets,
+    final_bet_symbols,
+    normal_bet_symbols,
+    excluded_numbers=kirisute_horse_numbers,
+)
+
+
+# ==================================================
+# 名古屋・主＝展開待ち／副＝なし専用の最終3点目救済
+#
+# 目的：
+#   3点目 A-L-G が、1点目 A-B-E / 2点目 A-N-I と
+#   実馬3頭で完全一致して make_unique_trio_bets() により落ち、
+#   最終表示が2点になるケースを防ぐ。
+#
+# 重要：
+#   ・名古屋かつ主＝展開待ち／副＝なしの時だけ。
+#   ・既存1点目・2点目は絶対に変更しない。
+#   ・3点目は A-L-G の役割を優先する。
+#   ・まずGだけを次候補へ送り、それでも成立しない時だけLも次候補へ送る。
+#   ・最後の安全網として all_bet_pool を使う。
+#   ・他会場・他軸タイプ・ワイド・浮き輪には影響させない。
+# ==================================================
+def ensure_nagoya_tenkai_none_third_trio(
+    existing_trio_bets,
+    primary_symbols,
+    fallback_symbols,
+    excluded_numbers=None,
+):
+    if not (
+        baba_name == "名古屋"
+        and bet_axis_type == "差し"
+        and axis_primary_for_bet == "展開待ち"
+        and axis_secondary_for_bet == "なし"
+        and required_trio_count >= 3
+        and len(existing_trio_bets) < required_trio_count
+    ):
+        return existing_trio_bets
+
+    excluded_numbers = set(
+        excluded_numbers or set()
+    )
+
+    axis_horse = (
+        primary_symbols.get("A")
+        or fallback_symbols.get("A")
+    )
+
+    if axis_horse is None:
+        return existing_trio_bets
+
+    axis_number = get_num(axis_horse)
+
+    if axis_number is None:
+        return existing_trio_bets
+
+    existing_keys = {
+        frozenset(
+            get_num(horse)
+            for horse in bet
+        )
+        for bet in existing_trio_bets
+        if len(bet) == 3
+    }
+
+    l_candidates = unique_texts(
+        [
+            horse
+            for horse in [
+                primary_symbols.get("L"),
+                fallback_symbols.get("L"),
+            ]
+            if horse is not None
+        ]
+        + list(l_base_pool)
+        + list(alphabet_candidate_pools.get("L", []))
+        + list(all_bet_pool)
+    )
+
+    g_candidates = unique_texts(
+        [
+            horse
+            for horse in [
+                primary_symbols.get("G"),
+                fallback_symbols.get("G"),
+            ]
+            if horse is not None
+        ]
+        + list(alphabet_candidate_pools.get("G", []))
+        + list(all_bet_pool)
+    )
+
+    if not l_candidates or not g_candidates:
+        return existing_trio_bets
+
+    # まずは現在のLを固定して、右側Gだけ次候補へ送る。
+    preferred_l = next(
+        (
+            horse
+            for horse in l_candidates
+            if get_num(horse) not in {None, axis_number}
+            and get_num(horse) not in excluded_numbers
+        ),
+        None,
+    )
+
+    if preferred_l is not None:
+        l_number = get_num(preferred_l)
+
+        for g_horse in g_candidates:
+            g_number = get_num(g_horse)
+
+            if (
+                g_number is None
+                or g_number == axis_number
+                or g_number == l_number
+                or g_number in excluded_numbers
+            ):
+                continue
+
+            trio_key = frozenset({
+                axis_number,
+                l_number,
+                g_number,
+            })
+
+            if (
+                len(trio_key) == 3
+                and trio_key not in existing_keys
+            ):
+                return existing_trio_bets + [
+                    [axis_horse, preferred_l, g_horse]
+                ]
+
+    # Gだけでは作れない場合だけ、Lも次候補へ送る。
+    for l_horse in l_candidates:
+        l_number = get_num(l_horse)
+
+        if (
+            l_number is None
+            or l_number == axis_number
+            or l_number in excluded_numbers
+        ):
+            continue
+
+        for g_horse in g_candidates:
+            g_number = get_num(g_horse)
+
+            if (
+                g_number is None
+                or g_number == axis_number
+                or g_number == l_number
+                or g_number in excluded_numbers
+            ):
+                continue
+
+            trio_key = frozenset({
+                axis_number,
+                l_number,
+                g_number,
+            })
+
+            if (
+                len(trio_key) != 3
+                or trio_key in existing_keys
+            ):
+                continue
+
+            return existing_trio_bets + [
+                [axis_horse, l_horse, g_horse]
+            ]
+
+    return existing_trio_bets
+
+
+trio_bets = ensure_nagoya_tenkai_none_third_trio(
     trio_bets,
     final_bet_symbols,
     normal_bet_symbols,
