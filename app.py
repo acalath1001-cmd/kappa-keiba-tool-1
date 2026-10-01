@@ -11826,13 +11826,11 @@ total_score_map_for_ana = {
 # 少し持ち上げる。
 #
 # 地力順位だけではスコア差を表現しきれないため、
-# ・順位ボーナス
-# ・地力スコアの12％（上限180点）
+# ・順位ボーナス（従来の50％）
+# ・地力スコアの5％（上限75点）
 # の両方を使う。
 #
-# 例：
-# 地力4位・地力1200点前後なら
-# 70点 + 約144点 = 約214点の救済。
+# 地力は抑えの主役ではなく、補助材料として扱う。
 # ==================================================
 
 long_rank_map_for_ana = {
@@ -11852,11 +11850,13 @@ long_score_map_for_ana = {
 }
 
 ana_long_rank_bonus_table = {
-    1: 150,
-    2: 120,
-    3: 90,
-    4: 70,
-    5: 50,
+    # 従来の50％へ縮小。
+    # 地力だけで抑え上位を占有しすぎないようにする。
+    1: 75,
+    2: 60,
+    3: 45,
+    4: 35,
+    5: 25,
 }
 
 
@@ -11930,15 +11930,15 @@ for h in ana_base_candidates:
 
     if ana_long_rank <= 5:
 
-        # 地力そのものの強さも少し反映。
-        # ただし強すぎないよう180点で頭打ち。
+        # 地力そのものの強さは補助材料としてだけ反映。
+        # 従来12％→5％へ縮小し、上限も75点へ下げる。
         ana_long_strength_bonus = min(
             max(
                 ana_long_score,
                 0,
             )
-            * 0.12,
-            180,
+            * 0.05,
+            75,
         )
 
     ana_long_bonus = round(
@@ -12679,6 +12679,250 @@ if baba_name == "名古屋":
         candidate["スコア"] += ana_total_bonus
 
 
+
+# ==================================================
+# 🧭 全会場共通・転入好走ボーナス（抑え候補）
+#
+# 目的：
+# 転入直後は今回会場の実績が少なく、総合・地力の数字だけでは
+# 能力を拾い切れないことがある。
+#
+# 「強制的に抑え3位へ上げる」のではなく、
+# 転入前後の好走実績を抑えスコアへ直接加点して、
+# 実力で自然に上位へ来るようにする。
+#
+# 対象：
+# ・今回会場で0〜2走
+# ・過去5走内に今回会場以外の地方、またはJRA実績あり
+# ・直近大失速 / 4角大垂れは対象外
+#
+# 加点：
+# ・過去5走で3着以内3回以上      +120
+# ・それ以外で5着以内4回以上       +80
+# ・転入後に3着以内                 +80
+# ・転入後に4〜5着                  +40
+#
+# 最大200点。
+# 主要5役にすでに出ている馬は抑えへ重複させない。
+# ==================================================
+def calc_transfer_ana_rescue(horse, current_track):
+    all_runs = (
+        horse.get("全距離付きタイム", [])
+        or []
+    )[:5]
+
+    empty_result = {
+        "対象": False,
+        "抑え加点": 0,
+        "理由": [],
+        "今回会場走数": 0,
+        "3着以内回数": 0,
+        "5着以内回数": 0,
+        "今回会場最良着順": None,
+    }
+
+    if not current_track or len(all_runs) < 2:
+        return empty_result
+
+    current_track_runs = [
+        item
+        for item in all_runs
+        if item.get("競馬場", "") == current_track
+    ]
+
+    other_track_runs = [
+        item
+        for item in all_runs
+        if (
+            item.get("競馬場", "")
+            and item.get("競馬場", "") != current_track
+            and (
+                item.get("競馬場", "") in LOCAL_PLACES
+                or item.get("競馬場", "") in JRA_PLACES
+            )
+        )
+    ]
+
+    current_track_count = len(current_track_runs)
+
+    # 今回会場で3走以上していれば通常馬として扱う。
+    if current_track_count > 2 or not other_track_runs:
+        return {
+            **empty_result,
+            "今回会場走数": current_track_count,
+        }
+
+    finishes = []
+
+    for item in all_runs:
+        finish = item.get("着順")
+
+        try:
+            finish = int(str(finish).strip())
+        except (TypeError, ValueError):
+            continue
+
+        if finish >= 1:
+            finishes.append(finish)
+
+    if len(finishes) < 2:
+        return {
+            **empty_result,
+            "今回会場走数": current_track_count,
+        }
+
+    top3_count = sum(
+        1
+        for finish in finishes
+        if finish <= 3
+    )
+
+    top5_count = sum(
+        1
+        for finish in finishes
+        if finish <= 5
+    )
+
+    current_track_finishes = []
+
+    for item in current_track_runs:
+        try:
+            finish = int(
+                str(item.get("着順")).strip()
+            )
+        except (TypeError, ValueError):
+            continue
+
+        if finish >= 1:
+            current_track_finishes.append(finish)
+
+    current_best = (
+        min(current_track_finishes)
+        if current_track_finishes
+        else None
+    )
+
+    # 大きく止まった馬まで転入だけで持ち上げない。
+    if (
+        horse.get("直近大失速", False)
+        or horse.get("4角大垂れ", False)
+    ):
+        return {
+            **empty_result,
+            "今回会場走数": current_track_count,
+            "3着以内回数": top3_count,
+            "5着以内回数": top5_count,
+            "今回会場最良着順": current_best,
+        }
+
+    bonus = 0
+    reasons = []
+
+    # 安定して上位に来ている転入馬を評価。
+    # 3着以内3回以上なら、5着以内4回以上との重複加算はしない。
+    if top3_count >= 3:
+        bonus += 120
+        reasons.append("過去5走3着以内3回以上:+120")
+
+    elif top5_count >= 4:
+        bonus += 80
+        reasons.append("過去5走5着以内4回以上:+80")
+
+    # 転入後すでに通用している事実を追加評価。
+    if current_best is not None:
+        if current_best <= 3:
+            bonus += 80
+            reasons.append("転入後3着以内:+80")
+
+        elif current_best <= 5:
+            bonus += 40
+            reasons.append("転入後5着以内:+40")
+
+    bonus = min(
+        bonus,
+        200,
+    )
+
+    eligible = (
+        bonus > 0
+        and (
+            top3_count >= 3
+            or top5_count >= 4
+        )
+    )
+
+    return {
+        "対象": eligible,
+        "抑え加点": bonus if eligible else 0,
+        "理由": reasons,
+        "今回会場走数": current_track_count,
+        "3着以内回数": top3_count,
+        "5着以内回数": top5_count,
+        "今回会場最良着順": current_best,
+    }
+
+
+transfer_ana_rescue_info_map = {
+    int(h["馬番"]): calc_transfer_ana_rescue(
+        h,
+        baba_name,
+    )
+    for h in horses
+}
+
+# 主要5役に出ていない転入好走馬へ抑え加点。
+# 通常候補から漏れていた場合も、転入好走条件を満たせば候補へ復活させる。
+transfer_ana_major_numbers = {
+    int(x)
+    for x in used_for_ana
+}
+
+for horse in horses:
+    horse_no = int(horse["馬番"])
+
+    if horse_no in transfer_ana_major_numbers:
+        continue
+
+    info = transfer_ana_rescue_info_map.get(
+        horse_no,
+        {},
+    )
+
+    if not info.get("対象", False):
+        continue
+
+    bonus = float(
+        info.get("抑え加点", 0)
+    )
+
+    existing_candidate = next(
+        (
+            candidate
+            for candidate in ana_candidates
+            if int(candidate["馬番"]) == horse_no
+        ),
+        None,
+    )
+
+    if existing_candidate is None:
+        existing_candidate = {
+            "馬番": horse_no,
+            "馬名": horse["馬名"],
+            "スコア": 0.0,
+        }
+        ana_candidates.append(
+            existing_candidate
+        )
+
+    existing_candidate["スコア"] += bonus
+    existing_candidate["転入好走加点"] = bonus
+    existing_candidate["転入好走理由"] = info.get(
+        "理由",
+        [],
+    )
+    existing_candidate["転入好走"] = True
+
+
 ana_candidates = sorted(
     ana_candidates,
     key=lambda x: (
@@ -12713,6 +12957,8 @@ ana_candidates = sorted(
     reverse=True
 )
 
+
+
 if debug_mode:
     with st.expander(
         "⭐ 抑え候補スコア",
@@ -12722,6 +12968,14 @@ if debug_mode:
         for h in ana_candidates:
 
             watch_marks = []
+
+            if h.get(
+                "転入好走",
+                False
+            ):
+                watch_marks.append(
+                    f"🧭転入好走+{round(h.get('転入好走加点', 0), 1)}"
+                )
 
             if h.get(
                 "超短距離最高タイム警戒",
@@ -13422,14 +13676,11 @@ if kyakushoku_type == "先行":
 # ==================================================
 # 園田限定・先行＋追い込み軸
 #
-# 主：先行｜副：追い込み のとき
-# 三連複1点目を A-B-L にする。
+# 主：先行｜副：追い込み のとき、
+# 通常は三連複1点目 A-B-L。
 #
-# L＝2角→4角【総合追い込み】ランキング1位。
-# A・Bと被る場合は2位→3位→4位…へ順送りする。
-#
-# 園田の通常先行1点目 A-B-D より後で上書きし、
-# この条件だけ最終的に A-B-L を採用する。
+# ただし園田1400mだけは
+# 三連複1点目を A-B-M にする。
 # ==================================================
 if (
     baba_name == "園田"
@@ -13438,11 +13689,19 @@ if (
 ):
     current_bet_template[
         "三連複"
-    ][0] = [
-        "A",
-        "B",
-        "L",
-    ]
+    ][0] = (
+        [
+            "A",
+            "B",
+            "M",
+        ]
+        if int(distance_num or 0) == 1400
+        else [
+            "A",
+            "B",
+            "L",
+        ]
+    )
 
 # ==================================================
 # 佐賀限定・先行軸
@@ -14646,16 +14905,24 @@ def build_kochi_saga_axis_bet_override(context):
         result["三連複"][0] = ["A", "B", "L"]
 
         # 佐賀1400mのみ・主：先行｜副：持続の時は、
-        # 三連複1点目を A-B-E に変更する。
-        if (
-            context.get("current_distance") == 1400
+        # 三連複1点目を A-B-E、
+        # 三連複3点目を A-M-I に変更する。
+        saga_1400_senkou_jizoku = (
+            int(context.get("current_distance") or 0) == 1400
             and context.get("axis_primary") == "先行"
             and context.get("axis_secondary") == "持続"
-        ):
+        )
+
+        if saga_1400_senkou_jizoku:
             result["三連複"][0] = ["A", "B", "E"]
 
-        # 佐賀・前受けの通常3点目。
-        result["三連複"][2] = ["A", "M", "L"]
+        # 佐賀・前受けの通常3点目は A-M-L。
+        # ただし1400m・主先行・副持続だけ A-M-I。
+        result["三連複"][2] = (
+            ["A", "M", "I"]
+            if saga_1400_senkou_jizoku
+            else ["A", "M", "L"]
+        )
 
     # 佐賀のみ・主：逃げ｜副：先行の時だけ、
     # 三連複2点目・3点目を指定買い目へ上書きする。
@@ -14699,6 +14966,16 @@ def build_kochi_saga_axis_bet_override(context):
         and context.get("axis_primary") == "展開待ち"
     ):
         result["三連複"][0] = ["A", "B", "G"]
+
+    # ==================================================
+    # 佐賀のみ・軸タイプ／主脚質／副脚質／距離に関係なく
+    # 画面上のワイド2点目（浮き輪枠）を F-E に固定する。
+    #
+    # これより前に設定された佐賀限定の B-M なども、
+    # 最終的には必ず F-E へ上書きする。
+    # ==================================================
+    if context["track"] == "佐賀":
+        result["浮き輪"] = [["F", "E"]]
 
     return result
 
@@ -15250,14 +15527,30 @@ def build_sonoda_axis_bet_override(context):
         result["ワイド"] = [["A", "B"]]
         result["浮き輪"] = [["M", "M2"]]
 
+    # 園田1400mのみ・主＝先行／副＝逃げの時、
+    # 三連複2点目を A-F-M に変更する。
+    if (
+        int(current_distance or 0) == 1400
+        and context.get("axis_primary") == "先行"
+        and context.get("axis_secondary") == "逃げ"
+    ):
+        result["三連複"][1] = ["A", "F", "M"]
+
     # 園田のみ、主：先行・副：追い込みの時は、
-    # 三連複3点目だけを A-F-D に変更する。
-    # 1点目・2点目・ワイド・他会場には影響させない。
+    # 三連複3点目を A-F-D に変更する。
+    #
+    # さらに園田1400mだけ、
+    # 三連複1点目を A-B-M に変更する。
     if (
         context.get("axis_primary") == "先行"
         and context.get("axis_secondary") == "追い込み"
     ):
         result["三連複"][2] = ["A", "F", "D"]
+
+        # 園田1400mのみ・主＝先行／副＝追い込み
+        # 三連複1点目を A-B-M にする。
+        if int(current_distance or 0) == 1400:
+            result["三連複"][0] = ["A", "B", "M"]
 
         # 園田1230mのみ・主＝先行／副＝追い込みの時は、
         # 三連複2点目をA-F-G、ワイド1点目をA-Bにする。
@@ -15802,6 +16095,249 @@ else:
     )
 
 # ==================================================
+# 🧭 全会場共通・転入M救済レーダー
+#
+# 目的：
+# 現在の競馬場での実績がまだ少ないため通常ランキングでは
+# 評価が散りやすい転入馬を、総合点そのものは上げずにMだけで拾う。
+#
+# 対象：
+# ・地方→地方の転入
+# ・JRA→地方の転入
+# ・今回会場での出走が0〜2走まで
+# ・過去5走内に今回会場以外の履歴がある
+#
+# 評価材料：
+# ・直近5走の3着以内 / 5着以内の安定度
+# ・転入後（今回会場）ですでに3着以内 / 5着以内なら加点
+# ・地方他場での実績、またはJRA履歴
+# ・大崩れの少なさ
+#
+# 重要：
+# ・主要5役にすでに出ている馬は救済しない
+# ・通常Mの「2部門以上＋主要5役外」は最優先のまま
+# ・転入M救済は1レース最大1頭
+# ・直近大失速 / 4角大垂れ馬は救済しない
+# ==================================================
+
+def calc_transfer_m_rescue(horse, current_track):
+    all_runs = (
+        horse.get("全距離付きタイム", [])
+        or []
+    )[:5]
+
+    empty_result = {
+        "対象": False,
+        "スコア": 0,
+        "理由": [],
+        "今回会場走数": 0,
+        "他地方走数": 0,
+        "JRA走数": 0,
+        "3着以内回数": 0,
+        "5着以内回数": 0,
+        "今回会場最良着順": None,
+    }
+
+    if not current_track or len(all_runs) < 2:
+        return empty_result
+
+    current_track_runs = [
+        item
+        for item in all_runs
+        if item.get("競馬場", "") == current_track
+    ]
+
+    other_local_runs = [
+        item
+        for item in all_runs
+        if (
+            item.get("競馬場", "") in LOCAL_PLACES
+            and item.get("競馬場", "") != current_track
+        )
+    ]
+
+    jra_runs = [
+        item
+        for item in all_runs
+        if item.get("競馬場", "") in JRA_PLACES
+    ]
+
+    current_track_count = len(current_track_runs)
+    other_local_count = len(other_local_runs)
+    jra_count_for_transfer = len(jra_runs)
+
+    # 今回会場で3走以上していれば、もう「転入直後」とは扱わない。
+    if current_track_count > 2:
+        return {
+            **empty_result,
+            "今回会場走数": current_track_count,
+            "他地方走数": other_local_count,
+            "JRA走数": jra_count_for_transfer,
+        }
+
+    # 今回会場以外の履歴が無い馬は転入馬扱いしない。
+    if other_local_count <= 0 and jra_count_for_transfer <= 0:
+        return {
+            **empty_result,
+            "今回会場走数": current_track_count,
+            "他地方走数": other_local_count,
+            "JRA走数": jra_count_for_transfer,
+        }
+
+    finishes = []
+
+    for item in all_runs:
+        finish = item.get("着順")
+
+        if isinstance(finish, int):
+            finishes.append(finish)
+            continue
+
+        try:
+            finish = int(str(finish).strip())
+        except (TypeError, ValueError):
+            continue
+
+        finishes.append(finish)
+
+    if len(finishes) < 2:
+        return {
+            **empty_result,
+            "今回会場走数": current_track_count,
+            "他地方走数": other_local_count,
+            "JRA走数": jra_count_for_transfer,
+        }
+
+    top3_count = sum(
+        1 for finish in finishes
+        if 1 <= finish <= 3
+    )
+
+    top5_count = sum(
+        1 for finish in finishes
+        if 1 <= finish <= 5
+    )
+
+    current_track_finishes = []
+
+    for item in current_track_runs:
+        finish = item.get("着順")
+
+        try:
+            finish = int(str(finish).strip())
+        except (TypeError, ValueError):
+            continue
+
+        current_track_finishes.append(finish)
+
+    current_track_best = (
+        min(current_track_finishes)
+        if current_track_finishes
+        else None
+    )
+
+    # 大きく止まった馬まで「転入だから」で救わない。
+    if (
+        horse.get("直近大失速", False)
+        or horse.get("4角大垂れ", False)
+    ):
+        return {
+            **empty_result,
+            "今回会場走数": current_track_count,
+            "他地方走数": other_local_count,
+            "JRA走数": jra_count_for_transfer,
+            "3着以内回数": top3_count,
+            "5着以内回数": top5_count,
+            "今回会場最良着順": current_track_best,
+        }
+
+    score = 0
+    reasons = []
+
+    # 直近の安定度。
+    if top3_count >= 3:
+        score += 4
+        reasons.append("過去5走で3着以内3回以上")
+    elif top3_count >= 2:
+        score += 3
+        reasons.append("過去5走で3着以内2回")
+
+    if top5_count >= 4:
+        score += 3
+        reasons.append("過去5走で5着以内4回以上")
+    elif top5_count >= 3:
+        score += 2
+        reasons.append("過去5走で5着以内3回")
+
+    # 転入後にすでに通用している馬を最重視。
+    if current_track_best is not None:
+        if current_track_best <= 3:
+            score += 3
+            reasons.append("転入後3着以内")
+        elif current_track_best <= 5:
+            score += 1
+            reasons.append("転入後5着以内")
+    else:
+        # 転入初戦は実績が無いぶん強くしすぎず、候補資格だけ少し補助。
+        score += 1
+        reasons.append("今回会場初戦")
+
+    # 地方→地方 / JRA→地方の両方を拾う。
+    if other_local_count >= 2:
+        score += 2
+        reasons.append("他地方実績2走以上")
+    elif other_local_count == 1:
+        score += 1
+        reasons.append("他地方実績あり")
+
+    if jra_count_for_transfer >= 1:
+        score += 2
+        reasons.append("JRA履歴あり")
+
+    # 大敗が少ない馬は「環境が変わっても能力を出している」安定性として補助。
+    severe_loss_count = sum(
+        1 for finish in finishes
+        if finish >= 8
+    )
+
+    if severe_loss_count == 0:
+        score += 1
+        reasons.append("8着以下なし")
+
+    # 救済条件：
+    # ① 総合スコア7点以上
+    # ② 3着以内2回以上、または5着以内4回以上
+    # 一発好走だけではMに入れない。
+    eligible = (
+        score >= 7
+        and (
+            top3_count >= 2
+            or top5_count >= 4
+        )
+    )
+
+    return {
+        "対象": eligible,
+        "スコア": score,
+        "理由": reasons,
+        "今回会場走数": current_track_count,
+        "他地方走数": other_local_count,
+        "JRA走数": jra_count_for_transfer,
+        "3着以内回数": top3_count,
+        "5着以内回数": top5_count,
+        "今回会場最良着順": current_track_best,
+    }
+
+
+transfer_m_info_map = {
+    int(h["馬番"]): calc_transfer_m_rescue(
+        h,
+        baba_name,
+    )
+    for h in horses
+}
+
+# ==================================================
 # M＝園田専用・中間重複馬
 #
 # 目的：
@@ -15893,7 +16429,24 @@ for horse_no, horse_name in m_horse_name_map.items():
             m_hit_count += 1
             m_rank_sum += rank
 
-    if m_hit_count <= 0:
+    transfer_m_info = transfer_m_info_map.get(
+        horse_no,
+        {
+            "対象": False,
+            "スコア": 0,
+            "理由": [],
+        },
+    )
+
+    # 通常Mの2〜5位に一度も入っていなくても、
+    # 転入M救済の条件を満たす馬だけは候補表へ残す。
+    if (
+        m_hit_count <= 0
+        and not transfer_m_info.get(
+            "対象",
+            False,
+        )
+    ):
         continue
 
     m_candidates.append({
@@ -15909,6 +16462,19 @@ for horse_no, horse_name in m_horse_name_map.items():
             horse_no,
             99,
         ),
+        "転入M対象": transfer_m_info.get(
+            "対象",
+            False,
+        ),
+        "転入Mスコア": transfer_m_info.get(
+            "スコア",
+            0,
+        ),
+        "転入M理由": transfer_m_info.get(
+            "理由",
+            [],
+        ),
+        "転入M情報": transfer_m_info,
     })
 
 # 点数 → 該当部門数 → 順位合計の小ささ → 総合順位
@@ -15946,11 +16512,46 @@ m_secondary = [
     and h["馬番"] in m_major_numbers
 ]
 
+# 転入M救済は「通常Mで2部門以上に入れなかった馬」だけを対象にする。
+# 主要5役にすでに出ている馬は救済不要。
+# 1レース最大1頭に絞り、転入スコア→通常Mスコア→総合順位で選ぶ。
+transfer_m_rescue_candidates = [
+    h
+    for h in m_candidates
+    if h.get("転入M対象", False)
+    and h["該当数"] < 2
+    and h["馬番"] not in m_major_numbers
+]
+
+transfer_m_rescue_candidates.sort(
+    key=lambda x: (
+        -x.get("転入Mスコア", 0),
+        -x["Mスコア"],
+        -x["該当数"],
+        x["総合順位"],
+        x["馬番"],
+    )
+)
+
+m_transfer_rescue = (
+    transfer_m_rescue_candidates[:1]
+)
+
+m_transfer_rescue_numbers = {
+    h["馬番"]
+    for h in m_transfer_rescue
+}
+
 m_single = [
     h
     for h in m_candidates
     if h["該当数"] == 1
+    and h["馬番"]
+    not in m_transfer_rescue_numbers
 ]
+
+# 通常ランキングに一度も入っていない転入救済馬は
+# m_singleには元々入らないため、専用枠で後段へ渡す。
 
 # ==================================================
 # 全14会場共通・Mを同距離持ちタイムで上から斬る
@@ -16027,8 +16628,17 @@ m_single = sort_m_group_by_time(
     m_single
 )
 
+# 優先順位：
+# 1) 従来の2部門以上＋主要5役外
+# 2) 転入M救済（最大1頭）
+# 3) 従来の2部門以上＋主要5役
+# 4) 従来の1部門だけ該当
+#
+# 通常Mの強い候補を最優先に残したまま、
+# 9番型の「転入でランキング評価が散った馬」を1頭だけ差し込む。
 m_selection_candidates = (
     m_primary
+    + m_transfer_rescue
     + m_secondary
     + m_single
 )
@@ -16075,7 +16685,8 @@ if debug_mode:
         st.caption(
             "2〜5位のみ加点｜"
             "2位=4点・3位=3点・4位=2点・5位=1点｜"
-            "2部門以上＋主要5役外を優先｜"
+            "2部門以上＋主要5役外を最優先｜"
+            "転入M救済は最大1頭｜"
             "全14会場・各グループ内は同距離持ちタイム順"
         )
 
@@ -16111,6 +16722,13 @@ if debug_mode:
                     else "なし"
                 )
 
+                transfer_mark = (
+                    f"｜🧭転入M {h.get('転入Mスコア', 0)}点"
+                    if h["馬番"]
+                    in m_transfer_rescue_numbers
+                    else ""
+                )
+
                 st.write(
                     f"{rank}位｜"
                     f"{h['馬番']}番 {h['馬名']} "
@@ -16118,11 +16736,27 @@ if debug_mode:
                     f"｜M {h['Mスコア']}点 "
                     f"｜該当{h['該当数']}部門"
                     f"{major_mark}"
+                    f"{transfer_mark}"
                 )
 
+                transfer_reason_text = " / ".join(
+                    h.get("転入M理由", [])
+                )
+
+                detail_parts = []
+
+                if detail_text:
+                    detail_parts.append(detail_text)
+
+                if transfer_reason_text:
+                    detail_parts.append(
+                        "転入救済："
+                        + transfer_reason_text
+                    )
+
                 st.caption(
-                    detail_text
-                    if detail_text
+                    "｜".join(detail_parts)
+                    if detail_parts
                     else "該当順位なし"
                 )
 
@@ -16385,6 +17019,20 @@ def build_symbol_conflicts(template):
                                 and bet_type == "三連複"
                                 and symbol_list == ["A", "M", "L"]
                                 and {symbol, other_symbol} == {"M", "L"}
+                            )
+                            or (
+                                # 佐賀1400m・主先行｜副持続の
+                                # 三連複3点目 A-M-I 専用。
+                                # M/Iが同じ実馬でも共有記号本体は動かさず、
+                                # 買い目内だけで重複回避する。
+                                baba_name == "佐賀"
+                                and int(distance_num) == 1400
+                                and bet_axis_type == "前受け"
+                                and axis_primary_for_bet == "先行"
+                                and axis_secondary_for_bet == "持続"
+                                and bet_type == "三連複"
+                                and symbol_list == ["A", "M", "I"]
+                                and {symbol, other_symbol} == {"M", "I"}
                             )
                             or (
                                 # 佐賀・主逃げ｜副先行の3点目 A-M-G 専用。
@@ -17182,7 +17830,9 @@ if len(trio_bets) < required_trio_count:
 # 重要：
 #   ・佐賀かつ前受けの時だけ。
 #   ・既存1点目・2点目は絶対に変更しない。
-#   ・通常は3点目 A-M-L、主逃げ｜副先行だけ A-M-G を優先する。
+#   ・通常は3点目 A-M-L。
+#   ・主逃げ｜副先行は A-M-G。
+#   ・1400m・主先行｜副持続は A-M-I を優先する。
 #   ・対象記号の本来候補順から順に試し、成立しない時だけ
 #     all_bet_pool を最後の安全網として使う。
 #   ・他会場・他軸タイプ・他の買い目には影響させない。
@@ -17242,14 +17892,24 @@ def ensure_saga_front_third_trio(
         + list(all_bet_pool)
     )
 
-    # 佐賀・主逃げ｜副先行だけ3点目は A-M-G。
-    # それ以外の佐賀前受けは従来どおり A-M-L。
+    # 佐賀・3点目の役割を条件別に決定。
     saga_escape_front = (
         axis_primary_for_bet == "逃げ"
         and axis_secondary_for_bet == "先行"
     )
 
-    third_symbol = "G" if saga_escape_front else "L"
+    saga_1400_senkou_jizoku = (
+        int(distance_num) == 1400
+        and axis_primary_for_bet == "先行"
+        and axis_secondary_for_bet == "持続"
+    )
+
+    if saga_1400_senkou_jizoku:
+        third_symbol = "I"
+    elif saga_escape_front:
+        third_symbol = "G"
+    else:
+        third_symbol = "L"
 
     if third_symbol == "G":
         third_candidates = unique_texts(
@@ -17264,6 +17924,21 @@ def ensure_saga_front_third_trio(
             + list(alphabet_candidate_pools.get("G", []))
             + list(all_bet_pool)
         )
+
+    elif third_symbol == "I":
+        third_candidates = unique_texts(
+            [
+                horse
+                for horse in [
+                    primary_symbols.get("I"),
+                    fallback_symbols.get("I"),
+                ]
+                if horse is not None
+            ]
+            + list(alphabet_candidate_pools.get("I", []))
+            + list(all_bet_pool)
+        )
+
     else:
         third_candidates = unique_texts(
             [
