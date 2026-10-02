@@ -1197,6 +1197,7 @@ def start_batch_validation_for_url(
         )
         return
 
+    st.session_state.role_validation_running = False
     st.session_state.batch_mode = True
     st.session_state.batch_axis_mode = axis_mode
     st.session_state.batch_race_no = 1
@@ -1332,6 +1333,91 @@ def render_batch_results_summary():
         st.rerun()
 
 
+# 結果の役割検証（既存の回収率一括とは別に保存）
+def build_all_validation_symbols(selected, candidate_pools, used_symbols):
+    """検証専用。使用記号の最終選出を維持し、未使用記号の候補1位を補う。"""
+    result = dict(selected)
+    for symbol, candidates in candidate_pools.items():
+        if symbol not in used_symbols and symbol not in result:
+            candidate = next((horse for horse in (candidates or []) if horse), None)
+            if candidate is not None:
+                result[symbol] = candidate
+    return result
+
+
+def make_role_result(top3, symbols, used_symbols=None):
+    used_symbols = set(symbols) if used_symbols is None else set(used_symbols)
+    entries = []
+    for place in (1, 2, 3):
+        number = int(top3[place])
+        roles = [key + ("※" if key not in used_symbols else "")
+                 for key, horse in symbols.items()
+                 if horse and get_num(horse) == number]
+        entries.append(f"{number} {'/'.join(roles)}○" if roles else f"{number} ✕")
+    return " ／ ".join(entries)
+
+
+def finish_role_race(status, detail, venue, distance, race_number):
+    rows = st.session_state.setdefault("role_results", [])
+    rows.append({"R": int(race_number), "会場": venue,
+                 "距離": distance, "状態": status, "照合": detail})
+    reset_batch_axis_temp_state()
+    if st.session_state.batch_race_no < st.session_state.batch_last_race:
+        st.session_state.batch_race_no += 1
+    else:
+        st.session_state.batch_mode = False
+        st.session_state.role_validation_running = False
+        st.session_state.batch_race_no = 1
+    st.rerun()
+
+
+def render_role_controls(source_url, key_suffix):
+    st.markdown("---")
+    st.markdown("## 🔎 全R・結果の役割検証")
+    if st.session_state.get("role_validation_schema") != "all_symbols_v2":
+        st.session_state.role_results = []
+        st.session_state.role_validation_schema = "all_symbols_v2"
+    st.caption("1番人気を軸に1Rから検証。1着→2着→3着の順に表示します。"
+               "○＝役割あり、✕＝全記号に該当なし（馬券の的中判定ではありません）。"
+               "複数の役割は併記。※は買い目で未使用の記号の候補1位です。使用記号は最終選出で照合します。")
+    last = st.number_input("役割検証の最終R", min_value=1, max_value=12,
+                           value=12, step=1, key=f"role_last_{key_suffix}")
+    if st.button("🔎 全Rの結果を役割で検証（5 A○）", key=f"role_start_{key_suffix}"):
+        params = parse_qs(urlparse(source_url).query)
+        date = params.get("k_raceDate", [""])[0]
+        venue = params.get("k_babaCode", [""])[0]
+        if not date or not venue:
+            st.error("出馬表URLから開催日・競馬場を取得できません。")
+        else:
+            st.session_state.role_results = []
+            st.session_state.role_result_date = date
+            st.session_state.role_validation_running = True
+            st.session_state.batch_mode = True
+            st.session_state.batch_axis_mode = "favorite"
+            st.session_state.batch_race_no = 1
+            st.session_state.batch_last_race = int(last)
+            st.session_state.batch_date = date
+            st.session_state.batch_baba_code = venue
+            reset_batch_axis_temp_state()
+            st.session_state.analyzed = True
+            st.rerun()
+    rows = st.session_state.get("role_results", [])
+    if rows:
+        lines = [f"【結果の役割検証】{st.session_state.get('role_result_date', '')}",
+                 "1番人気軸／1着→2着→3着／○＝役割あり・✕＝全記号に該当なし／※＝未使用記号の候補1位"]
+        for row in sorted(rows, key=lambda r: r["R"]):
+            title = f"{row['会場']}{row['R']}R・{row['距離']}m"
+            lines.append(f"{title}｜{row['照合']}" if row["状態"] == "完了"
+                         else f"{title}｜{row['状態']}：{row['照合']}")
+        st.code("\n".join(lines), language=None)
+        st.download_button("📥 役割検証結果を保存", "\n".join(lines),
+                           file_name="結果の役割検証.txt", mime="text/plain",
+                           key=f"role_download_{key_suffix}")
+        if st.button("役割検証結果をクリア", key=f"role_clear_{key_suffix}"):
+            st.session_state.role_results = []
+            st.rerun()
+
+
 def render_batch_controls(source_url, key_suffix):
     st.markdown("---")
     st.markdown("## 🏇 全R一括検証")
@@ -1381,6 +1467,7 @@ def render_batch_controls(source_url, key_suffix):
         )
 
     render_batch_results_summary()
+    render_role_controls(source_url, key_suffix)
 
 
 if "race_url" not in st.session_state:
@@ -1402,6 +1489,7 @@ if "race_nav_message" not in st.session_state:
 # 通常分析用・一括検証状態リセット
 # ==================================================
 def reset_normal_analysis_state():
+    st.session_state.role_validation_running = False
     st.session_state.batch_mode = False
     st.session_state.batch_race_no = 1
     st.session_state.batch_axis_mode = "favorite"
@@ -4942,10 +5030,7 @@ def get_corner_push_runs(
     ]
 
     for idx, item in enumerate(
-        horse.get(
-            "距離付きタイム",
-            [],
-        )[:5]
+        horse.get("全距離付きタイム", horse.get("距離付きタイム", []))[:5]
     ):
         raw_flow = item.get(
             "元通過順",
@@ -4967,7 +5052,16 @@ def get_corner_push_runs(
         # 門別・大井は、今回会場と過去走会場が同じ場合だけ、
         # 3地点を2角・3角・4角、2地点を3角・4角として扱う。
         # その他会場は従来どおり「元通過順4地点のみ」。
-        if baba_name == "盛岡":
+        if past_place in JRA_PLACES:
+            # JRAの2地点は3角・4角、3地点は2角・3角・4角。
+            # 補完した角を実測と誤認しないよう下流で区間を制限する。
+            if len(raw_flow) == 2:
+                push_flow = [raw_flow[0], raw_flow[0], *raw_flow]
+            elif len(raw_flow) == 3:
+                push_flow = [raw_flow[0], *raw_flow]
+            else:
+                push_flow = raw_flow[:4]
+        elif baba_name == "盛岡":
             push_flow = item.get(
                 "通過順",
                 [],
@@ -5058,6 +5152,7 @@ def get_corner_push_runs(
             # キー名は維持し、中身だけ盛岡・水沢・門別・大井では
             # 上記のK/L評価用通過順にする。
             "元通過順": push_flow[:4],
+            "実測地点数": len(raw_flow),
             "着順": item.get(
                 "着順"
             ),
@@ -5497,6 +5592,10 @@ def calc_corner_push_ranking(
         details = []
 
         for run in target_runs:
+            is_jra_push = run.get("競馬場") in JRA_PLACES
+            if is_jra_push and start_index < 4 - run.get("実測地点数", 4):
+                continue
+            jra_push_factor = 1.30 if is_jra_push else 1.00
             flow = run[
                 "元通過順"
             ]
@@ -5658,7 +5757,8 @@ def calc_corner_push_ranking(
             applied_score = round(
                 raw_applied_score
                 * quality_factor
-                * goal_factor,
+                * goal_factor
+                * jra_push_factor,
                 1,
             )
 
@@ -5710,6 +5810,7 @@ def calc_corner_push_ranking(
                 ),
                 "追い込み": gain,
                 "素点": raw_applied_score,
+                "JRA押上倍率": jra_push_factor,
                 "タイム倍率": time_info[
                     "倍率"
                 ],
@@ -5900,6 +6001,10 @@ if not front_candidates:
 オッズ・馬体重・騎手を参考にしてください。
         """
     )
+
+    if st.session_state.get("role_validation_running") and st.session_state.batch_mode:
+        finish_role_race("対象外", "新馬戦（過去レースデータなし）",
+                         baba_name, distance_num, race_no)
 
     # 一括検証では新馬戦を買わない扱いにする。
     # 投資0円・払戻0円・回収率0%として記録し、
@@ -16831,6 +16936,38 @@ current_bet_template = apply_venue_axis_bet_override(
     venue_axis_bet_rule_context,
 )
 
+
+# 園田1230m：全軸タイプ共通でワイド1点目のみA-M。
+# 主脚質・副脚質ごとの既存ルール適用後に最優先で反映する。
+if baba_name == "園田" and distance_num == 1230:
+    if current_bet_template.get("ワイド"):
+        current_bet_template["ワイド"][0] = ["A", "M"]
+    else:
+        current_bet_template["ワイド"] = [["A", "M"]]
+
+
+
+# 園田1230mのみ：主逃げ・副先行／主先行・副逃げの三連複1点目をA-B-D。
+if (
+    baba_name == "園田"
+    and distance_num == 1230
+    and (axis_primary_for_bet, axis_secondary_for_bet)
+    in {("逃げ", "先行"), ("先行", "逃げ")}
+):
+    current_bet_template["三連複"][0] = ["A", "B", "D"]
+
+
+
+# 園田1230mのみ：主逃げ・副先行の三連複2点目をA-F-G。
+if (
+    baba_name == "園田"
+    and distance_num == 1230
+    and axis_primary_for_bet == "逃げ"
+    and axis_secondary_for_bet == "先行"
+):
+    current_bet_template["三連複"][1] = ["A", "F", "G"]
+
+
 alphabet_role_names = {
     "A": "軸",
     "F": "後詰め",
@@ -19558,10 +19695,15 @@ def extract_race_result_and_payouts(
 
 st.markdown("### 📊 結果・回収率")
 
+check_payout_result = st.button("🏁 結果を取得して回収率を計算")
+check_single_role_result = st.button(
+    "🔎 このレースの結果を役割で検証（5 A○）",
+    key="check_single_race_roles",
+    disabled=bool(st.session_state.batch_mode),
+)
 check_result = (
-    st.button(
-        "🏁 結果を取得して回収率を計算"
-    )
+    check_payout_result
+    or check_single_role_result
     or st.session_state.batch_mode
 )
 
@@ -19655,401 +19797,434 @@ if check_result:
             "着順"
         ]
 
-        wide_payouts = result_data[
-            "ワイド払戻"
-        ]
+        if st.session_state.get("role_validation_running") and st.session_state.batch_mode:
+            if all(place in top3 for place in (1, 2, 3)):
+                finish_role_race("完了", make_role_result(
+                    top3, build_all_validation_symbols(
+                        final_bet_symbols, alphabet_candidate_pools, required_symbols
+                    ), required_symbols),
+                                 baba_name, distance_num, race_no)
+            else:
+                finish_role_race("未確定", "1〜3着を取得できません（未確定・中止等）",
+                                 baba_name, distance_num, race_no)
 
-        trio_payouts = result_data[
-            "三連複払戻"
-        ]
-
-        if len(top3) < 3:
-
-            st.warning(
-                "着順がまだ確定していないか、"
-                "結果ページの着順を正常に読み取れませんでした。"
-            )
-
-        elif (
-            not wide_payouts
-            or not trio_payouts
-        ):
-
-            st.warning(
-                "着順は取得できましたが、払戻欄がまだ反映途中か、"
-                "払戻表記を正常に読み取れませんでした。"
-            )
-
-            st.info(
-                "数秒後にもう一度 "
-                "『結果を取得して回収率を計算』を押してください。"
-            )
-
-            if debug_mode:
-
-                with st.expander(
-                    "結果取得デバッグ",
-                    expanded=False,
-                ):
-
-                    st.write(
-                        f"結果URL：{result_url}"
-                    )
-
-                    st.write(
-                        f"1〜3着：{top3}"
-                    )
-
-                    st.write(
-                        "ワイド払戻："
-                        f"{wide_payouts}"
-                    )
-
-                    st.write(
-                        "三連複払戻："
-                        f"{trio_payouts}"
-                    )
-
+        if check_single_role_result:
+            st.markdown("#### 🔎 このレースの役割検証")
+            if all(place in top3 for place in (1, 2, 3)):
+                single_role_detail = make_role_result(
+                    top3, build_all_validation_symbols(
+                        final_bet_symbols, alphabet_candidate_pools, required_symbols
+                    ), required_symbols,
+                )
+                single_role_date = parse_qs(urlparse(url).query).get("k_raceDate", [""])[0]
+                single_role_text = (
+                    f"【結果の役割検証】{single_role_date}\n"
+                    "現在選択中の軸で検証／1着→2着→3着\n"
+                    "○＝役割あり・✕＝全記号に該当なし／※＝未使用記号の候補1位\n"
+                    f"{baba_name}{race_no}R・{distance_num}m｜{single_role_detail}"
+                )
+                st.code(single_role_text, language=None)
+                st.caption("使用記号は最終選出、未使用記号は候補1位で照合します。馬券の的中判定ではありません。")
+            else:
+                st.warning("1〜3着を取得できませんでした。未確定・中止、または結果の読取失敗の可能性があります。")
         else:
-
-            finish_order = [
-                top3[1],
-                top3[2],
-                top3[3],
+            wide_payouts = result_data[
+                "ワイド払戻"
             ]
 
-            st.success(
-                "公式結果："
-                f"{finish_order[0]} → "
-                f"{finish_order[1]} → "
-                f"{finish_order[2]}"
-            )
-
-            total_return = 0
-            ticket_rows = []
-
-            # --------------------------------------
-            # 三連複2点
-            # --------------------------------------
-            for index, bet in enumerate(
-                trio_bets,
-                start=1,
-            ):
-
-                key = (
-                    normalize_bet_numbers(
-                        bet
-                    )
-                )
-
-                payout = (
-                    trio_payouts.get(
-                        key,
-                        0,
-                    )
-                )
-
-                total_return += payout
-
-                ticket_rows.append({
-                    "券種": (
-                        f"三連複{index}"
-                    ),
-                    "買い目": "-".join(
-                        str(x)
-                        for x in key
-                    ),
-                    "的中": payout > 0,
-                    "払戻": payout,
-                })
-
-            # --------------------------------------
-            # 通常ワイド（南関以外は1点、南関は従来どおり）
-            # --------------------------------------
-            for index, bet in enumerate(
-                wide_bets,
-                start=1,
-            ):
-
-                key = (
-                    normalize_bet_numbers(
-                        bet
-                    )
-                )
-
-                payout = (
-                    wide_payouts.get(
-                        key,
-                        0,
-                    )
-                )
-
-                total_return += payout
-
-                ticket_rows.append({
-                    "券種": (
-                        f"ワイド{index}"
-                    ),
-                    "買い目": "-".join(
-                        str(x)
-                        for x in key
-                    ),
-                    "的中": payout > 0,
-                    "払戻": payout,
-                })
-
-            # --------------------------------------
-            # 追加ワイド
-            # --------------------------------------
-            for index, bet in enumerate(
-                float_bets,
-                start=1,
-            ):
-
-                key = (
-                    normalize_bet_numbers(
-                        bet
-                    )
-                )
-
-                payout = (
-                    wide_payouts.get(
-                        key,
-                        0,
-                    )
-                )
-
-                total_return += payout
-
-                label = f"ワイド{len(wide_bets) + index}"
-
-                ticket_rows.append({
-                    "券種": label,
-                    "買い目": "-".join(
-                        str(x)
-                        for x in key
-                    ),
-                    "的中": payout > 0,
-                    "払戻": payout,
-                })
-
-            ticket_count = (
-                len(trio_bets)
-                + len(wide_bets)
-                + len(float_bets)
-            )
-
-            # 1点100円固定
-            investment = (
-                ticket_count
-                * 100
-            )
-
-            profit = (
-                total_return
-                - investment
-            )
-
-            recovery_rate = (
-                total_return
-                / investment
-                * 100
-                if investment > 0
-                else 0.0
-            )
-
-            for row in ticket_rows:
-
-                mark = (
-                    "🎯"
-                    if row["的中"]
-                    else "❌"
-                )
-
-                payout_text = (
-                    f"{row['払戻']:,}円"
-                    if row["払戻"] > 0
-                    else "0円"
-                )
-
-                st.write(
-                    f"{mark} "
-                    f"{row['券種']} "
-                    f"{row['買い目']} "
-                    f"｜{payout_text}"
-                )
-
-            st.markdown("---")
-
-            col_a, col_b = st.columns(2)
-
-            with col_a:
-
-                st.metric(
-                    "投資",
-                    f"{investment:,}円",
-                )
-
-                st.metric(
-                    "払戻",
-                    f"{total_return:,}円",
-                )
-
-            with col_b:
-
-                st.metric(
-                    "収支",
-                    f"{profit:+,}円",
-                )
-
-                st.metric(
-                    "回収率",
-                    f"{recovery_rate:.1f}%",
-                )
-
-
-            # --------------------------------------
-            # 📋 結果コピペ用
-            #
-            # 回収率まで計算できた時だけ表示。
-            # st.code() 右上のコピーボタンから
-            # そのままChatGPTやメモへ貼り付けられる。
-            # --------------------------------------
-            result_copy_lines = [
-                f"{race_date} {baba_name}{race_no}R",
-                f"軸：{popular_horse_num}番",
-                f"軸タイプ：{kyakushoku_type}",
-                "公式結果："
-                f"{finish_order[0]}-"
-                f"{finish_order[1]}-"
-                f"{finish_order[2]}",
-                "",
-                "【検証結果】",
+            trio_payouts = result_data[
+                "三連複払戻"
             ]
 
-            for row in ticket_rows:
+            if len(top3) < 3:
 
-                mark = (
-                    "的中"
-                    if row["的中"]
-                    else "ハズレ"
+                st.warning(
+                    "着順がまだ確定していないか、"
+                    "結果ページの着順を正常に読み取れませんでした。"
                 )
 
-                result_copy_lines.append(
-                    f"{row['券種']}："
-                    f"{row['買い目']} "
-                    f"{mark} "
-                    f"払戻{row['払戻']:,}円"
+            elif (
+                not wide_payouts
+                or not trio_payouts
+            ):
+
+                st.warning(
+                    "着順は取得できましたが、払戻欄がまだ反映途中か、"
+                    "払戻表記を正常に読み取れませんでした。"
                 )
 
-            result_copy_lines.extend([
-                "",
-                f"投資：{investment:,}円",
-                f"払戻：{total_return:,}円",
-                f"収支：{profit:+,}円",
-                f"回収率：{recovery_rate:.1f}%",
-            ])
+                st.info(
+                    "数秒後にもう一度 "
+                    "『結果を取得して回収率を計算』を押してください。"
+                )
 
-            st.markdown(
-                "#### 📋 結果をコピー"
-            )
+                if debug_mode:
 
-            st.caption(
-                "右上のコピーボタンを押すと、"
-                "検証結果をそのまま貼り付けできます。"
-            )
+                    with st.expander(
+                        "結果取得デバッグ",
+                        expanded=False,
+                    ):
 
-            st.code(
-                "\n".join(
-                    result_copy_lines
-                ),
-                language=None,
-            )
-
-
-            # ==================================================
-            # 一括検証：このRの結果を保存して次Rへ
-            # ==================================================
-            if st.session_state.batch_mode:
-
-                st.session_state.batch_results.append({
-                    "R": int(race_no),
-                    "状態": "完了",
-                    "検証モード": st.session_state.batch_axis_mode,
-                    "軸": int(popular_horse_num),
-                    "軸タイプ": kyakushoku_type,
-                    "元A": (
-                        int(st.session_state.batch_original_a)
-                        if st.session_state.batch_axis_mode == "backfill"
-                        and st.session_state.batch_original_a is not None
-                        else int(popular_horse_num)
-                    ),
-                    "元F": (
-                        int(st.session_state.batch_original_f)
-                        if st.session_state.batch_axis_mode == "backfill"
-                        and st.session_state.batch_original_f is not None
-                        else None
-                    ),
-                    "AF一致": (
-                        bool(st.session_state.batch_af_match)
-                        if st.session_state.batch_axis_mode == "backfill"
-                        and st.session_state.batch_af_match is not None
-                        else None
-                    ),
-                    "結果": "-".join(
-                        str(x)
-                        for x in finish_order
-                    ),
-                    "投資": int(investment),
-                    "払戻": int(total_return),
-                    "収支": int(profit),
-                    "回収率": float(recovery_rate),
-                    "三連複": [
-                        "-".join(
-                            str(x)
-                            for x in normalize_bet_numbers(bet)
+                        st.write(
+                            f"結果URL：{result_url}"
                         )
-                        for bet in trio_bets
-                    ],
-                    "ワイド": [
-                        "-".join(
-                            str(x)
-                            for x in normalize_bet_numbers(bet)
-                        )
-                        for bet in wide_bets
-                    ],
-                    "浮き輪": [
-                        "-".join(
-                            str(x)
-                            for x in normalize_bet_numbers(bet)
-                        )
-                        for bet in float_bets
-                    ],
-                })
 
-                # このRの後詰め2パス状態をクリア
-                st.session_state.batch_axis_override_num = None
-                st.session_state.batch_axis_override_race = None
-                st.session_state.batch_original_a = None
-                st.session_state.batch_original_f = None
-                st.session_state.batch_af_match = None
+                        st.write(
+                            f"1〜3着：{top3}"
+                        )
 
-                if (
-                    st.session_state.batch_race_no
-                    < st.session_state.batch_last_race
+                        st.write(
+                            "ワイド払戻："
+                            f"{wide_payouts}"
+                        )
+
+                        st.write(
+                            "三連複払戻："
+                            f"{trio_payouts}"
+                        )
+
+            else:
+
+                finish_order = [
+                    top3[1],
+                    top3[2],
+                    top3[3],
+                ]
+
+                st.success(
+                    "公式結果："
+                    f"{finish_order[0]} → "
+                    f"{finish_order[1]} → "
+                    f"{finish_order[2]}"
+                )
+
+                total_return = 0
+                ticket_rows = []
+
+                # --------------------------------------
+                # 三連複2点
+                # --------------------------------------
+                for index, bet in enumerate(
+                    trio_bets,
+                    start=1,
                 ):
 
-                    st.session_state.batch_race_no += 1
-                    st.rerun()
+                    key = (
+                        normalize_bet_numbers(
+                            bet
+                        )
+                    )
 
-                else:
+                    payout = (
+                        trio_payouts.get(
+                            key,
+                            0,
+                        )
+                    )
 
-                    st.session_state.batch_mode = False
-                    st.session_state.batch_race_no = 1
-                    st.rerun()
+                    total_return += payout
+
+                    ticket_rows.append({
+                        "券種": (
+                            f"三連複{index}"
+                        ),
+                        "買い目": "-".join(
+                            str(x)
+                            for x in key
+                        ),
+                        "的中": payout > 0,
+                        "払戻": payout,
+                    })
+
+                # --------------------------------------
+                # 通常ワイド（南関以外は1点、南関は従来どおり）
+                # --------------------------------------
+                for index, bet in enumerate(
+                    wide_bets,
+                    start=1,
+                ):
+
+                    key = (
+                        normalize_bet_numbers(
+                            bet
+                        )
+                    )
+
+                    payout = (
+                        wide_payouts.get(
+                            key,
+                            0,
+                        )
+                    )
+
+                    total_return += payout
+
+                    ticket_rows.append({
+                        "券種": (
+                            f"ワイド{index}"
+                        ),
+                        "買い目": "-".join(
+                            str(x)
+                            for x in key
+                        ),
+                        "的中": payout > 0,
+                        "払戻": payout,
+                    })
+
+                # --------------------------------------
+                # 追加ワイド
+                # --------------------------------------
+                for index, bet in enumerate(
+                    float_bets,
+                    start=1,
+                ):
+
+                    key = (
+                        normalize_bet_numbers(
+                            bet
+                        )
+                    )
+
+                    payout = (
+                        wide_payouts.get(
+                            key,
+                            0,
+                        )
+                    )
+
+                    total_return += payout
+
+                    label = f"ワイド{len(wide_bets) + index}"
+
+                    ticket_rows.append({
+                        "券種": label,
+                        "買い目": "-".join(
+                            str(x)
+                            for x in key
+                        ),
+                        "的中": payout > 0,
+                        "払戻": payout,
+                    })
+
+                ticket_count = (
+                    len(trio_bets)
+                    + len(wide_bets)
+                    + len(float_bets)
+                )
+
+                # 1点100円固定
+                investment = (
+                    ticket_count
+                    * 100
+                )
+
+                profit = (
+                    total_return
+                    - investment
+                )
+
+                recovery_rate = (
+                    total_return
+                    / investment
+                    * 100
+                    if investment > 0
+                    else 0.0
+                )
+
+                for row in ticket_rows:
+
+                    mark = (
+                        "🎯"
+                        if row["的中"]
+                        else "❌"
+                    )
+
+                    payout_text = (
+                        f"{row['払戻']:,}円"
+                        if row["払戻"] > 0
+                        else "0円"
+                    )
+
+                    st.write(
+                        f"{mark} "
+                        f"{row['券種']} "
+                        f"{row['買い目']} "
+                        f"｜{payout_text}"
+                    )
+
+                st.markdown("---")
+
+                col_a, col_b = st.columns(2)
+
+                with col_a:
+
+                    st.metric(
+                        "投資",
+                        f"{investment:,}円",
+                    )
+
+                    st.metric(
+                        "払戻",
+                        f"{total_return:,}円",
+                    )
+
+                with col_b:
+
+                    st.metric(
+                        "収支",
+                        f"{profit:+,}円",
+                    )
+
+                    st.metric(
+                        "回収率",
+                        f"{recovery_rate:.1f}%",
+                    )
+
+
+                # --------------------------------------
+                # 📋 結果コピペ用
+                #
+                # 回収率まで計算できた時だけ表示。
+                # st.code() 右上のコピーボタンから
+                # そのままChatGPTやメモへ貼り付けられる。
+                # --------------------------------------
+                result_copy_lines = [
+                    f"{race_date} {baba_name}{race_no}R",
+                    f"軸：{popular_horse_num}番",
+                    f"軸タイプ：{kyakushoku_type}",
+                    "公式結果："
+                    f"{finish_order[0]}-"
+                    f"{finish_order[1]}-"
+                    f"{finish_order[2]}",
+                    "",
+                    "【検証結果】",
+                ]
+
+                for row in ticket_rows:
+
+                    mark = (
+                        "的中"
+                        if row["的中"]
+                        else "ハズレ"
+                    )
+
+                    result_copy_lines.append(
+                        f"{row['券種']}："
+                        f"{row['買い目']} "
+                        f"{mark} "
+                        f"払戻{row['払戻']:,}円"
+                    )
+
+                result_copy_lines.extend([
+                    "",
+                    f"投資：{investment:,}円",
+                    f"払戻：{total_return:,}円",
+                    f"収支：{profit:+,}円",
+                    f"回収率：{recovery_rate:.1f}%",
+                ])
+
+                st.markdown(
+                    "#### 📋 結果をコピー"
+                )
+
+                st.caption(
+                    "右上のコピーボタンを押すと、"
+                    "検証結果をそのまま貼り付けできます。"
+                )
+
+                st.code(
+                    "\n".join(
+                        result_copy_lines
+                    ),
+                    language=None,
+                )
+
+
+                # ==================================================
+                # 一括検証：このRの結果を保存して次Rへ
+                # ==================================================
+                if st.session_state.batch_mode:
+
+                    st.session_state.batch_results.append({
+                        "R": int(race_no),
+                        "状態": "完了",
+                        "検証モード": st.session_state.batch_axis_mode,
+                        "軸": int(popular_horse_num),
+                        "軸タイプ": kyakushoku_type,
+                        "元A": (
+                            int(st.session_state.batch_original_a)
+                            if st.session_state.batch_axis_mode == "backfill"
+                            and st.session_state.batch_original_a is not None
+                            else int(popular_horse_num)
+                        ),
+                        "元F": (
+                            int(st.session_state.batch_original_f)
+                            if st.session_state.batch_axis_mode == "backfill"
+                            and st.session_state.batch_original_f is not None
+                            else None
+                        ),
+                        "AF一致": (
+                            bool(st.session_state.batch_af_match)
+                            if st.session_state.batch_axis_mode == "backfill"
+                            and st.session_state.batch_af_match is not None
+                            else None
+                        ),
+                        "結果": "-".join(
+                            str(x)
+                            for x in finish_order
+                        ),
+                        "投資": int(investment),
+                        "払戻": int(total_return),
+                        "収支": int(profit),
+                        "回収率": float(recovery_rate),
+                        "三連複": [
+                            "-".join(
+                                str(x)
+                                for x in normalize_bet_numbers(bet)
+                            )
+                            for bet in trio_bets
+                        ],
+                        "ワイド": [
+                            "-".join(
+                                str(x)
+                                for x in normalize_bet_numbers(bet)
+                            )
+                            for bet in wide_bets
+                        ],
+                        "浮き輪": [
+                            "-".join(
+                                str(x)
+                                for x in normalize_bet_numbers(bet)
+                            )
+                            for bet in float_bets
+                        ],
+                    })
+
+                    # このRの後詰め2パス状態をクリア
+                    st.session_state.batch_axis_override_num = None
+                    st.session_state.batch_axis_override_race = None
+                    st.session_state.batch_original_a = None
+                    st.session_state.batch_original_f = None
+                    st.session_state.batch_af_match = None
+
+                    if (
+                        st.session_state.batch_race_no
+                        < st.session_state.batch_last_race
+                    ):
+
+                        st.session_state.batch_race_no += 1
+                        st.rerun()
+
+                    else:
+
+                        st.session_state.batch_mode = False
+                        st.session_state.batch_race_no = 1
+                        st.rerun()
 
     except requests.RequestException as e:
 
+        if st.session_state.get("role_validation_running") and st.session_state.batch_mode:
+            finish_role_race("取得失敗", str(e), baba_name, distance_num, race_no)
         st.error(
             "公式結果ページの取得に失敗しました。"
         )
@@ -20088,6 +20263,8 @@ if check_result:
 
     except Exception as e:
 
+        if st.session_state.get("role_validation_running") and st.session_state.batch_mode:
+            finish_role_race("解析失敗", str(e), baba_name, distance_num, race_no)
         st.error(
             "結果の解析中にエラーが発生しました。"
         )
