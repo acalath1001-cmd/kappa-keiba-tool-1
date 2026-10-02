@@ -256,6 +256,25 @@ def get_distance_aware_front_data(
         "最短距離差": nearest_gap,
     }
 
+
+def get_distance_performance_weight(current_distance, past_distance):
+    """
+    距離別の能力評価ウェイト。
+
+    1800m戦では2000m実績を同距離1800mと同じ100％ではなく、
+    80％で評価する。その他の組み合わせは従来どおり100％。
+    """
+    try:
+        current_distance = int(current_distance or 0)
+        past_distance = int(past_distance or 0)
+    except (TypeError, ValueError):
+        return 1.0
+
+    if current_distance == 1800 and past_distance == 2000:
+        return 0.80
+
+    return 1.0
+
 def calc_recent_form_bonus(finish_positions):
     """
     直近3走の着順を評価する。
@@ -1374,9 +1393,9 @@ def finish_role_race(status, detail, venue, distance, race_number):
 def render_role_controls(source_url, key_suffix):
     st.markdown("---")
     st.markdown("## 🔎 全R・結果の役割検証")
-    if st.session_state.get("role_validation_schema") != "all_symbols_v2":
+    if st.session_state.get("role_validation_schema") != "all_symbols_v3_P":
         st.session_state.role_results = []
-        st.session_state.role_validation_schema = "all_symbols_v2"
+        st.session_state.role_validation_schema = "all_symbols_v3_P"
     st.caption("1番人気を軸に1Rから検証。1着→2着→3着の順に表示します。"
                "○＝役割あり、✕＝全記号に該当なし（馬券の的中判定ではありません）。"
                "複数の役割は併記。※は買い目で未使用の記号の候補1位です。使用記号は最終選出で照合します。")
@@ -4634,12 +4653,21 @@ for horse in horses:
         )
     )
 
-    distance_front_raw_score = (
-        calc_front_score(
-            distance_front_data[
-                "通過順"
-            ]
-        )
+    # 1800m戦では2000m実績だけ80％で評価する。
+    # それ以外の距離は従来どおり100％。
+    distance_front_raw_score = round(
+        sum(
+            calc_front_score([flow])
+            * get_distance_performance_weight(
+                distance_num,
+                past_distance,
+            )
+            for flow, past_distance in zip(
+                distance_front_data["通過順"],
+                distance_front_data["対象距離"],
+            )
+        ),
+        1,
     )
 
     front_score = round(
@@ -4798,6 +4826,12 @@ for horse in horses:
         ),
         "前進距離基本点": (
             distance_front_raw_score
+        ),
+        "1800m時2000m評価倍率": (
+            0.80
+            if distance_num == 1800
+            and 2000 in distance_front_data["対象距離"]
+            else 1.0
         ),
     })
 front_candidates = sorted(
@@ -5976,7 +6010,7 @@ if debug_mode:
         )
 
         render_corner_push_ranking(
-            "2角 → 3角",
+            "2角 → 3角【1位＝P】",
             corner_push_2to3,
         )
 
@@ -6134,11 +6168,12 @@ for horse in horses:
 
     score = 0
 
-    # 前〜中団で位置を維持した回数
-    front_keep_count = 0
+    # 前〜中団で位置を維持した回数。
+    # 1800m戦の2000m実績は0.8回相当で扱う。
+    front_keep_count = 0.0
 
-    # 前で運んで3着以内に入った実績
-    front_success_count = 0
+    # 前で運んで3着以内に入った実績。
+    front_success_count = 0.0
 
     # 失速は能力点と分離して管理する
     risk_penalty = 0
@@ -6166,16 +6201,35 @@ for horse in horses:
         if len(flow) >= 2
     ]
 
-    # 平均の前半位置・4角位置を計算
+    # 平均の前半位置・4角位置を計算。
+    # 1800m戦では2000m実績を80％で扱う。
+    position_samples = [
+        (
+            item.get("通過順", []),
+            get_distance_performance_weight(
+                distance_num,
+                item.get("距離"),
+            ),
+        )
+        for item in evaluation_pairs
+        if len(item.get("通過順", [])) >= 2
+    ]
+
+    position_weight_sum = sum(
+        weight for _, weight in position_samples
+    )
+
     avg_first = (
-        sum(first_positions) / len(first_positions)
-        if first_positions
+        sum(flow[0] * weight for flow, weight in position_samples)
+        / position_weight_sum
+        if position_weight_sum > 0
         else 99
     )
 
     avg_last = (
-        sum(last_positions) / len(last_positions)
-        if last_positions
+        sum(flow[-1] * weight for flow, weight in position_samples)
+        / position_weight_sum
+        if position_weight_sum > 0
         else 99
     )
 
@@ -6231,6 +6285,15 @@ for horse in horses:
             else 1
         )
 
+        race_performance_weight = (
+            get_distance_performance_weight(
+                distance_num,
+                evaluation_pairs[idx].get("距離"),
+            )
+            if idx < len(evaluation_pairs)
+            else 1.0
+        )
+
         # ==================================================
         # 能力評価
         # ==================================================
@@ -6243,8 +6306,8 @@ for horse in horses:
         )
 
         if matches_front_flow:
-            score += 45 * recent_bonus
-            front_keep_count += 1
+            score += 45 * recent_bonus * race_performance_weight
+            front_keep_count += race_performance_weight
 
         # 前で位置を維持している
         matches_strict_front_keep = (
@@ -6261,8 +6324,8 @@ for horse in horses:
                 and matches_front_flow
             )
         ):
-            score += 35 * recent_bonus
-            front_keep_count += 1
+            score += 35 * recent_bonus * race_performance_weight
+            front_keep_count += race_performance_weight
 
         # 実際に前で運んで3着以内に入った経験
         if (
@@ -6271,11 +6334,11 @@ for horse in horses:
             and last <= 4
             and finish <= 3
         ):
-            front_success_count += 1
+            front_success_count += race_performance_weight
 
         # 少し押し上げた実績
         if last < first and last <= 6:
-            score += 20 * recent_bonus
+            score += 20 * recent_bonus * race_performance_weight
 
         # 後方のままのレースは地力評価を下げる
         if first >= 8 and last >= 8:
@@ -6561,24 +6624,11 @@ for horse in horses:
     )
 
     score -= applied_risk_penalty
-    # 直近大失速は通常の失速減点とは別枠。
-    # 能力そのものではなく、次走の信用を強く下げる。
-    heavy_collapse_long_penalty = round(
-        300
-        * horse.get(
-            "直近大失速強度",
-            0
-        ),
-        1
-    )
 
-    heavy_collapse_long_penalty = round(
-        heavy_collapse_long_penalty
-        * fade_relief_factor,
-        1,
-    )
-
-    score -= heavy_collapse_long_penalty
+    # 地力Cは「能力そのもの」を見る役割にするため、
+    # 直近大失速による追加減点は行わない。
+    # 総合F・展開Bなど、他の役割側の大失速減点は従来どおり維持する。
+    heavy_collapse_long_penalty = 0.0
     
     # 過去5走で一度も前に行っていない馬を強く減点
     front_experience_penalty = 0
@@ -14625,14 +14675,15 @@ def build_urawa_funabashi_axis_bet_override(context):
         result["浮き輪"] = [["F", "D"]]
 
     # 船橋1200mのみ・主＝逃げ／副＝先行の時は、
-    # ワイド2点目を M-E に変更する。
-    # 他距離・他主副脚質・三連複・浮き輪・浦和には影響させない。
+    # 三連複3点目を A-B-M、ワイド2点目を M-E に変更する。
+    # 他距離・他主副脚質・三連複1点目2点目・浮き輪・浦和には影響させない。
     if (
         context.get("track") == "船橋"
         and int(context.get("current_distance") or 0) == 1200
         and context.get("axis_primary") == "逃げ"
         and context.get("axis_secondary") == "先行"
     ):
+        result["三連複"][2] = ["A", "B", "M"]
         result["ワイド"][1] = ["M", "E"]
 
     # 船橋1200mのみ・主＝先行／副＝持続の時は、
@@ -14668,6 +14719,28 @@ def build_urawa_funabashi_axis_bet_override(context):
     ):
         result["三連複"][2] = ["A", "D", "L"]
         result["ワイド"][1] = ["A", "D"]
+
+    # 船橋1500mのみ・主＝差し／副＝持続の時は、
+    # 三連複3点目を A-C-I に固定する。
+    # 他距離・他主副脚質・1点目2点目・ワイド・浮き輪には影響させない。
+    if (
+        context.get("track") == "船橋"
+        and int(context.get("current_distance") or 0) == 1500
+        and context.get("axis_primary") == "差し"
+        and context.get("axis_secondary") == "持続"
+    ):
+        result["三連複"][2] = ["A", "C", "I"]
+
+    # 船橋1600mのみ・主＝持続／副＝追い込みの時は、
+    # ワイド2点目を D-M に固定する。
+    # 他距離・他主副脚質・三連複・浮き輪には影響させない。
+    if (
+        context.get("track") == "船橋"
+        and int(context.get("current_distance") or 0) == 1600
+        and context.get("axis_primary") == "持続"
+        and context.get("axis_secondary") == "追い込み"
+    ):
+        result["ワイド"][1] = ["D", "M"]
 
     # 船橋1600mのみ・元の主脚質が先行の時は、
     # ワイド2点目を A-D に変更する。
@@ -14777,6 +14850,15 @@ def build_nagoya_himeji_axis_bet_override(context):
             result["ワイド"] = [["A", "L"]]
             result["浮き輪"] = [["A", "I"]]
 
+        # 名古屋1500mのみ・主＝先行／副＝持続の時は、
+        # 三連複3点目を A-F-E にする。
+        if (
+            int(context.get("current_distance") or 0) == 1500
+            and context.get("axis_primary") == "先行"
+            and context.get("axis_secondary") == "持続"
+        ):
+            result["三連複"][2] = ["A", "F", "E"]
+
         # 名古屋のみ・主＝先行／副＝追い込みの時は、
         # 三連複3点目を A-F-D、ワイドを A-B にする。
         if (
@@ -14787,14 +14869,15 @@ def build_nagoya_himeji_axis_bet_override(context):
             result["ワイド"] = [["A", "B"]]
 
         # 名古屋1500mのみ・主＝先行／副＝追い込みの時は、
-        # ワイド2点目を F-M にする。1点目A-Bはそのまま維持。
+        # 通常ワイドを F-M の1点だけにする。
+        # 非南関の基本形「三連複3点＋通常ワイド1点＋浮き輪1点＝5点」を維持する。
         # 三連複・他距離・他脚質・他会場には影響させない。
         if (
             int(context.get("current_distance") or 0) == 1500
             and context.get("axis_primary") == "先行"
             and context.get("axis_secondary") == "追い込み"
         ):
-            result["ワイド"] = [["A", "B"], ["F", "M"]]
+            result["ワイド"] = [["F", "M"]]
 
         # 名古屋1500mのみ・主脚質が逃げの時は、
         # 副脚質を問わず三連複2点目をA-F-Mに固定する。
@@ -15028,6 +15111,17 @@ def build_kochi_saga_axis_bet_override(context):
             if saga_1400_senkou_jizoku
             else ["A", "M", "L"]
         )
+
+    # 佐賀1300m・1400mのみ・主：先行｜副：持続の時は、
+    # 三連複2点目を A-B-K に変更する。
+    # 1点目・3点目・ワイド・浮き輪・他距離・他脚質・他会場は変更しない。
+    if (
+        context["track"] == "佐賀"
+        and int(context.get("current_distance") or 0) in {1300, 1400}
+        and context.get("axis_primary") == "先行"
+        and context.get("axis_secondary") == "持続"
+    ):
+        result["三連複"][1] = ["A", "B", "K"]
 
     # 佐賀のみ・主：逃げ｜副：先行の時だけ、
     # 三連複2点目・3点目を指定買い目へ上書きする。
@@ -15292,6 +15386,15 @@ def build_monbetsu_axis_bet_override(context):
     ):
         result["三連複"][1] = ["A", "F", "D"]
         result["ワイド"] = [["A", "F"]]
+
+    # 門別1100mのみ・主脚質が逃げの時は、
+    # 副脚質を問わず三連複2点目を A-F-I に固定する。
+    # 他距離・他主脚質・他会場には影響させない。
+    if (
+        context.get("axis_primary") == "逃げ"
+        and int(context.get("current_distance") or 0) == 1100
+    ):
+        result["三連複"][1] = ["A", "F", "I"]
 
     # 門別のみ、主脚質が展開待ちなら
     # 三連複2点目をA-F-C、3点目をA-M-I。
@@ -16876,6 +16979,10 @@ sonoda_b_pool = (
     else b_pool
 )
 
+# P＝2角→3角の追い込み1位。現時点では検証・表示専用。
+# ランキング順をそのまま保持し、他記号との重複で1位を繰り下げない。
+p_pool = [f"{h['馬番']}番 {h['馬名']}" for h in corner_push_2to3]
+
 alphabet_candidate_pools = {
     "A": [popular],
     "F": f_pool,
@@ -16887,6 +16994,7 @@ alphabet_candidate_pools = {
     "I": i_pool,
     "N": n_pool,
     "J": j_pool,
+    "P": p_pool,
     "K": k_pool,
     "L": l_pool,
     "M": m_pool,
@@ -16968,6 +17076,17 @@ if (
     current_bet_template["三連複"][1] = ["A", "F", "G"]
 
 
+
+# 名古屋1400mのみ：主先行・副追い込みの三連複1点目をA-B-M。
+if (
+    baba_name == "名古屋"
+    and distance_num == 1400
+    and axis_primary_for_bet == "先行"
+    and axis_secondary_for_bet == "追い込み"
+):
+    current_bet_template["三連複"][0] = ["A", "B", "M"]
+
+
 alphabet_role_names = {
     "A": "軸",
     "F": "後詰め",
@@ -16991,6 +17110,7 @@ alphabet_role_names = {
         if oi_axis_has_sustain
         else "前進3位"
     ),
+    "P": "2→3追い込み1位",
     "K": "3→4追い込み1位",
     "L": "総合追い込み1位",
     "M": "中間重複1位",
@@ -17036,6 +17156,9 @@ else:
         "M2",
     ]
 
+
+# Pは末尾に登録。買い目テンプレートには追加しない。
+alphabet_priority.append("P")
 
 def collect_required_symbols(template):
     """
