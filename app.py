@@ -19464,6 +19464,26 @@ float_bets = avoid_float_wide_duplicate(
     excluded_numbers=cut_numbers_for_bets,
 )
 
+# ==================================================
+# 高知専用・最終ワイド2点ガード
+#
+# 高知の画面表示は「通常ワイド＋浮き輪」で合計2点を基本とする。
+# 候補差し替え・重複回避など後段処理を通った結果、
+# 通常ワイドが2点へ増えて浮き輪と合わせて3点になるケースを防ぐ。
+#
+# 優先順位：
+#   1点目 = 通常ワイド先頭
+#   2点目 = 浮き輪先頭
+# 浮き輪が作れなかった場合だけ、通常ワイドを最大2点まで残す。
+# 他会場には一切影響させない。
+# ==================================================
+if baba_name == "高知":
+    if float_bets:
+        wide_bets = list(wide_bets[:1])
+        float_bets = list(float_bets[:1])
+    else:
+        wide_bets = list(wide_bets[:2])
+
 st.subheader(
     f"おすすめの三連複 {len(trio_bets)}点"
 )
