@@ -15140,7 +15140,7 @@ def build_ooi_axis_bet_override(context):
 
     # 大井1200mのみ・主：先行／副：持続の時は、
     # 2点目を A-F-E、3点目を A-M-G に上書きし、
-    # ワイド2点目を A-B にする。
+    # ワイド2点目を M-G にする。
     # 他距離・他副脚質・他会場には影響させない。
     if (
         axis_type == "前受け"
@@ -15159,8 +15159,8 @@ def build_ooi_axis_bet_override(context):
             "G",
         ]
         result["ワイド"][1] = [
-            "A",
-            "B",
+            "M",
+            "G",
         ]
 
     # 大井1600mのみ・主：逃げ／副：先行の時は、
