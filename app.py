@@ -1909,6 +1909,7 @@ def get_today_race_schedule(race_date):
 
     schedule = {}
     finished_races = {}
+    race_start_times = {}
 
     for row in race_table.select("tbody tr"):
         venue_link = row.select_one(
@@ -1943,6 +1944,7 @@ def get_today_race_schedule(race_date):
 
         race_numbers = set()
         venue_finished_races = set()
+        venue_start_times = {}
 
         # 当日表の各レースボタンに設定されたURLから、
         # k_raceDate・k_babaCode・k_raceNoを一組で取得する。
@@ -1998,6 +2000,25 @@ def get_today_race_schedule(race_date):
             if 1 <= race_no_value <= 12:
                 race_numbers.add(race_no_value)
 
+                # NAR公式「本日のレース」に表示されている発走時刻を取得。
+                # ボタン自身または親セルに「14:30」のような時刻がある前提。
+                # 取得できない場合は従来どおりR番号だけ表示する。
+                race_cell = button.find_parent(["td", "th"])
+                race_cell_text = (
+                    race_cell.get_text(" ", strip=True)
+                    if race_cell is not None
+                    else button.get_text(" ", strip=True)
+                )
+                start_time_match = re.search(
+                    r"(?<!\d)(?:[01]?\d|2[0-3]):[0-5]\d(?!\d)",
+                    race_cell_text,
+                )
+
+                if start_time_match is not None:
+                    venue_start_times[race_no_value] = (
+                        start_time_match.group(0)
+                    )
+
                 if race_path.endswith("/RaceMarkTable"):
                     venue_finished_races.add(
                         race_no_value
@@ -2007,6 +2028,9 @@ def get_today_race_schedule(race_date):
             schedule[baba_code] = race_numbers
             finished_races[baba_code] = (
                 venue_finished_races
+            )
+            race_start_times[baba_code] = (
+                venue_start_times
             )
 
     if not schedule:
@@ -2024,7 +2048,11 @@ def get_today_race_schedule(race_date):
         for baba_code, race_numbers in finished_races.items()
     }
 
-    return sorted_schedule, sorted_finished_races
+    return (
+        sorted_schedule,
+        sorted_finished_races,
+        race_start_times,
+    )
 
 
 @st.cache_data(ttl=30, show_spinner=False)
@@ -2329,6 +2357,7 @@ def render_today_race_picker():
         (
             schedule,
             finished_races,
+            race_start_times,
         ) = get_today_race_schedule(
             today_value
         )
@@ -2418,6 +2447,10 @@ def render_today_race_picker():
                 [],
             )
         )
+        venue_start_times = race_start_times.get(
+            selected_venue,
+            {},
+        )
 
         for row_start in range(
             0,
@@ -2431,12 +2464,17 @@ def render_today_race_picker():
                 race_numbers[row_start:row_start + 4],
             ):
                 with column:
-                    race_label = (
-                        f"{race_no_value}R 済"
-                        if race_no_value
-                        in venue_finished_races
-                        else f"{race_no_value}R"
+                    start_time = venue_start_times.get(
+                        race_no_value
                     )
+
+                    race_label = f"{race_no_value}R"
+
+                    if start_time:
+                        race_label += f"  {start_time}"
+
+                    if race_no_value in venue_finished_races:
+                        race_label += "  済"
 
                     st.button(
                         race_label,
@@ -10689,6 +10727,18 @@ for horse in horses:
     ):
         jockey_bonus = 35
 
+    # 矢野貴之騎手。NAR表記「矢野貴」に対応。
+    elif current_jockey.startswith(
+        "矢野貴"
+    ):
+        jockey_bonus = 35
+
+    # 野畑凌騎手。
+    elif current_jockey.startswith(
+        "野畑凌"
+    ):
+        jockey_bonus = 35
+
     # 「塚本征吾」「塚本征」などの表記に対応。望月より少し弱め。
     elif current_jockey.startswith(
         "塚本征"
@@ -14009,6 +14059,17 @@ def build_kanazawa_axis_bet_override(context):
     # 1点目・3点目・ワイド・浮き輪・他会場には影響させない。
     result["三連複"][1] = ["A", "F", "G"]
 
+    # 金沢1500mのみ・主＝差し／副＝なしの時は、
+    # 三連複2点目だけ A-F-E に変更する。
+    # 金沢全体の2点目A-F-Gより後で上書きし、
+    # 他距離・他主副脚質・1点目・3点目・ワイド・他会場には影響させない。
+    if (
+        int(context.get("current_distance") or 0) == 1500
+        and context.get("axis_primary") == "差し"
+        and context.get("axis_secondary") == "なし"
+    ):
+        result["三連複"][1] = ["A", "F", "E"]
+
     # 金沢のみ・主＝逃げ／副＝先行の時は、
     # 三連複3点目だけ A-I-G に変更する。
     # 2点目A-F-G、1点目、ワイド、他会場には影響させない。
@@ -14118,6 +14179,15 @@ def build_kasamatsu_axis_bet_override(context):
     ):
         result["三連複"][2] = ["A", "M", "D"]
 
+    # 笠松のみ・主＝差し／副＝持続の時は、
+    # 三連複3点目だけを A-M-D に変更する。
+    # 距離・他軸タイプ・ワイド・他会場には影響させない。
+    if (
+        context.get("axis_primary") == "差し"
+        and context.get("axis_secondary") == "持続"
+    ):
+        result["三連複"][2] = ["A", "M", "D"]
+
     # 笠松1400mのみ・主＝逃げ／副＝なしの時は、三連複2点目を A-F-G にする。
     if (
         int(context.get("current_distance") or 0) == 1400
@@ -14133,6 +14203,17 @@ def build_kasamatsu_axis_bet_override(context):
         and context.get("axis_secondary") == "追い込み"
     ):
         result["三連複"][0] = ["A", "B", "M"]
+
+    # 笠松1400mのみ・主＝差し／副＝なしの時は、
+    # 三連複3点目を A-M2-D、画面上のワイド2点目を A-D にする。
+    # 既存の差し副なしA-M-Dより後で上書きし、1400mだけ変更する。
+    if (
+        int(context.get("current_distance") or 0) == 1400
+        and context.get("axis_primary") == "差し"
+        and context.get("axis_secondary") == "なし"
+    ):
+        result["三連複"][2] = ["A", "M2", "D"]
+        result["浮き輪"] = [["A", "D"]]
 
     # 笠松1400mのみ、軸タイプ・主副脚質に関係なく
     # ワイド1点目を A-B に固定する。
@@ -15157,6 +15238,18 @@ def build_monbetsu_axis_bet_override(context):
     ):
         result["三連複"][1] = ["A", "D", "L"]
 
+    # 門別1700mのみ・主脚質が先行の時は、副脚質を問わず
+    # 三連複2点目を A-M-G、3点目を A-I-P、
+    # 画面上のワイド2点目（浮き輪枠）を A-I に固定する。
+    # 他距離・他主脚質・他会場には影響させない。
+    if (
+        context.get("axis_primary") == "先行"
+        and int(context.get("current_distance") or 0) == 1700
+    ):
+        result["三連複"][1] = ["A", "M", "G"]
+        result["三連複"][2] = ["A", "I", "P"]
+        result["浮き輪"] = [["A", "I"]]
+
     # 門別1100mのみ、軸タイプ・主副脚質に関係なく
     # ワイド1点目を F-I に固定する。
     # 三連複・ワイド2点目以降・他距離・他会場には影響させない。
@@ -15406,6 +15499,25 @@ def build_ooi_axis_bet_override(context):
             result["ワイド"].append(["E", "I"])
         else:
             result["ワイド"] = [["A", "F"], ["E", "I"]]
+
+    # 大井1600mのみ・軸＝持続／副＝なしの時は、
+    # 三連複2点目を A-F-M、ワイド2点目を A-M にする。
+    # 直前の「大井1600mはワイド2点目E-I」共通設定より後で上書きし、
+    # この条件だけ A-M を最終採用する。
+    # 他距離・他軸タイプ・他副脚質・他会場には影響させない。
+    if (
+        axis_type == "持続"
+        and context.get("axis_primary") == "持続"
+        and context.get("axis_secondary") == "なし"
+        and int(context.get("current_distance") or 0) == 1600
+    ):
+        result["三連複"][1] = ["A", "F", "M"]
+        if len(result.get("ワイド", [])) >= 2:
+            result["ワイド"][1] = ["A", "M"]
+        elif result.get("ワイド"):
+            result["ワイド"].append(["A", "M"])
+        else:
+            result["ワイド"] = [["A", "F"], ["A", "M"]]
 
     # 大井1200mのみ・軸タイプ／主脚質／副脚質に関係なく、
     # 三連複1点目を A-B-F に固定する。
@@ -19760,49 +19872,123 @@ if debug_mode:
 # 最終表示
 # ==================================================
 def replace_cut_horses_only(bets, cut_numbers, axis_number, symbols):
-    """確定買い目の切った枠だけ差し替える。非対象の枠と買い目は固定。"""
+    """
+    確定買い目の「斬った馬がいる枠だけ」を差し替える。
+
+    優先順位：
+      B → F → E → N → C → M → D → G → I → L → K → J
+
+    まず各役の代表馬を上の順で試す。
+    それだけでは買い目数を維持できない時だけ、同じ役の2位以下候補を
+    同じ役順で追加し、最後に全候補を安全網として使う。
+
+    Aは軸固定。斬った馬は絶対に戻さない。
+    非対象の枠・非対象の買い目は固定する。
+    """
     from itertools import product
+
     cuts = set(cut_numbers) - {axis_number}
+    replacement_order = (
+        "B", "F", "E", "N", "C", "M",
+        "D", "G", "I", "L", "K", "J",
+    )
+
     unchanged_keys = {
         tuple(sorted(get_num(h) for h in bet))
-        for bet in bets if not any(get_num(h) in cuts for h in bet)
+        for bet in bets
+        if not any(get_num(h) in cuts for h in bet)
     }
     used = set(unchanged_keys)
     result, missing = [], 0
+
+    def build_replacement_candidates(fixed_numbers):
+        ordered = []
+        seen_numbers = set()
+
+        def add_candidate(horse):
+            if not horse:
+                return
+            number = get_num(horse)
+            if (
+                number is None
+                or number == axis_number
+                or number in cuts
+                or number in fixed_numbers
+                or number in seen_numbers
+            ):
+                return
+            seen_numbers.add(number)
+            ordered.append(horse)
+
+        # ① まずは各役の代表馬だけを指定順で使う。
+        for role in replacement_order:
+            add_candidate(symbols.get(role))
+
+        # ② 代表馬だけでは足りない時の救済。
+        #    各役の2位以下を、同じ役順で追加する。
+        for role in replacement_order:
+            for horse in alphabet_candidate_pools.get(role, []):
+                add_candidate(horse)
+
+        # ③ 最終安全網。斬った馬・軸・固定済み馬は除外したまま、
+        #    出走馬候補から補って「買い目が消える」ことを防ぐ。
+        for horse in all_bet_pool:
+            add_candidate(horse)
+
+        return ordered
+
     for bet in bets:
-        positions = [i for i, h in enumerate(bet) if get_num(h) in cuts]
+        positions = [
+            i for i, h in enumerate(bet)
+            if get_num(h) in cuts
+        ]
+
         if not positions:
             result.append(list(bet))
             continue
-        fixed = {get_num(h) for i, h in enumerate(bet) if i not in positions}
-        choices = []
-        for position in positions:
-            # 各役の代表馬だけを指定順に参照。役内ランキングへの繰り下げはしない。
-            replacement_order = ("A", "B", "F", "M", "C", "E", "D", "G", "I", "N", "L", "K", "J")
-            candidates = [symbols[role] for role in replacement_order if symbols.get(role)]
-            seen, valid = set(), []
-            for h in candidates:
-                n = get_num(h)
-                if n is None or n in seen or n in cuts or n in fixed:
-                    continue
-                seen.add(n)
-                valid.append(h)
-            choices.append(valid)
+
+        fixed = {
+            get_num(h)
+            for i, h in enumerate(bet)
+            if i not in positions
+        }
+
+        # 切られた枠ごとに同じ候補列を使う。
+        # product側で同一馬重複・既存買い目重複を弾く。
+        choices = [
+            build_replacement_candidates(fixed)
+            for _ in positions
+        ]
+
         replacement = None
+
         for combination in product(*choices):
             candidate = list(bet)
+
             for position, horse in zip(positions, combination):
                 candidate[position] = horse
+
             numbers = [get_num(h) for h in candidate]
+
+            if any(number is None for number in numbers):
+                continue
+
             key = tuple(sorted(numbers))
-            if len(set(numbers)) == len(numbers) and key not in used:
+
+            if (
+                len(set(numbers)) == len(numbers)
+                and not cuts.intersection(numbers)
+                and key not in used
+            ):
                 replacement = candidate
                 used.add(key)
                 break
+
         if replacement is None:
             missing += 1
         else:
             result.append(replacement)
+
     return result, missing
 
 
@@ -19943,7 +20129,7 @@ if cut_numbers_for_bets:
     )
     cut_missing_count += cut_missing
     if cut_missing_count:
-        st.warning(f"差し替え候補が足りない買い目が{cut_missing_count}点あります。その買い目は表示していません。")
+        st.warning(f"斬り捨て後の差し替えを最後まで試しましたが、成立できない買い目が{cut_missing_count}点あります。")
 
 # ==================================================
 # ワイド同士の実馬重複を回避
