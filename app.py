@@ -4442,14 +4442,26 @@ tenkai_front_break_elimination_horse_numbers = {
 
 
 # データ不足注意
+# 地方で2走以上している馬は、取得データが2走でも警告しない。
+# 地方実績が0〜1走で、取得できた着順データも2走以下の馬だけ警告する。
 low_data_horses = []
 
 for h in horses:
     # 着順数（取得できたレース数）
     result_count = len(h.get("着順", []))
 
-    # 過去5走ある中で、取得できたレースが2走以下なら警告
-    if result_count <= 2:
+    # 地方競馬で実際に走った過去走数を数える。
+    # JRA履歴が混ざっている馬でも、地方2走以上なら警告対象外。
+    local_result_count = sum(
+        1
+        for item in h.get(
+            "全距離付きタイム",
+            h.get("距離付きタイム", []),
+        )
+        if item.get("競馬場", "") in LOCAL_PLACES
+    )
+
+    if result_count <= 2 and local_result_count < 2:
         low_data_horses.append(
             f"{h['馬番']}番 {h['馬名']}"
         )
@@ -4458,7 +4470,7 @@ if low_data_horses:
     st.warning(
         "⚠️ 過去データが不足している馬がいます。\n\n"
         + "・" + "\n・".join(low_data_horses)
-        + "\n\n過去5走ある中で取得できたデータが少ないため、"
+        + "\n\n地方での実績が1走以下で取得データも少ないため、"
         "評価の信頼度は少し下がります。"
     )
 # ランダム予想を廃止
@@ -11279,110 +11291,6 @@ tenkai_final_candidates = tenkai_candidates
 tenkai_best = tenkai_final_candidates[0]
 
 # ==================================================
-# 盛岡限定・展開B＝K
-#
-# 盛岡では軸タイプに関係なく、
-# 展開馬Bを「3角→4角【勝負所重視】追い込みランキング」
-# の最上位馬から採用する。
-#
-# 水沢はB＝K固定を行わず、通常の展開ランキングBを使う。
-#
-# Kの元ランキング1位が軸Aと同じ場合は、
-# 2位→3位→…へ順送りして最初の別馬を採用する。
-#
-# 目的：
-# ・盛岡だけ、通常の展開適応スコアより
-#   勝負所で実際に位置を上げる能力を優先する。
-# ・他会場の展開Bロジックは一切変更しない。
-#
-# 後段の三連複B候補も同じKランキング順に揃える。
-# ==================================================
-iwate_k_tenkai_candidates = []
-iwate_tenkai_uses_k = False
-
-if baba_name == "盛岡":
-    for push_h in corner_push_3to4:
-        push_no = push_h.get(
-            "馬番"
-        )
-
-        # 展開Bは軸A自身にはしない。
-        if push_no == popular_horse_num:
-            continue
-
-        horse_data_for_k = next(
-            (
-                h
-                for h in horses
-                if h["馬番"] == push_no
-            ),
-            None,
-        )
-
-        if horse_data_for_k is None:
-            continue
-
-        style_info_for_k = (
-            classify_tenkai_candidate(
-                horse_data_for_k
-            )
-        )
-
-        k_row = {
-            "馬番": push_no,
-            "馬名": push_h.get(
-                "馬名",
-                horse_data_for_k.get(
-                    "馬名",
-                    "",
-                ),
-            ),
-            # 盛岡では展開表示のスコアも
-            # Kの3→4追い込みスコアを基準にする。
-            "スコア": push_h.get(
-                "スコア",
-                0,
-            ),
-            "展開最終点": push_h.get(
-                "スコア",
-                0,
-            ),
-            "K追い込み順位元": True,
-            **style_info_for_k,
-        }
-
-        iwate_k_tenkai_candidates.append(
-            k_row
-        )
-
-    if iwate_k_tenkai_candidates:
-        iwate_tenkai_uses_k = True
-
-        tenkai_best = (
-            iwate_k_tenkai_candidates[0]
-        )
-
-        # デバッグの最終展開候補も、
-        # 盛岡ではKランキングを先頭に見せる。
-        k_numbers = {
-            h["馬番"]
-            for h in iwate_k_tenkai_candidates
-        }
-
-        tenkai_final_candidates = (
-            iwate_k_tenkai_candidates
-            + [
-                h
-                for h in tenkai_candidates
-                if h["馬番"] not in k_numbers
-            ]
-        )
-
-        tenkai_selection_source = (
-            "盛岡K＝3→4追い込み固定"
-        )
-
-# ==================================================
 # 大井限定・軸に「持続」が含まれる時の展開B
 #
 # 共通仕様：
@@ -11595,15 +11503,11 @@ if debug_mode:
 
 # 三連複Bの繰り下げ候補。
 #
-# 通常会場：最終の展開ランキング順。
-# 盛岡    ：B＝Kとするため、3→4追い込みランキング順。
+# 盛岡を含め、最終の展開ランキング順。
+# 大井の共通TOP5指定がある場合は、その候補順を使う。
 if oi_tenkai_uses_common_top5:
     tenkai_rank_source_for_trio = (
         oi_common_tenkai_candidates
-    )
-elif iwate_tenkai_uses_k:
-    tenkai_rank_source_for_trio = (
-        iwate_k_tenkai_candidates
     )
 else:
     tenkai_rank_source_for_trio = (
@@ -11967,14 +11871,160 @@ long_bottom_two = {
 # 総合・地力の両方で最下位2頭に入る馬だけ足切り
 ana_cut_horse_numbers = total_bottom_two & long_bottom_two
 
+# ==================================================
+# 🪃 抑え用・二段脚ボーナス
+#
+# 狙い：
+# 「スタートは出られる → 道中いったん位置を落とす →
+#  最後にもう一度脚を使って盛り返す」馬を拾う。
+#
+# 例：
+#   5-5-10-9 → 8着
+#   5-5-4-7  → 5着
+#
+# 条件（今回距離に近い過去走だけ）：
+# ・最初の位置が5番手以内
+# ・3〜4角のどこかで、前半より2つ以上位置を落とす
+# ・その一番悪い位置から、ゴールで2つ以上盛り返す
+# ・最終着順は8着以内
+#
+# 加点：
+# ・5着以内まで戻す走  +130点
+# ・6〜8着まで戻す走   +100点
+# ・最新走ほど強く評価
+# ・該当2回以上なら反復 +50点
+# ・最大 +220点
+#
+# Eの抑えスコアへ直接入れるため、
+# 同じ抑え順位を使うI（穴2）・G（穴3）にも自然に波及する。
+# ==================================================
+def calc_second_wind_ana_bonus(horse, current_distance):
+    runs = (horse.get("距離付きタイム", []) or [])[:5]
+    recent_weights = [1.00, 0.85, 0.70, 0.55, 0.40]
+
+    total_bonus = 0.0
+    hit_count = 0
+    details = []
+
+    def distance_is_relevant(past_distance):
+        if not past_distance:
+            return False
+
+        if current_distance <= 1000:
+            return 800 <= past_distance <= 1000
+
+        if current_distance == 1100:
+            return 1000 <= past_distance <= 1200
+
+        if current_distance <= 1400:
+            return 1200 <= past_distance <= 1400
+
+        return abs(past_distance - current_distance) <= 300
+
+    for idx, item in enumerate(runs):
+        past_distance = item.get("距離", 0)
+        flow = item.get("通過順", []) or []
+        finish = item.get("着順")
+
+        if not distance_is_relevant(past_distance):
+            continue
+
+        if len(flow) < 4:
+            continue
+
+        try:
+            finish = int(finish)
+        except (TypeError, ValueError):
+            continue
+
+        # 最低限、前半でレースに参加できていること。
+        first = flow[0]
+        second = flow[1]
+
+        if first > 5:
+            continue
+
+        # 「中盤で一度溜める／位置を落とす」を、
+        # 3〜4角の一番悪い位置で見る。
+        early_base = min(first, second)
+        late_worst = max(flow[2], flow[3])
+
+        setback = late_worst - early_base
+        rebound = late_worst - finish
+
+        if setback < 2:
+            continue
+
+        if rebound < 2:
+            continue
+
+        # 9着以下までしか戻せていない走は、
+        # 抑え候補を強く上げる材料にはしない。
+        if finish > 8:
+            continue
+
+        if finish <= 5:
+            base_bonus = 130
+            level = "二段脚・5着以内"
+        else:
+            base_bonus = 100
+            level = "二段脚・6〜8着"
+
+        weight = recent_weights[idx] if idx < len(recent_weights) else 0.40
+        applied_bonus = round(base_bonus * weight, 1)
+
+        total_bonus += applied_bonus
+        hit_count += 1
+
+        details.append({
+            "何走前": idx + 1,
+            "距離": past_distance,
+            "通過順": flow,
+            "着順": finish,
+            "前半基準": early_base,
+            "途中最悪位置": late_worst,
+            "位置低下": setback,
+            "盛り返し": rebound,
+            "判定": level,
+            "加点": applied_bonus,
+        })
+
+    repeat_bonus = 50 if hit_count >= 2 else 0
+    total_bonus += repeat_bonus
+    total_bonus = min(total_bonus, 220)
+
+    return {
+        "対象": total_bonus > 0,
+        "加点": round(total_bonus, 1),
+        "該当回数": hit_count,
+        "反復加点": repeat_bonus,
+        "詳細": details,
+    }
+
+
+second_wind_ana_info_map = {
+    int(h["馬番"]): calc_second_wind_ana_bonus(
+        h,
+        distance_num,
+    )
+    for h in horses
+}
+
 ana_base_candidates = []
 
 for h in tenkai_candidates:
     if h["馬番"] in used_for_ana:
         continue
 
-    # 総合・地力ともに最下位2頭なら穴候補から除外
-    if h["馬番"] in ana_cut_horse_numbers:
+    # 総合・地力ともに最下位2頭なら通常は穴候補から除外。
+    # ただし「二段脚」が確認できる馬だけは、E/I/Gで拾えるよう救済する。
+    if (
+        h["馬番"] in ana_cut_horse_numbers
+        and second_wind_ana_info_map.get(
+            int(h["馬番"]),
+            {},
+        ).get("加点", 0) <= 0
+    ):
         continue
 
     ana_base_candidates.append({
@@ -11987,8 +12037,15 @@ for h in total_candidates:
     if h["馬番"] in used_for_ana:
         continue
 
-    # 総合・地力ともに最下位2頭なら穴候補から除外
-    if h["馬番"] in ana_cut_horse_numbers:
+    # 総合・地力ともに最下位2頭なら通常は穴候補から除外。
+    # ただし「二段脚」が確認できる馬だけは、E/I/Gで拾えるよう救済する。
+    if (
+        h["馬番"] in ana_cut_horse_numbers
+        and second_wind_ana_info_map.get(
+            int(h["馬番"]),
+            {},
+        ).get("加点", 0) <= 0
+    ):
         continue
 
     if any(a["馬番"] == h["馬番"] for a in ana_base_candidates):
@@ -12070,6 +12127,30 @@ for h in ana_base_candidates:
             break
 
     ana_score = h["スコア"]
+
+    # --------------------------------------------------
+    # 二段脚ボーナス
+    #
+    # 前半で位置を取れて、途中で一度下がっても、
+    # 最後にもう一度盛り返せる馬を抑えE側で強めに拾う。
+    # E順位からI/Gも作るため、I/Gへも自然に波及する。
+    # --------------------------------------------------
+    second_wind_info = second_wind_ana_info_map.get(
+        int(h["馬番"]),
+        {
+            "対象": False,
+            "加点": 0,
+            "該当回数": 0,
+            "反復加点": 0,
+            "詳細": [],
+        },
+    )
+
+    second_wind_bonus = float(
+        second_wind_info.get("加点", 0)
+    )
+
+    ana_score += second_wind_bonus
 
     # --------------------------------------------------
     # 1900m以上専用・長距離適性
@@ -12299,6 +12380,13 @@ for h in ana_base_candidates:
             else None
         ),
         "抑え地力加点": ana_long_bonus,
+
+        # 二段脚ボーナス
+        "二段脚対象": second_wind_info.get("対象", False),
+        "二段脚加点": second_wind_bonus,
+        "二段脚該当回数": second_wind_info.get("該当回数", 0),
+        "二段脚反復加点": second_wind_info.get("反復加点", 0),
+        "二段脚詳細": second_wind_info.get("詳細", []),
 
         # 1900m以上専用・長距離適性
         "抑え長距離適性加点": ana_long_distance_bonus,
@@ -13178,6 +13266,14 @@ if debug_mode:
                 )
 
             if h.get(
+                "二段脚対象",
+                False
+            ):
+                watch_marks.append(
+                    f"🪃二段脚+{round(h.get('二段脚加点', 0), 1)}"
+                )
+
+            if h.get(
                 "超短距離最高タイム警戒",
                 False
             ):
@@ -13255,6 +13351,14 @@ if debug_mode:
                 st.caption(
                     f"失速詳細："
                     f"{h['抑え失速詳細']}"
+                )
+
+            if h.get(
+                "二段脚詳細"
+            ):
+                st.caption(
+                    f"二段脚詳細："
+                    f"{h['二段脚詳細']}"
                 )
 # ==================================================
 # 穴1〜穴5を安全に決定
@@ -13899,6 +14003,26 @@ def build_kanazawa_axis_bet_override(context):
     ):
         result["三連複"][0] = ["A", "B", "E"]
 
+    # 金沢のみ・軸タイプに関係なく、
+    # 三連複2点目を A-F-G に固定する。
+    # 金沢内の既存主副脚質例外より後で最終上書きし、
+    # 1点目・3点目・ワイド・浮き輪・他会場には影響させない。
+    result["三連複"][1] = ["A", "F", "G"]
+
+    # 金沢のみ・主＝逃げ／副＝先行の時は、
+    # 三連複3点目だけ A-I-G に変更する。
+    # 2点目A-F-G、1点目、ワイド、他会場には影響させない。
+    if (
+        context.get("axis_primary") == "逃げ"
+        and context.get("axis_secondary") == "先行"
+    ):
+        result["三連複"][2] = ["A", "I", "G"]
+
+    # 金沢のみ・軸タイプ／主脚質／副脚質／距離に関係なく、
+    # 画面上のワイド2点目（浮き輪枠）を A-G に固定する。
+    # 1点目の通常ワイド・三連複・他会場には影響させない。
+    result["浮き輪"] = [["A", "G"]]
+
     return result
 
 def build_kasamatsu_axis_bet_override(context):
@@ -13976,11 +14100,11 @@ def build_kasamatsu_axis_bet_override(context):
     ):
         result["三連複"][2] = ["A", "B", "K"]
 
-    # 笠松のみ、主：先行・副：なしのとき、
+    # 笠松のみ、主：先行または持続・副：なしのとき、
     # 三連複3点目だけをA-M-Eに変更する。
-    # 副脚質がある先行軸・他軸タイプ・他会場には影響させない。
+    # 副脚質がある軸・他主脚質・他会場には影響させない。
     if (
-        context.get("axis_primary") == "先行"
+        context.get("axis_primary") in {"先行", "持続"}
         and context.get("axis_secondary") == "なし"
     ):
         result["三連複"][2] = ["A", "M", "E"]
@@ -13993,6 +14117,40 @@ def build_kasamatsu_axis_bet_override(context):
         and context.get("axis_secondary") == "なし"
     ):
         result["三連複"][2] = ["A", "M", "D"]
+
+    # 笠松1400mのみ・主＝逃げ／副＝なしの時は、三連複2点目を A-F-G にする。
+    if (
+        int(context.get("current_distance") or 0) == 1400
+        and context.get("axis_primary") == "逃げ"
+        and context.get("axis_secondary") == "なし"
+    ):
+        result["三連複"][1] = ["A", "F", "G"]
+
+    # 笠松1400mのみ・主＝先行／副＝追い込みの時は、三連複1点目を A-B-M にする。
+    if (
+        int(context.get("current_distance") or 0) == 1400
+        and context.get("axis_primary") == "先行"
+        and context.get("axis_secondary") == "追い込み"
+    ):
+        result["三連複"][0] = ["A", "B", "M"]
+
+    # 笠松1400mのみ、軸タイプ・主副脚質に関係なく
+    # ワイド1点目を A-B に固定する。
+    # 他距離・三連複・2点目以降・他会場には影響させない。
+    if int(context.get("current_distance") or 0) == 1400:
+        if result.get("ワイド"):
+            result["ワイド"][0] = ["A", "B"]
+        else:
+            result["ワイド"] = [["A", "B"]]
+
+    # 笠松1580mのみ、軸タイプ・主副脚質に関係なく
+    # ワイド1点目を A-E に固定する。
+    # 1400mのA-B・三連複・2点目以降・他会場には影響させない。
+    if int(context.get("current_distance") or 0) == 1580:
+        if result.get("ワイド"):
+            result["ワイド"][0] = ["A", "E"]
+        else:
+            result["ワイド"] = [["A", "E"]]
 
     return result
 
@@ -14700,6 +14858,18 @@ def build_iwate_axis_bet_override(context):
     track = context["track"]
     axis_type = context["axis_type"]
 
+    def apply_iwate_common_wide_overrides(result):
+        # 盛岡1700mのみ、軸タイプ・主副脚質に関係なく
+        # 画面上のワイド2点目（浮き輪枠）を F-E に固定する。
+        # 他距離・三連複・ワイド1点目・水沢には影響させない。
+        if (
+            track == "盛岡"
+            and int(context.get("current_distance") or 0) == 1700
+        ):
+            result["浮き輪"] = [["F", "E"]]
+
+        return result
+
     result = build_urawa_funabashi_axis_bet_override(
         context
     )
@@ -14767,7 +14937,7 @@ def build_iwate_axis_bet_override(context):
         ):
             result["三連複"][1] = ["A", "M", "I"]
 
-        return result
+        return apply_iwate_common_wide_overrides(result)
 
     # ----------------------------------------------
     # 持続
@@ -14787,7 +14957,7 @@ def build_iwate_axis_bet_override(context):
             ["A", "B"],
         ]
         result["浮き輪"] = [["D", "C"]]
-        return result
+        return apply_iwate_common_wide_overrides(result)
 
     # ----------------------------------------------
     # 差し
@@ -14819,6 +14989,15 @@ def build_iwate_axis_bet_override(context):
     ):
         result["三連複"][1] = ["A", "F", "M"]
 
+    # 盛岡1400mのみ・主＝差し／副＝持続の時は、画面上のワイド2点目を A-E にする。
+    if (
+        track == "盛岡"
+        and int(context.get("current_distance") or 0) == 1400
+        and context.get("axis_primary") == "差し"
+        and context.get("axis_secondary") == "持続"
+    ):
+        result["浮き輪"] = [["A", "E"]]
+
     # 水沢のみ・主＝差し／副＝持続の時は、
     # 三連複3点目を A-C-L にする。
     if (
@@ -14828,7 +15007,7 @@ def build_iwate_axis_bet_override(context):
     ):
         result["三連複"][2] = ["A", "C", "L"]
 
-    return result
+    return apply_iwate_common_wide_overrides(result)
 
 def build_monbetsu_axis_bet_override(context):
     """門別の3分類ルールに、主先行・副追い込みの2点目例外を適用。"""
@@ -14978,6 +15157,15 @@ def build_monbetsu_axis_bet_override(context):
     ):
         result["三連複"][1] = ["A", "D", "L"]
 
+    # 門別1100mのみ、軸タイプ・主副脚質に関係なく
+    # ワイド1点目を F-I に固定する。
+    # 三連複・ワイド2点目以降・他距離・他会場には影響させない。
+    if int(context.get("current_distance") or 0) == 1100:
+        if result.get("ワイド"):
+            result["ワイド"][0] = ["F", "I"]
+        else:
+            result["ワイド"] = [["F", "I"]]
+
     return result
 
 
@@ -15126,20 +15314,16 @@ def build_ooi_axis_bet_override(context):
         ]
 
     # 大井1200mのみ・主脚質＝先行の時は、
-    # 副脚質に関係なく三連複3点目を A-D-N にする。
+    # 副脚質に関係なく三連複3点目を A-B-F にする。
     if (
         axis_type == "前受け"
         and context.get("axis_primary") == "先行"
         and context.get("current_distance") == 1200
     ):
-        result["三連複"][2] = [
-            "A",
-            "D",
-            "N",
-        ]
+        result["三連複"][2] = ["A", "B", "F"]
 
     # 大井1200mのみ・主：先行／副：持続の時は、
-    # 2点目を A-F-E、3点目を A-M-G に上書きし、
+    # 三連複2点目を A-F-E に上書きし、
     # ワイド2点目を M-G にする。
     # 他距離・他副脚質・他会場には影響させない。
     if (
@@ -15153,15 +15337,19 @@ def build_ooi_axis_bet_override(context):
             "F",
             "E",
         ]
-        result["三連複"][2] = [
-            "A",
-            "M",
-            "G",
-        ]
         result["ワイド"][1] = [
             "M",
             "G",
         ]
+
+    # 大井1600mのみ・主：先行／副：持続の時は、三連複3点目を A-E-I にする。
+    if (
+        axis_type == "前受け"
+        and context.get("axis_primary") == "先行"
+        and context.get("axis_secondary") == "持続"
+        and int(context.get("current_distance") or 0) == 1600
+    ):
+        result["三連複"][2] = ["A", "E", "I"]
 
     # 大井1600mのみ・主：逃げ／副：先行の時は、
     # 三連複2点目を A-B-M2、ワイド2点目を A-B にする。
@@ -15198,6 +15386,35 @@ def build_ooi_axis_bet_override(context):
 
         # 大井のみ・軸差しの三連複3点目は頭数に関係なく A-B-L。
         result["三連複"].append(["A", "B", "L"])
+
+    # 大井1400mのみ・主脚質＝持続の時は、副脚質に関係なく三連複3点目を A-M-J にする。
+    if (
+        axis_type == "持続"
+        and context.get("axis_primary") == "持続"
+        and int(context.get("current_distance") or 0) == 1400
+    ):
+        result["三連複"][2] = ["A", "M", "J"]
+
+    # 大井1600mのみ・軸タイプ／主脚質／副脚質に関係なく、
+    # ワイド2点目を E-I に固定する。
+    # これより前の大井1600m専用ワイド例外も、最終的には E-I へ上書きする。
+    # ワイド1点目・三連複・他距離・他会場には影響させない。
+    if int(context.get("current_distance") or 0) == 1600:
+        if len(result.get("ワイド", [])) >= 2:
+            result["ワイド"][1] = ["E", "I"]
+        elif result.get("ワイド"):
+            result["ワイド"].append(["E", "I"])
+        else:
+            result["ワイド"] = [["A", "F"], ["E", "I"]]
+
+    # 大井1200mのみ・軸タイプ／主脚質／副脚質に関係なく、
+    # 三連複1点目を A-B-F に固定する。
+    # 2点目・3点目・ワイド・他距離・他会場には影響させない。
+    if int(context.get("current_distance") or 0) == 1200:
+        if result.get("三連複"):
+            result["三連複"][0] = ["A", "B", "F"]
+        else:
+            result["三連複"] = [["A", "B", "F"]]
 
     return result
 
@@ -16684,11 +16901,7 @@ alphabet_role_names = {
     "B": (
         "展開(M＝中間重複＋持ちタイム)"
         if sonoda_b_uses_m
-        else (
-            "展開(K＝3→4追い込み)"
-            if baba_name == "盛岡"
-            else "展開"
-        )
+        else "展開"
     ),
     "G": "穴3",
     "I": "穴2",
@@ -18839,12 +19052,6 @@ if debug_mode:
                 "三連複2点目 A-E-G"
             )
 
-        if iwate_tenkai_uses_k:
-            st.write(
-                "🌊 盛岡・展開B固定："
-                "B＝K（3角→4角【勝負所重視】追い込み最上位）"
-            )
-
         if is_iwate_front_axis:
             st.write(
                 "🟦 岩手・前受け軸："
@@ -18952,7 +19159,7 @@ if debug_mode:
 # ・三連複：単一倍率（例 18.6倍）
 # ・ワイド：下限〜上限（例 3.4〜3.8倍）
 # ・オッズ未発表 / 取得失敗時は何も表示しない
-# ・予想ロジックや買い目生成には一切使わない
+# ・通常の予想ロジック完成後、高オッズ買い目の最終補正にだけ使う
 # ==================================================
 
 def _normalize_odds_text(value):
@@ -19232,6 +19439,295 @@ else:
 trio_odds_map = official_bet_odds.get("三連複", {})
 wide_odds_map = official_bet_odds.get("ワイド", {})
 
+# ==================================================
+# 高オッズ買い目の自動調整
+#
+# NAR公式オッズが取得できている時だけ発動する。
+# ・三連複：360.0倍以上なら、3頭目の記号の次候補を順に試す
+# ・ワイド：上限100.0倍以上なら、右側記号の次候補を順に試す
+#
+# 候補は「同じアルファベット役のランキング」だけを使う。
+# 基準未満の候補が見つからない場合は元の買い目を維持する。
+# オッズ未発表・取得失敗時も従来買い目をそのまま維持する。
+# ==================================================
+TRIO_ODDS_ADJUST_LIMIT = 360.0
+WIDE_ODDS_ADJUST_LIMIT = 100.0
+
+
+def _bet_number_key(bet):
+    try:
+        numbers = tuple(sorted(get_num(horse_name) for horse_name in bet))
+    except Exception:
+        return None
+
+    if None in numbers or len(set(numbers)) != len(numbers):
+        return None
+
+    return numbers
+
+
+def _next_role_candidates(symbol, current_horse, excluded_numbers=None):
+    """現在馬より後ろの、同じ役割のランキング候補だけを返す。"""
+    excluded_numbers = set(excluded_numbers or set())
+
+    role_pool = unique_texts(
+        list(alphabet_candidate_pools.get(symbol, []))
+    )
+
+    if not role_pool:
+        return []
+
+    current_number = get_num(current_horse)
+    current_index = next(
+        (
+            index
+            for index, horse_name in enumerate(role_pool)
+            if get_num(horse_name) == current_number
+        ),
+        None,
+    )
+
+    # 現在馬が役内ランキングにいれば、その次順位からだけ試す。
+    # ランキング外の救済馬などなら、同役割の1位から試す。
+    candidates = (
+        role_pool[current_index + 1:]
+        if current_index is not None
+        else role_pool
+    )
+
+    return [
+        horse_name
+        for horse_name in candidates
+        if get_num(horse_name) not in excluded_numbers
+        and get_num(horse_name) != current_number
+    ]
+
+
+def adjust_trio_bets_by_official_odds(
+    bets,
+    templates,
+    odds_map,
+    excluded_numbers=None,
+):
+    """360倍以上の三連複だけ、3頭目役の次候補へ調整する。"""
+    if not bets or not odds_map:
+        return list(bets), [], 0
+
+    excluded_numbers = set(excluded_numbers or set())
+    adjusted_bets = [list(bet) for bet in bets]
+    logs = []
+    unresolved_count = 0
+
+    occupied_keys = {
+        key
+        for key in (_bet_number_key(bet) for bet in adjusted_bets)
+        if key is not None
+    }
+
+    for bet_index, bet in enumerate(adjusted_bets):
+        if len(bet) != 3:
+            continue
+
+        original_key = _bet_number_key(bet)
+        if original_key is None:
+            continue
+
+        original_odds = odds_map.get(original_key)
+        if original_odds is None or original_odds < TRIO_ODDS_ADJUST_LIMIT:
+            continue
+
+        template = (
+            templates[bet_index]
+            if bet_index < len(templates)
+            else None
+        )
+        if not template or len(template) != 3:
+            unresolved_count += 1
+            continue
+
+        replacement_index = 2
+        replacement_symbol = template[replacement_index]
+
+        # 軸Aそのものはオッズ都合で動かさない。
+        if replacement_symbol == "A":
+            unresolved_count += 1
+            continue
+
+        occupied_keys.discard(original_key)
+        replacement = None
+
+        fixed_numbers = {
+            get_num(horse_name)
+            for index, horse_name in enumerate(bet)
+            if index != replacement_index
+        }
+
+        for candidate in _next_role_candidates(
+            replacement_symbol,
+            bet[replacement_index],
+            excluded_numbers=excluded_numbers,
+        ):
+            candidate_number = get_num(candidate)
+            if (
+                candidate_number is None
+                or candidate_number in fixed_numbers
+            ):
+                continue
+
+            candidate_bet = list(bet)
+            candidate_bet[replacement_index] = candidate
+            candidate_key = _bet_number_key(candidate_bet)
+
+            if (
+                candidate_key is None
+                or candidate_key in occupied_keys
+            ):
+                continue
+
+            candidate_odds = odds_map.get(candidate_key)
+            if (
+                candidate_odds is None
+                or candidate_odds >= TRIO_ODDS_ADJUST_LIMIT
+            ):
+                continue
+
+            replacement = candidate_bet
+            logs.append({
+                "種別": "三連複",
+                "点目": bet_index + 1,
+                "変更前": list(bet),
+                "変更後": list(candidate_bet),
+                "変更前オッズ": float(original_odds),
+                "変更後オッズ": float(candidate_odds),
+                "変更記号": replacement_symbol,
+            })
+            break
+
+        if replacement is None:
+            occupied_keys.add(original_key)
+            unresolved_count += 1
+            continue
+
+        adjusted_bets[bet_index] = replacement
+        occupied_keys.add(_bet_number_key(replacement))
+
+    return adjusted_bets, logs, unresolved_count
+
+
+def adjust_wide_bets_by_official_odds(
+    bets,
+    templates,
+    odds_map,
+    excluded_numbers=None,
+):
+    """上限100倍以上のワイドだけ、右側役の次候補へ調整する。"""
+    if not bets or not odds_map:
+        return list(bets), [], 0
+
+    excluded_numbers = set(excluded_numbers or set())
+    adjusted_bets = [list(bet) for bet in bets]
+    logs = []
+    unresolved_count = 0
+
+    occupied_keys = {
+        key
+        for key in (_bet_number_key(bet) for bet in adjusted_bets)
+        if key is not None
+    }
+
+    for bet_index, bet in enumerate(adjusted_bets):
+        if len(bet) != 2:
+            continue
+
+        original_key = _bet_number_key(bet)
+        if original_key is None:
+            continue
+
+        original_range = odds_map.get(original_key)
+        if original_range is None:
+            continue
+
+        original_low, original_high = original_range
+        if original_high < WIDE_ODDS_ADJUST_LIMIT:
+            continue
+
+        template = (
+            templates[bet_index]
+            if bet_index < len(templates)
+            else None
+        )
+        if not template or len(template) != 2:
+            unresolved_count += 1
+            continue
+
+        replacement_index = 1
+        replacement_symbol = template[replacement_index]
+
+        if replacement_symbol == "A":
+            unresolved_count += 1
+            continue
+
+        occupied_keys.discard(original_key)
+        replacement = None
+        fixed_number = get_num(bet[0])
+
+        for candidate in _next_role_candidates(
+            replacement_symbol,
+            bet[replacement_index],
+            excluded_numbers=excluded_numbers,
+        ):
+            candidate_number = get_num(candidate)
+            if (
+                candidate_number is None
+                or candidate_number == fixed_number
+            ):
+                continue
+
+            candidate_bet = [bet[0], candidate]
+            candidate_key = _bet_number_key(candidate_bet)
+
+            if (
+                candidate_key is None
+                or candidate_key in occupied_keys
+            ):
+                continue
+
+            candidate_range = odds_map.get(candidate_key)
+            if candidate_range is None:
+                continue
+
+            candidate_low, candidate_high = candidate_range
+            if candidate_high >= WIDE_ODDS_ADJUST_LIMIT:
+                continue
+
+            replacement = candidate_bet
+            logs.append({
+                "種別": "ワイド",
+                "点目": bet_index + 1,
+                "変更前": list(bet),
+                "変更後": list(candidate_bet),
+                "変更前オッズ": (
+                    float(original_low),
+                    float(original_high),
+                ),
+                "変更後オッズ": (
+                    float(candidate_low),
+                    float(candidate_high),
+                ),
+                "変更記号": replacement_symbol,
+            })
+            break
+
+        if replacement is None:
+            occupied_keys.add(original_key)
+            unresolved_count += 1
+            continue
+
+        adjusted_bets[bet_index] = replacement
+        occupied_keys.add(_bet_number_key(replacement))
+
+    return adjusted_bets, logs, unresolved_count
+
 if debug_mode:
     st.caption(
         "公式オッズ取得｜"
@@ -19483,6 +19979,111 @@ if baba_name == "高知":
         float_bets = list(float_bets[:1])
     else:
         wide_bets = list(wide_bets[:2])
+
+# ==================================================
+# 最終買い目に対する高オッズ補正
+#
+# 斬り捨て・重複回避・会場別最終ガードまで終わった後だけ実行する。
+# これにより、元の会場別買い目ロジックは一切変更しない。
+# ==================================================
+odds_adjustment_logs = []
+odds_adjustment_unresolved = 0
+
+trio_bets, trio_adjust_logs, trio_unresolved = (
+    adjust_trio_bets_by_official_odds(
+        trio_bets,
+        current_bet_template.get("三連複", []),
+        trio_odds_map,
+        excluded_numbers=cut_numbers_for_bets,
+    )
+)
+odds_adjustment_logs.extend(trio_adjust_logs)
+odds_adjustment_unresolved += trio_unresolved
+
+# 通常ワイドと旧浮き輪枠を一つのワイド群として同時に調整し、
+# 互いに同じ2頭へ重複しないようにする。
+wide_count_before_odds_adjust = len(wide_bets)
+combined_wide_bets = list(wide_bets) + list(float_bets)
+combined_wide_templates = (
+    list(current_bet_template.get("ワイド", []))[:len(wide_bets)]
+    + list(current_bet_template.get("浮き輪", []))[:len(float_bets)]
+)
+
+combined_wide_bets, wide_adjust_logs, wide_unresolved = (
+    adjust_wide_bets_by_official_odds(
+        combined_wide_bets,
+        combined_wide_templates,
+        wide_odds_map,
+        excluded_numbers=cut_numbers_for_bets,
+    )
+)
+
+wide_bets = combined_wide_bets[:wide_count_before_odds_adjust]
+float_bets = combined_wide_bets[wide_count_before_odds_adjust:]
+odds_adjustment_logs.extend(wide_adjust_logs)
+odds_adjustment_unresolved += wide_unresolved
+
+if odds_adjustment_logs:
+    trio_adjust_count = sum(
+        1 for item in odds_adjustment_logs
+        if item.get("種別") == "三連複"
+    )
+    wide_adjust_count = sum(
+        1 for item in odds_adjustment_logs
+        if item.get("種別") == "ワイド"
+    )
+
+    st.caption(
+        "🎚️ 高オッズ補正｜"
+        f"三連複 {trio_adjust_count}点｜"
+        f"ワイド {wide_adjust_count}点"
+        "（三連複360倍以上／ワイド上限100倍以上）"
+    )
+
+if odds_adjustment_unresolved:
+    st.caption(
+        "※基準未満になる同役割の次候補が見つからない買い目 "
+        f"{odds_adjustment_unresolved}点は元の買い目を維持しています。"
+    )
+
+if debug_mode and odds_adjustment_logs:
+    with st.expander(
+        "🎚️ 高オッズ補正の詳細",
+        expanded=False,
+    ):
+        for item in odds_adjustment_logs:
+            before_text = "-".join(
+                str(get_num(horse_name))
+                for horse_name in item["変更前"]
+            )
+            after_text = "-".join(
+                str(get_num(horse_name))
+                for horse_name in item["変更後"]
+            )
+
+            if item["種別"] == "三連複":
+                before_odds_text = (
+                    f"{item['変更前オッズ']:.1f}倍"
+                )
+                after_odds_text = (
+                    f"{item['変更後オッズ']:.1f}倍"
+                )
+            else:
+                before_low, before_high = item["変更前オッズ"]
+                after_low, after_high = item["変更後オッズ"]
+                before_odds_text = (
+                    f"{before_low:.1f}〜{before_high:.1f}倍"
+                )
+                after_odds_text = (
+                    f"{after_low:.1f}〜{after_high:.1f}倍"
+                )
+
+            st.write(
+                f"{item['種別']}{item['点目']}点目｜"
+                f"{before_text}（{before_odds_text}）"
+                f" → {after_text}（{after_odds_text}）"
+                f"｜{item['変更記号']}の次候補"
+            )
 
 st.subheader(
     f"おすすめの三連複 {len(trio_bets)}点"
