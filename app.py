@@ -1364,9 +1364,24 @@ def build_all_validation_symbols(selected, candidate_pools, used_symbols):
     return result
 
 
-def make_role_result(top3, symbols, used_symbols=None):
-    """1〜3着の役割照合。同着（1着2頭・3着2頭など）にも対応。"""
+def make_role_result(top3, symbols, used_symbols=None, a_axis_label=None):
+    """1〜3着の役割照合。同着（1着2頭・3着2頭など）にも対応。
+
+    Aが該当した場合だけ、Aの軸タイプを併記する。
+    例：A（先行・持続）
+    """
     used_symbols = set(symbols) if used_symbols is None else set(used_symbols)
+
+    def format_role_label(key):
+        label = key
+
+        if key == "A" and a_axis_label:
+            label += f"（{a_axis_label}）"
+
+        if key not in used_symbols:
+            label += "※"
+
+        return label
 
     def numbers_for_place(place):
         value = top3.get(place, [])
@@ -1387,7 +1402,7 @@ def make_role_result(top3, symbols, used_symbols=None):
         for place in (1, 2, 3):
             number = numbers_for_place(place)[0]
             roles = [
-                key + ("※" if key not in used_symbols else "")
+                format_role_label(key)
                 for key, horse in symbols.items()
                 if horse and get_num(horse) == number
             ]
@@ -1404,7 +1419,7 @@ def make_role_result(top3, symbols, used_symbols=None):
         place_entries = []
         for number in numbers_for_place(place):
             roles = [
-                key + ("※" if key not in used_symbols else "")
+                format_role_label(key)
                 for key, horse in symbols.items()
                 if horse and get_num(horse) == number
             ]
@@ -14153,6 +14168,16 @@ def build_kasamatsu_axis_bet_override(context):
     ):
         result["三連複"][2] = ["A", "B", "G"]
 
+    # 笠松1400mのみ・主＝先行／副＝逃げの時は、
+    # 三連複2点目だけを A-D-G に変更する。
+    # 既存の3点目A-B-G、1点目・ワイド、他距離・他会場には影響させない。
+    if (
+        int(context.get("current_distance") or 0) == 1400
+        and context.get("axis_primary") == "先行"
+        and context.get("axis_secondary") == "逃げ"
+    ):
+        result["三連複"][1] = ["A", "D", "G"]
+
     # 笠松のみ、主：先行・副：追い込みのとき、
     # 三連複3点目だけをA-B-Kに変更する。
     if (
@@ -14195,6 +14220,36 @@ def build_kasamatsu_axis_bet_override(context):
         and context.get("axis_secondary") == "なし"
     ):
         result["三連複"][1] = ["A", "F", "G"]
+
+    # 笠松1400mのみ・主＝先行／副＝持続の時は、
+    # 三連複2点目だけを A-B-E に変更する。
+    # 既存の3点目A-M-D、ワイド、他距離・他会場には影響させない。
+    if (
+        int(context.get("current_distance") or 0) == 1400
+        and context.get("axis_primary") == "先行"
+        and context.get("axis_secondary") == "持続"
+    ):
+        result["三連複"][1] = ["A", "B", "E"]
+
+    # 笠松1400mのみ・主＝逃げ／副＝なしの時は、
+    # 三連複3点目だけを A-B-I に変更する。
+    # 既存の2点目A-F-G、1点目、ワイド、他距離・他会場には影響させない。
+    if (
+        int(context.get("current_distance") or 0) == 1400
+        and context.get("axis_primary") == "逃げ"
+        and context.get("axis_secondary") == "なし"
+    ):
+        result["三連複"][2] = ["A", "B", "I"]
+
+    # 笠松1400mのみ・主＝逃げ／副＝先行の時は、
+    # 三連複2点目だけを A-F-L に変更する。
+    # 1点目・3点目・ワイド、他距離・他会場には影響させない。
+    if (
+        int(context.get("current_distance") or 0) == 1400
+        and context.get("axis_primary") == "逃げ"
+        and context.get("axis_secondary") == "先行"
+    ):
+        result["三連複"][1] = ["A", "F", "L"]
 
     # 笠松1400mのみ・主＝先行／副＝追い込みの時は、三連複1点目を A-B-M にする。
     if (
@@ -15250,14 +15305,14 @@ def build_monbetsu_axis_bet_override(context):
         result["三連複"][2] = ["A", "I", "P"]
         result["浮き輪"] = [["A", "I"]]
 
-    # 門別1100mのみ、軸タイプ・主副脚質に関係なく
-    # ワイド1点目を F-I に固定する。
-    # 三連複・ワイド2点目以降・他距離・他会場には影響させない。
-    if int(context.get("current_distance") or 0) == 1100:
-        if result.get("ワイド"):
-            result["ワイド"][0] = ["F", "I"]
-        else:
-            result["ワイド"] = [["F", "I"]]
+    # 門別のみ、距離・軸タイプ・主副脚質に関係なく
+    # ワイド1点目を A-B に固定する。
+    # 既存の1000/1200m逃げ先行A-F、1100mF-Iなどより後で
+    # 最終上書きし、ワイド2点目・三連複・他会場には影響させない。
+    if result.get("ワイド"):
+        result["ワイド"][0] = ["A", "B"]
+    else:
+        result["ワイド"] = [["A", "B"]]
 
     return result
 
@@ -15528,6 +15583,27 @@ def build_ooi_axis_bet_override(context):
         else:
             result["三連複"] = [["A", "B", "F"]]
 
+    # 大井1400mのみ・主脚質＝差しの時は、副脚質を問わず
+    # 三連複3点目を A-D-E、ワイド2点目を A-D に固定する。
+    # 他距離・他主脚質・ワイド1点目・他会場には影響させない。
+    if (
+        context.get("axis_primary") == "差し"
+        and int(context.get("current_distance") or 0) == 1400
+    ):
+        if len(result.get("三連複", [])) >= 3:
+            result["三連複"][2] = ["A", "D", "E"]
+        else:
+            while len(result.setdefault("三連複", [])) < 2:
+                result["三連複"].append([])
+            result["三連複"].append(["A", "D", "E"])
+
+        if len(result.get("ワイド", [])) >= 2:
+            result["ワイド"][1] = ["A", "D"]
+        elif result.get("ワイド"):
+            result["ワイド"].append(["A", "D"])
+        else:
+            result["ワイド"] = [["A", "F"], ["A", "D"]]
+
     return result
 
 
@@ -15764,6 +15840,26 @@ def build_sonoda_axis_bet_override(context):
         and int(current_distance or 0) >= 1700
     ):
         result["三連複"][2] = ["A", "B", "I"]
+
+    # 園田1400mのみ・主＝先行／副＝持続の時は、
+    # 画面上のワイド2点目（浮き輪枠）だけを A-F にする。
+    # ワイド1点目・三連複・他距離・他会場には影響させない。
+    if (
+        int(current_distance or 0) == 1400
+        and context.get("axis_primary") == "先行"
+        and context.get("axis_secondary") == "持続"
+    ):
+        result["浮き輪"] = [["A", "F"]]
+
+    # 園田1400mのみ・主＝先行／副＝逃げの時は、
+    # 画面上のワイド2点目（浮き輪枠）だけを A-B にする。
+    # ワイド1点目・三連複・他距離・他会場には影響させない。
+    if (
+        int(current_distance or 0) == 1400
+        and context.get("axis_primary") == "先行"
+        and context.get("axis_secondary") == "逃げ"
+    ):
+        result["浮き輪"] = [["A", "B"]]
 
     return result
 
@@ -20685,12 +20781,33 @@ if check_result:
             "着順"
         ]
 
+        # 結果の役割検証で、Aが来た時にAの軸タイプを表示する。
+        # 副タイプが「なし」の場合は主タイプだけを表示。
+        a_axis_label_parts = []
+
+        if axis_primary_for_bet:
+            a_axis_label_parts.append(
+                str(axis_primary_for_bet)
+            )
+
+        if (
+            axis_secondary_for_bet
+            and axis_secondary_for_bet != "なし"
+        ):
+            a_axis_label_parts.append(
+                str(axis_secondary_for_bet)
+            )
+
+        a_axis_label_for_role = "・".join(
+            a_axis_label_parts
+        )
+
         if st.session_state.get("role_validation_running") and st.session_state.batch_mode:
             if has_confirmed_top_finishers(top3):
                 finish_role_race("完了", make_role_result(
                     top3, build_all_validation_symbols(
                         final_bet_symbols, alphabet_candidate_pools, required_symbols
-                    ), required_symbols),
+                    ), required_symbols, a_axis_label_for_role),
                                  baba_name, distance_num, race_no)
             else:
                 finish_role_race("未確定", "1〜3着を取得できません（未確定・中止等）",
@@ -20702,7 +20819,7 @@ if check_result:
                 single_role_detail = make_role_result(
                     top3, build_all_validation_symbols(
                         final_bet_symbols, alphabet_candidate_pools, required_symbols
-                    ), required_symbols,
+                    ), required_symbols, a_axis_label_for_role,
                 )
                 single_role_date = parse_qs(urlparse(url).query).get("k_raceDate", [""])[0]
                 single_role_text = (
