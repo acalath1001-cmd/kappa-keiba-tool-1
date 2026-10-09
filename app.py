@@ -1299,9 +1299,12 @@ def render_batch_results_summary():
         completed_batch_results,
         key=lambda x: x["R"],
     ):
+        race_distance = r.get("距離")
+        distance_label = f"{race_distance}m" if race_distance else "距離不明"
+        race_label = f"{r['R']}R・{distance_label}"
         if r.get("状態") == "対象外":
             batch_copy_lines.append(
-                f"{r['R']}R｜"
+                f"{race_label}｜"
                 f"新馬戦・対象外｜"
                 f"投資0円｜"
                 f"払戻0円｜"
@@ -1309,7 +1312,7 @@ def render_batch_results_summary():
             )
         elif r.get("検証モード") == "backfill":
             batch_copy_lines.append(
-                f"{r['R']}R｜"
+                f"{race_label}｜"
                 f"後詰め軸{r['軸']}番 "
                 f"{r['軸タイプ']}｜"
                 f"1番人気A{r.get('元A')}番｜"
@@ -1322,7 +1325,7 @@ def render_batch_results_summary():
             )
         else:
             batch_copy_lines.append(
-                f"{r['R']}R｜"
+                f"{race_label}｜"
                 f"軸{r['軸']}番 "
                 f"{r['軸タイプ']}｜"
                 f"結果{r['結果']}｜"
@@ -4591,6 +4594,7 @@ if st.session_state.batch_mode:
 
         st.session_state.batch_results.append({
             "R": int(race_no),
+            "距離": distance_num,
             "状態": "失敗",
             "理由": "1番人気を自動取得できませんでした",
             "投資": 0,
@@ -6157,6 +6161,7 @@ if not front_candidates:
 
         st.session_state.batch_results.append({
             "R": int(race_no),
+            "距離": distance_num,
             "状態": "対象外",
             "理由": "新馬戦（過去レースデータなし）",
             "軸": int(popular_horse_num),
@@ -15510,14 +15515,12 @@ def build_ooi_axis_bet_override(context):
             "D",
         ]
 
-    # 大井1600mのみ・主：先行／副：持続の時は、三連複3点目を A-E-I にする。
+    # 大井1600mのみ・主脚質が先行または逃げなら、副脚質を問わず3点目を A-M-E にする。
     if (
-        axis_type == "前受け"
-        and context.get("axis_primary") == "先行"
-        and context.get("axis_secondary") == "持続"
+        context.get("axis_primary") in {"先行", "逃げ"}
         and int(context.get("current_distance") or 0) == 1600
     ):
-        result["三連複"][2] = ["A", "E", "I"]
+        result["三連複"][2] = ["A", "M", "E"]
 
     # 大井1600mのみ・主：逃げ／副：先行の時は、
     # 三連複2点目を A-B-M2、ワイド2点目を A-B にする。
@@ -20673,7 +20676,7 @@ if baba_name == "大井" and len(trio_bets) < 3:
                         ooi_used.add(key)
                         break
 
-# 大井・全距離・軸主＝先行／副脚質不問。
+# 大井・1600m以外・軸主＝先行／副脚質不問。
 # M2候補1位とN/G/Iいずれかの候補1位が同じ実馬の場合だけ、
 # 三連複3点目を A-既存の2頭目-被り馬 にする。
 # 2頭目と被り馬が一致する場合のみ、Bなどの既存候補から代替。
@@ -20682,6 +20685,7 @@ if (
     baba_name == "大井"
     and bet_axis_type == "前受け"
     and axis_primary_for_bet == "先行"
+    and distance_num != 1600  # 1600mの3点目A-M-Eを優先する。
     and len(trio_bets) >= 3
 ):
     m2_pool = alphabet_candidate_pools.get("M2", [])
@@ -21512,6 +21516,7 @@ if check_result:
 
                     st.session_state.batch_results.append({
                         "R": int(race_no),
+                        "距離": distance_num,
                         "状態": "完了",
                         "検証モード": st.session_state.batch_axis_mode,
                         "軸": int(popular_horse_num),
@@ -21600,6 +21605,7 @@ if check_result:
 
             st.session_state.batch_results.append({
                 "R": int(race_no),
+                "距離": distance_num,
                 "状態": "失敗",
                 "理由": f"結果取得失敗: {e}",
                 "投資": 0,
@@ -21640,6 +21646,7 @@ if check_result:
 
             st.session_state.batch_results.append({
                 "R": int(race_no),
+                "距離": distance_num,
                 "状態": "失敗",
                 "理由": f"解析失敗: {e}",
                 "投資": 0,
