@@ -14290,6 +14290,15 @@ def build_kasamatsu_axis_bet_override(context):
         else:
             result["ワイド"] = [["A", "E"]]
 
+    # 笠松1400m・1580mのみ、主＝逃げ／副＝先行の時、
+    # 三連複3点目だけ A-B-M にする。
+    if (
+        int(context.get("current_distance") or 0) in (1400, 1580)
+        and context.get("axis_primary") == "逃げ"
+        and context.get("axis_secondary") == "先行"
+    ):
+        result["三連複"][2] = ["A", "B", "M"]
+
     return result
 
 def build_urawa_funabashi_axis_bet_override(context):
@@ -15600,6 +15609,18 @@ def build_ooi_axis_bet_override(context):
         else:
             result["三連複"] = [first_trio]
 
+    # 大井1200mのみ・主＝先行／副＝追い込みの時は、
+    # 三連複3点目を A-E-D に固定する。
+    # 既存の「1200m・主先行は3点目A-B-F」より後で上書きし、
+    # 1点目・2点目・ワイド・他距離・他会場には影響させない。
+    if (
+        axis_type == "前受け"
+        and int(context.get("current_distance") or 0) == 1200
+        and context.get("axis_primary") == "先行"
+        and context.get("axis_secondary") == "追い込み"
+    ):
+        result["三連複"][2] = ["A", "E", "D"]
+
     # 大井1400mのみ・主脚質＝差しの時は、副脚質を問わず
     # 三連複3点目を A-D-E、ワイド2点目を A-D に固定する。
     # 他距離・他主脚質・ワイド1点目・他会場には影響させない。
@@ -15620,6 +15641,16 @@ def build_ooi_axis_bet_override(context):
             result["ワイド"].append(["A", "D"])
         else:
             result["ワイド"] = [["A", "F"], ["A", "D"]]
+
+    # 大井1000mのみ・主＝先行／副＝追い込みの時、三連複1点目だけA-B-E。
+    # 他の点目、ワイド、他距離、他軸条件には影響させない。
+    if (
+        axis_type == "前受け"
+        and int(context.get("current_distance") or 0) == 1000
+        and context.get("axis_primary") == "先行"
+        and context.get("axis_secondary") == "追い込み"
+    ):
+        result["三連複"][0] = ["A", "B", "E"]
 
     return result
 
@@ -15844,6 +15875,29 @@ def build_sonoda_axis_bet_override(context):
     if (
         axis_type == "前受け"
         and context.get("axis_primary") == "先行"
+    ):
+        result["三連複"][2] = ["A", "B", "E"]
+
+    # 園田1400mのみ・主＝先行／副＝持続の時は、
+    # 三連複3点目を A-E-D に固定する。
+    # 直前の「主脚質が先行ならA-B-E」共通保証より後で上書きし、
+    # 他距離・他副脚質・1点目・2点目・ワイド・浮き輪には影響させない。
+    if (
+        axis_type == "前受け"
+        and int(current_distance or 0) == 1400
+        and context.get("axis_primary") == "先行"
+        and context.get("axis_secondary") == "持続"
+    ):
+        result["三連複"][2] = ["A", "E", "D"]
+
+    # 園田1400mのみ・主＝先行／副＝追い込みの時は、
+    # 三連複3点目を A-B-E に固定する。
+    # 現在の先行共通保証と同じ内容だが、1400m専用指定として明示する。
+    if (
+        axis_type == "前受け"
+        and int(current_distance or 0) == 1400
+        and context.get("axis_primary") == "先行"
+        and context.get("axis_secondary") == "追い込み"
     ):
         result["三連複"][2] = ["A", "B", "E"]
 
@@ -19013,6 +19067,52 @@ if (
             if len(trio_bets) >= required_trio_count:
                 break
 
+# 大井・全距離・軸主先行／副脚質不問。
+# NとM2の候補1位が同じ実馬なら、その馬を三連複3点目A-B-〇の〇へ採用。
+# 既存の1・2点目とワイド、他の軸・会場は変更しない。
+if (
+    baba_name == "大井"
+    and bet_axis_type == "前受け"
+    and axis_primary_for_bet == "先行"
+):
+    n_candidates = alphabet_candidate_pools.get("N", [])
+    m2_candidates = alphabet_candidate_pools.get("M2", [])
+    if n_candidates and m2_candidates:
+        n_first, m2_first = n_candidates[0], m2_candidates[0]
+        common_number = get_num(n_first)
+        axis_horse = (
+            final_bet_symbols.get("A")
+            or normal_bet_symbols.get("A")
+        )
+        b_horse = (
+            final_bet_symbols.get("B")
+            or normal_bet_symbols.get("B")
+            or next(iter(alphabet_candidate_pools.get("B", [])), None)
+        )
+        excluded = set(kirisute_horse_numbers or set())
+        if (
+            common_number is not None
+            and common_number == get_num(m2_first)
+            and axis_horse is not None
+            and b_horse is not None
+            and len({get_num(axis_horse), get_num(b_horse), common_number}) == 3
+            and common_number not in excluded
+            and get_num(b_horse) not in excluded
+        ):
+            forced_bet = [axis_horse, b_horse, n_first]
+            forced_key = frozenset(get_num(h) for h in forced_bet)
+            # 1・2点目と同じ組み合わせは作らない。
+            other_keys = {
+                frozenset(get_num(h) for h in bet)
+                for bet in trio_bets[:2]
+                if len(bet) == 3
+            }
+            if forced_key not in other_keys:
+                if len(trio_bets) >= 3:
+                    trio_bets[2] = forced_bet
+                elif len(trio_bets) == 2:
+                    trio_bets.append(forced_bet)
+
 # 通常三連複の不足時も別役ランキングの混成補充は行わない。
 # ただし佐賀・前受けの3点目だけは上の専用救済で
 # 指定された3点目の役割を保ちながら成立させる。
@@ -20543,6 +20643,81 @@ if baba_name == "笠松" and len(trio_bets) < required_trio_count:
                         kasa_used.add(key)
                 if len(trio_bets) >= required_trio_count:
                     break
+
+# ==================================================
+# 大井専用：三連複が重複などで2点以下になった場合の不足救済
+# 既に成立している買い目はそのまま。3点目の役割候補を優先する。
+# 役割候補で組めなければ、最後だけ他の出走馬から補う。
+# ワイド・他会場・各記号の順位には一切手を加えない。
+# ==================================================
+if baba_name == "大井" and len(trio_bets) < 3:
+    ooi_axis_horse = (
+        final_bet_symbols.get("A")
+        or normal_bet_symbols.get("A")
+    )
+    if ooi_axis_horse is not None:
+        ooi_axis_num = get_num(ooi_axis_horse)
+        ooi_excluded = set(kirisute_horse_numbers or ()) | set(cut_numbers_for_bets or ())
+        ooi_used = {
+            frozenset(get_num(h) for h in bet)
+            for bet in trio_bets if len(bet) == 3
+        }
+        ooi_all = [
+            horse_text(h) for h in horses
+            if h["馬番"] != ooi_axis_num and h["馬番"] not in ooi_excluded
+        ]
+
+        def ooi_candidates(role, widen=False):
+            candidates = unique_texts(
+                ([final_bet_symbols[role]] if final_bet_symbols.get(role) else [])
+                + ([normal_bet_symbols[role]] if normal_bet_symbols.get(role) else [])
+                + list(alphabet_candidate_pools.get(role, []))
+            )
+            return unique_texts(candidates + (ooi_all if widen else []))
+
+        # 原則は欠落した点の役割テンプレートから再選出する。
+        # 3点目を優先して、不足が続く場合のみその他の点も試す。
+        ooi_templates = current_bet_template.get("三連複", [])
+        ooi_order = (ooi_templates[2:3] + ooi_templates[:2]
+                     if len(ooi_templates) >= 3 else ooi_templates)
+        for widen in (False, True):
+            if len(trio_bets) >= 3:
+                break
+            for ooi_tpl in ooi_order:
+                if len(trio_bets) >= 3:
+                    break
+                if len(ooi_tpl) != 3 or ooi_tpl[0] != "A":
+                    continue
+                found = None
+                for left in ooi_candidates(ooi_tpl[1], widen):
+                    ln = get_num(left)
+                    if ln is None or ln == ooi_axis_num or ln in ooi_excluded:
+                        continue
+                    for right in ooi_candidates(ooi_tpl[2], widen):
+                        rn = get_num(right)
+                        if rn is None or rn in (ooi_axis_num, ln) or rn in ooi_excluded:
+                            continue
+                        key = frozenset((ooi_axis_num, ln, rn))
+                        if key not in ooi_used:
+                            found = [ooi_axis_horse, left, right]
+                            break
+                    if found:
+                        break
+                if found:
+                    trio_bets.append(found)
+                    ooi_used.add(frozenset(get_num(h) for h in found))
+
+        # 記号間の完全重複でも、可能な出走馬がいる限り3点確保。
+        if len(trio_bets) < 3:
+            for i, left in enumerate(ooi_all):
+                if len(trio_bets) >= 3:
+                    break
+                for right in ooi_all[i + 1:]:
+                    key = frozenset((ooi_axis_num, get_num(left), get_num(right)))
+                    if len(key) == 3 and key not in ooi_used:
+                        trio_bets.append([ooi_axis_horse, left, right])
+                        ooi_used.add(key)
+                        break
 
 st.subheader(
     f"おすすめの三連複 {len(trio_bets)}点"
