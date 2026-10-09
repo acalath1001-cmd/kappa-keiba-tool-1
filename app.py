@@ -19067,52 +19067,6 @@ if (
             if len(trio_bets) >= required_trio_count:
                 break
 
-# 大井・全距離・軸主先行／副脚質不問。
-# NとM2の候補1位が同じ実馬なら、その馬を三連複3点目A-B-〇の〇へ採用。
-# 既存の1・2点目とワイド、他の軸・会場は変更しない。
-if (
-    baba_name == "大井"
-    and bet_axis_type == "前受け"
-    and axis_primary_for_bet == "先行"
-):
-    n_candidates = alphabet_candidate_pools.get("N", [])
-    m2_candidates = alphabet_candidate_pools.get("M2", [])
-    if n_candidates and m2_candidates:
-        n_first, m2_first = n_candidates[0], m2_candidates[0]
-        common_number = get_num(n_first)
-        axis_horse = (
-            final_bet_symbols.get("A")
-            or normal_bet_symbols.get("A")
-        )
-        b_horse = (
-            final_bet_symbols.get("B")
-            or normal_bet_symbols.get("B")
-            or next(iter(alphabet_candidate_pools.get("B", [])), None)
-        )
-        excluded = set(kirisute_horse_numbers or set())
-        if (
-            common_number is not None
-            and common_number == get_num(m2_first)
-            and axis_horse is not None
-            and b_horse is not None
-            and len({get_num(axis_horse), get_num(b_horse), common_number}) == 3
-            and common_number not in excluded
-            and get_num(b_horse) not in excluded
-        ):
-            forced_bet = [axis_horse, b_horse, n_first]
-            forced_key = frozenset(get_num(h) for h in forced_bet)
-            # 1・2点目と同じ組み合わせは作らない。
-            other_keys = {
-                frozenset(get_num(h) for h in bet)
-                for bet in trio_bets[:2]
-                if len(bet) == 3
-            }
-            if forced_key not in other_keys:
-                if len(trio_bets) >= 3:
-                    trio_bets[2] = forced_bet
-                elif len(trio_bets) == 2:
-                    trio_bets.append(forced_bet)
-
 # 通常三連複の不足時も別役ランキングの混成補充は行わない。
 # ただし佐賀・前受けの3点目だけは上の専用救済で
 # 指定された3点目の役割を保ちながら成立させる。
@@ -20718,6 +20672,64 @@ if baba_name == "大井" and len(trio_bets) < 3:
                         trio_bets.append([ooi_axis_horse, left, right])
                         ooi_used.add(key)
                         break
+
+# 大井・全距離・軸主＝先行／副脚質不問。
+# M2候補1位とN/G/Iいずれかの候補1位が同じ実馬の場合だけ、
+# 三連複3点目を A-既存の2頭目-被り馬 にする。
+# 2頭目と被り馬が一致する場合のみ、Bなどの既存候補から代替。
+# 斬り捨て馬・1/2点目と同じ3頭の組合せは採用しない。
+if (
+    baba_name == "大井"
+    and bet_axis_type == "前受け"
+    and axis_primary_for_bet == "先行"
+    and len(trio_bets) >= 3
+):
+    m2_pool = alphabet_candidate_pools.get("M2", [])
+    m2_first = m2_pool[0] if m2_pool else None
+    m2_num = get_num(m2_first) if m2_first else None
+    overlapping_horse = None
+    if m2_num is not None:
+        for role in ("N", "G", "I"):
+            role_pool = alphabet_candidate_pools.get(role, [])
+            if role_pool and get_num(role_pool[0]) == m2_num:
+                overlapping_horse = role_pool[0]
+                break
+
+    if overlapping_horse is not None:
+        third_bet = trio_bets[2]
+        axis_horse = third_bet[0]
+        axis_num = get_num(axis_horse)
+        forbidden = set(kirisute_horse_numbers or ()) | set(cut_numbers_for_bets or ())
+        used_keys = {
+            frozenset(get_num(h) for h in bet)
+            for bet in trio_bets[:2]
+            if len(bet) == 3
+        }
+        if (
+            axis_num is not None
+            and len({axis_num, m2_num}) == 2
+            and m2_num not in forbidden
+        ):
+            second_candidates = unique_texts(
+                [third_bet[1]]
+                + ([final_bet_symbols["B"]] if final_bet_symbols.get("B") else [])
+                + ([normal_bet_symbols["B"]] if normal_bet_symbols.get("B") else [])
+                + list(alphabet_candidate_pools.get("B", []))
+                + [third_bet[2]]
+            )
+            for partner in second_candidates:
+                partner_num = get_num(partner)
+                if (
+                    partner_num is None
+                    or partner_num in (axis_num, m2_num)
+                    or partner_num in forbidden
+                ):
+                    continue
+                key = frozenset((axis_num, partner_num, m2_num))
+                if key in used_keys:
+                    continue
+                trio_bets[2] = [axis_horse, partner, overlapping_horse]
+                break
 
 st.subheader(
     f"おすすめの三連複 {len(trio_bets)}点"
