@@ -14104,6 +14104,29 @@ def build_kanazawa_axis_bet_override(context):
     # 1点目の通常ワイド・三連複・他会場には影響させない。
     result["浮き輪"] = [["A", "G"]]
 
+    # 金沢1500m・1400mの主副脚質別指定を最終反映。
+    distance = int(context.get("current_distance") or 0)
+    style = (context.get("axis_primary"), context.get("axis_secondary"))
+    if distance == 1500:
+        if style == ("先行", "持続"):
+            result["三連複"][1] = ["A", "B", "G"]
+            result["三連複"][2] = ["A", "M", "N"]
+        elif style == ("差し", "なし"):
+            result["三連複"][1] = ["A", "F", "E"]
+        elif style == ("逃げ", "先行"):
+            result["三連複"][0] = ["A", "B", "I"]
+    elif distance == 1400:
+        if style == ("逃げ", "先行"):
+            result["三連複"][0] = ["A", "F", "M"]
+            # 2点目・3点目とも指定はA-M-E。実馬重複は既存処理で扱う。
+            result["三連複"][1] = ["A", "M", "E"]
+            result["三連複"][2] = ["A", "M", "E"]
+            result["ワイド"] = [["A", "B"]]
+            result["浮き輪"] = [["A", "M"]]
+        elif style == ("先行", "逃げ"):
+            result["三連複"][0] = ["A", "B", "I"]
+            result["ワイド"] = [["A", "B"]]
+
     return result
 
 def build_kasamatsu_axis_bet_override(context):
@@ -15002,6 +15025,90 @@ def build_kochi_saga_axis_bet_override(context):
     if context["track"] == "佐賀":
         result["浮き輪"] = [["F", "E"]]
 
+    # 佐賀1300m限定：主副脚質別の最終指定（ワイド2点目は浮き輪枠）。
+    if (
+        context["track"] == "佐賀"
+        and int(context.get("current_distance") or 0) == 1300
+    ):
+        saga_style = (context.get("axis_primary"), context.get("axis_secondary"))
+        if saga_style == ("先行", "持続"):
+            result["三連複"][2] = ["A", "E", "I"]
+            result["浮き輪"] = [["A", "E"]]
+        elif saga_style == ("逃げ", "先行"):
+            result["三連複"][1] = ["A", "F", "E"]
+        elif saga_style in {("先行", "追い込み"), ("差し", "なし")}:
+            result["三連複"][1] = ["A", "B", "F"]
+            result["三連複"][2] = ["A", "F", "E"]
+        elif saga_style == ("持続", "追い込み"):
+            result["三連複"][2] = ["A", "B", "K"]
+
+    # 佐賀1400m限定：主副脚質別の最終指定。
+    if (
+        context["track"] == "佐賀"
+        and int(context.get("current_distance") or 0) == 1400
+    ):
+        saga_style = (context.get("axis_primary"), context.get("axis_secondary"))
+        if saga_style == ("差し", "なし"):
+            result["三連複"][1] = ["A", "M", "I"]
+            result["三連複"][2] = ["A", "F", "I"]
+        elif saga_style == ("先行", "持続"):
+            result["三連複"][0] = ["A", "B", "F"]
+            result["三連複"][1] = ["A", "B", "M"]
+            result["浮き輪"] = [["A", "G"]]
+        elif saga_style == ("逃げ", "なし"):
+            result["三連複"][0] = ["A", "B", "E"]
+            result["三連複"][1] = ["A", "M", "G"]
+        elif saga_style == ("持続", "追い込み"):
+            result["三連複"][2] = ["A", "I", "N"]
+        elif saga_style == ("先行", "逃げ"):
+            result["三連複"][0] = ["A", "B", "D"]
+            result["三連複"][2] = ["A", "M2", "G"]
+            result["ワイド"] = [["A", "B"]]
+        elif saga_style == ("逃げ", "先行"):
+            result["三連複"][0] = ["A", "B", "I"]
+            result["三連複"][1] = ["A", "M", "N"]
+            result["三連複"][2] = ["A", "F", "E"]
+        elif saga_style == ("差し", "持続"):
+            result["三連複"][1] = ["A", "B", "J"]
+        elif saga_style == ("持続", "なし"):
+            result["三連複"][0] = ["A", "B", "E"]
+            result["三連複"][1] = ["A", "M", "G"]
+            result["浮き輪"] = [["A", "M"]]
+        elif saga_style == ("先行", "なし"):
+            result["三連複"][0] = ["A", "B", "F"]
+            result["三連複"][2] = ["A", "D", "K"]
+            result["ワイド"] = [["A", "B"]]
+            result["浮き輪"] = [["A", "C"]]
+
+    # 高知1300m限定：主副脚質別の最終指定。
+    if (
+        context["track"] == "高知"
+        and int(context.get("current_distance") or 0) == 1300
+    ):
+        kochi_style = (context.get("axis_primary"), context.get("axis_secondary"))
+        if kochi_style == ("逃げ", "先行"):
+            result["三連複"][0] = ["A", "B", "D"]
+            result["三連複"][1] = ["A", "B", "G"]
+            result["三連複"][2] = ["A", "M", "D"]
+        elif kochi_style == ("逃げ", "持続"):
+            result["三連複"][2] = ["A", "C", "M2"]
+            result["浮き輪"] = [["A", "C"]]
+        elif kochi_style == ("持続", "なし"):
+            result["三連複"][2] = ["A", "M2", "G"]
+
+    # 高知1600m限定：主副脚質別の三連複・ワイド1点目と、全軸共通ワイド2点目。
+    if (
+        context["track"] == "高知"
+        and int(context.get("current_distance") or 0) == 1600
+    ):
+        kochi_style = (context.get("axis_primary"), context.get("axis_secondary"))
+        if kochi_style == ("差し", "持続"):
+            result["三連複"][1] = ["A", "B", "M2"]
+            result["ワイド"] = [["A", "B"]]
+        elif kochi_style == ("先行", "逃げ"):
+            result["三連複"][2] = ["A", "D", "I"]
+        result["浮き輪"] = [["B", "M2"]]
+
     return result
 
 
@@ -15019,6 +15126,27 @@ def build_iwate_axis_bet_override(context):
             and int(context.get("current_distance") or 0) == 1700
         ):
             result["浮き輪"] = [["F", "E"]]
+
+        # 盛岡のみ：距離・主副脚質ごとの買い目を最終反映。
+        if track == "盛岡":
+            distance = int(context.get("current_distance") or 0)
+            style = (context.get("axis_primary"), context.get("axis_secondary"))
+            if distance == 1400 and context.get("axis_primary") == "持続":
+                # 主脚質が持続なら副脚質は問わない。M2は独立した記号。
+                result["三連複"][1] = ["A", "M2", "D"]
+                result["三連複"][2] = ["A", "F", "C"]
+            elif distance == 1400 and style == ("先行", "追い込み"):
+                result["三連複"][1] = ["A", "F", "N"]
+                result["三連複"][2] = ["A", "E", "L"]
+                result["浮き輪"] = [["A", "F"]]
+            elif distance == 1200 and style == ("持続", "なし"):
+                result["三連複"][1] = ["A", "B", "M"]
+                result["浮き輪"] = [["A", "M"]]
+            elif distance == 1200 and style == ("逃げ", "なし"):
+                result["三連複"][2] = ["A", "L", "G"]
+                result["浮き輪"] = [["A", "L"]]
+            elif distance == 1000 and style == ("逃げ", "先行"):
+                result["三連複"][1] = ["A", "B", "G"]
 
         return result
 
@@ -18619,6 +18747,30 @@ def ensure_saga_front_third_trio(
             + list(l_base_pool)
             + list(all_bet_pool)
         )
+
+    # 距離別の変更対象では、補充候補も指定した3点目の記号に合わせる。
+    saga_third_pair = {
+        1300: {
+            ("先行", "持続"): ("E", "I"),
+            ("先行", "追い込み"): ("F", "E"),
+        },
+        1400: {
+            ("先行", "逃げ"): ("M2", "G"),
+            ("逃げ", "先行"): ("F", "E"),
+            ("先行", "なし"): ("D", "K"),
+        },
+    }.get(int(distance_num), {}).get((axis_primary_for_bet, axis_secondary_for_bet))
+    if saga_third_pair is not None:
+        def saga_role_candidates(symbol):
+            return unique_texts(
+                [horse for horse in (
+                    primary_symbols.get(symbol), fallback_symbols.get(symbol)
+                ) if horse is not None]
+                + list(alphabet_candidate_pools.get(symbol, []))
+                + list(all_bet_pool)
+            )
+        m_candidates = saga_role_candidates(saga_third_pair[0])
+        third_candidates = saga_role_candidates(saga_third_pair[1])
 
     for m_horse in m_candidates:
         m_number = get_num(m_horse)
