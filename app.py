@@ -1299,9 +1299,7 @@ def render_batch_results_summary():
         completed_batch_results,
         key=lambda x: x["R"],
     ):
-        race_distance = r.get("距離")
-        distance_label = f"{race_distance}m" if race_distance else "距離不明"
-        race_label = f"{r['R']}R・{distance_label}"
+        race_label = f"{r['R']}R"
         if r.get("状態") == "対象外":
             batch_copy_lines.append(
                 f"{race_label}｜"
@@ -1313,8 +1311,7 @@ def render_batch_results_summary():
         elif r.get("検証モード") == "backfill":
             batch_copy_lines.append(
                 f"{race_label}｜"
-                f"後詰め軸{r['軸']}番 "
-                f"{r['軸タイプ']}｜"
+                f"後詰め軸{r['軸']}番｜"
                 f"1番人気A{r.get('元A')}番｜"
                 f"後詰めF{r.get('元F')}番｜"
                 f"A-F"
@@ -1326,8 +1323,7 @@ def render_batch_results_summary():
         else:
             batch_copy_lines.append(
                 f"{race_label}｜"
-                f"軸{r['軸']}番 "
-                f"{r['軸タイプ']}｜"
+                f"軸{r['軸']}番｜"
                 f"結果{r['結果']}｜"
                 f"払戻{r['払戻']:,}円｜"
                 f"回収率{r['回収率']:.1f}%"
@@ -13914,26 +13910,6 @@ bet_axis_type = classify_bet_axis_type(
     kyakushoku_type
 )
 
-is_iwate_front_axis = (
-    baba_name in {
-        "盛岡",
-        "水沢",
-    }
-    and (
-        axis_primary_for_bet in {
-            "逃げ",
-            "先行",
-        }
-        or bool(
-            axis_secondary_tags_for_bet
-            & {
-                "逃げ",
-                "先行",
-            }
-        )
-    )
-)
-
 # ==================================================
 # 南関10頭以上
 #
@@ -14554,6 +14530,15 @@ def build_kawasaki_axis_bet_override(context):
     ):
         result["三連複"][2] = ["A", "F", "G"]
 
+    # 川崎1600m限定・主＝先行／副＝追い込み：三連複2点目 A-E-G。
+    # 他距離・三連複1/3点目・ワイド・他会場は変更しない。
+    if (
+        context.get("current_distance") == 1600
+        and context.get("axis_primary") == "先行"
+        and context.get("axis_secondary") == "追い込み"
+    ):
+        result["三連複"][1] = ["A", "E", "G"]
+
     # 川崎のみ、主：逃げ・副：追い込みは2点目A-M-L、3点目A-F-L。
     if (
         context.get("axis_primary") == "逃げ"
@@ -15111,183 +15096,6 @@ def build_kochi_saga_axis_bet_override(context):
 
     return result
 
-
-def build_iwate_axis_bet_override(context):
-    """盛岡・水沢を三連複3点＋ワイド1点＋浮き輪1点の5点で統一する。"""
-    track = context["track"]
-    axis_type = context["axis_type"]
-
-    def apply_iwate_common_wide_overrides(result):
-        # 盛岡1700mのみ、軸タイプ・主副脚質に関係なく
-        # 画面上のワイド2点目（浮き輪枠）を F-E に固定する。
-        # 他距離・三連複・ワイド1点目・水沢には影響させない。
-        if (
-            track == "盛岡"
-            and int(context.get("current_distance") or 0) == 1700
-        ):
-            result["浮き輪"] = [["F", "E"]]
-
-        # 盛岡のみ：距離・主副脚質ごとの買い目を最終反映。
-        if track == "盛岡":
-            distance = int(context.get("current_distance") or 0)
-            style = (context.get("axis_primary"), context.get("axis_secondary"))
-            if distance == 1400 and context.get("axis_primary") == "持続":
-                # 主脚質が持続なら副脚質は問わない。M2は独立した記号。
-                result["三連複"][1] = ["A", "M2", "D"]
-                result["三連複"][2] = ["A", "F", "C"]
-            elif distance == 1400 and style == ("先行", "追い込み"):
-                result["三連複"][1] = ["A", "F", "N"]
-                result["三連複"][2] = ["A", "E", "L"]
-                result["浮き輪"] = [["A", "F"]]
-            elif distance == 1200 and style == ("持続", "なし"):
-                result["三連複"][1] = ["A", "B", "M"]
-                result["浮き輪"] = [["A", "M"]]
-            elif distance == 1200 and style == ("逃げ", "なし"):
-                result["三連複"][2] = ["A", "L", "G"]
-                result["浮き輪"] = [["A", "L"]]
-            elif distance == 1000 and style == ("逃げ", "先行"):
-                result["三連複"][1] = ["A", "B", "G"]
-
-        return result
-
-    result = build_urawa_funabashi_axis_bet_override(
-        context
-    )
-
-    # ----------------------------------------------
-    # 前受け
-    # 1点目：盛岡・水沢ともに A-B-L
-    # 2点目：盛岡 A-C-G / 水沢 A-M-L
-    # 3点目：盛岡 A-M-E / 水沢 A-I-E
-    # ワイド2点目 A-E を浮き輪へ移す。
-    # ----------------------------------------------
-    if axis_type == "前受け":
-        second_trio = (
-            ["A", "M", "L"]
-            if track == "水沢"
-            else ["A", "C", "G"]
-        )
-
-        third_trio = (
-            ["A", "M", "E"]
-            if track == "盛岡"
-            else ["A", "I", "E"]
-        )
-
-        result["三連複"] = [
-            ["A", "B", "L"],
-            second_trio,
-            third_trio,
-        ]
-        result["ワイド"] = [
-            ["A", "B"],
-        ]
-        result["浮き輪"] = [["A", "E"]]
-
-        # 水沢のみ・主＝先行／副＝追い込みの時は、
-        # 三連複1点目を A-B-E、3点目を A-E-L にする。
-        # 盛岡・他の水沢脚質には影響させない。
-        if (
-            track == "水沢"
-            and context.get("axis_primary") == "先行"
-            and context.get("axis_secondary") == "追い込み"
-        ):
-            result["三連複"][0] = ["A", "B", "E"]
-            result["三連複"][2] = ["A", "E", "L"]
-
-        # 盛岡1400mのみ・主＝先行／副＝追い込みの時は、
-        # 画面上のワイド2点目（浮き輪枠）を I-G にする。
-        # 他距離・他主副脚質・水沢には影響させない。
-        if (
-            track == "盛岡"
-            and int(context.get("current_distance") or 0) == 1400
-            and context.get("axis_primary") == "先行"
-            and context.get("axis_secondary") == "追い込み"
-        ):
-            result["浮き輪"] = [["I", "G"]]
-
-        # 盛岡1600mのみ・主＝逃げ／副＝先行の時は、
-        # 三連複2点目を A-M-I にする。
-        # 他距離・他主副脚質・水沢には影響させない。
-        if (
-            track == "盛岡"
-            and int(context.get("current_distance") or 0) == 1600
-            and context.get("axis_primary") == "逃げ"
-            and context.get("axis_secondary") == "先行"
-        ):
-            result["三連複"][1] = ["A", "M", "I"]
-
-        return apply_iwate_common_wide_overrides(result)
-
-    # ----------------------------------------------
-    # 持続
-    # A≠F時の2点目F差し替えは共通ルール側を維持。
-    # 3点目は展開B＋穴L。
-    # ワイド2点目 D-C を浮き輪へ移す。
-    # ----------------------------------------------
-    if axis_type == "持続":
-        if track == "盛岡":
-            result["三連複"][1] = ["A", "C", "G"]
-
-        result["三連複"].append(
-            ["A", "B", "L"]
-        )
-
-        result["ワイド"] = [
-            ["A", "B"],
-        ]
-        result["浮き輪"] = [["D", "C"]]
-        return apply_iwate_common_wide_overrides(result)
-
-    # ----------------------------------------------
-    # 差し
-    # 盛岡だけ1点目A-B-Cを維持。
-    # 水沢は共通のA-B-E。
-    # 3点目は展開B＋穴L。
-    # ワイド2点目 A-C を浮き輪へ移す。
-    # ----------------------------------------------
-    if track == "盛岡":
-        result["三連複"][0] = ["A", "B", "C"]
-
-    result["三連複"].append(
-        ["A", "B", "L"]
-    )
-
-    result["ワイド"] = [
-        ["A", "B"],
-    ]
-    result["浮き輪"] = [["A", "C"]]
-
-    # 盛岡1200mのみ・主＝差し／副＝持続の時は、
-    # 三連複2点目を A-F-M にする。
-    # 他距離・他主副脚質・水沢には影響させない。
-    if (
-        track == "盛岡"
-        and int(context.get("current_distance") or 0) == 1200
-        and context.get("axis_primary") == "差し"
-        and context.get("axis_secondary") == "持続"
-    ):
-        result["三連複"][1] = ["A", "F", "M"]
-
-    # 盛岡1400mのみ・主＝差し／副＝持続の時は、画面上のワイド2点目を A-E にする。
-    if (
-        track == "盛岡"
-        and int(context.get("current_distance") or 0) == 1400
-        and context.get("axis_primary") == "差し"
-        and context.get("axis_secondary") == "持続"
-    ):
-        result["浮き輪"] = [["A", "E"]]
-
-    # 水沢のみ・主＝差し／副＝持続の時は、
-    # 三連複3点目を A-C-L にする。
-    if (
-        track == "水沢"
-        and context.get("axis_primary") == "差し"
-        and context.get("axis_secondary") == "持続"
-    ):
-        result["三連複"][2] = ["A", "C", "L"]
-
-    return apply_iwate_common_wide_overrides(result)
 
 def build_monbetsu_axis_bet_override(context):
     """門別の3分類ルールに、主先行・副追い込みの2点目例外を適用。"""
@@ -16118,13 +15926,8 @@ for track in ("高知", "佐賀"):
         for axis_type in BET_AXIS_TYPES_3
     }
 
-# 盛岡・水沢は岩手共通3分類ルールを使い、
-# 三連複3点目・ワイド本数・盛岡持続／差しだけ差分処理する。
-for track in ("盛岡", "水沢"):
-    VENUE_AXIS_BET_OVERRIDES[track] = {
-        axis_type: build_iwate_axis_bet_override
-        for axis_type in BET_AXIS_TYPES_3
-    }
+# 盛岡・水沢は会場別上書きをせず、共通の基本買い目を使う。
+# alphabet_priority の岩手専用順序だけは維持する。
 
 # 門別は正式3分類を基本とし、主先行・副追い込みの2点目だけ例外を適用。
 VENUE_AXIS_BET_OVERRIDES["門別"] = {
@@ -17259,6 +17062,17 @@ current_bet_template = apply_venue_axis_bet_override(
     venue_axis_bet_rule_context,
 )
 
+# 岩手は他会場と同様、三連複3点＋ワイド2点（通常1点＋追加1点）。
+# 先頭2点の三連複とアルファベット優先順位は変更しない。
+# 3点目は共通の補完形を使用し、岩手専用の脚質・距離別上書きは行わない。
+if baba_name in {"盛岡", "水沢"}:
+    current_bet_template["三連複"] = (
+        current_bet_template["三連複"][:2]
+        + [["A", "F", "E"]]
+    )
+    current_bet_template["ワイド"] = current_bet_template["ワイド"][:1]
+    current_bet_template["浮き輪"] = current_bet_template["浮き輪"][:1]
+
 
 # 園田1230m：全軸タイプ共通でワイド1点目のみA-M。
 # 主脚質・副脚質ごとの既存ルール適用後に最優先で反映する。
@@ -17301,6 +17115,27 @@ if (
     and axis_secondary_for_bet == "追い込み"
 ):
     current_bet_template["三連複"][0] = ["A", "B", "M"]
+
+
+# 名古屋のみ：距離・軸タイプ・主副脚質に関わらず、
+# 通常ワイド1点目を A-B に固定する。
+# ワイド2点目（浮き輪枠）・三連複・他会場は変更しない。
+if baba_name == "名古屋":
+    if current_bet_template.get("ワイド"):
+        current_bet_template["ワイド"][0] = ["A", "B"]
+    else:
+        current_bet_template["ワイド"] = [["A", "B"]]
+
+
+# 名古屋1500m限定：主逃げ・副なしの三連複3点目だけ A-E-C。
+# 名古屋1500m限定：主副脚質に関係なく、表示上のワイド2点目を A-M。
+# 既存の名古屋ワイド1点目 A-B、および他距離・他会場は維持。
+if baba_name == "名古屋" and distance_num == 1500:
+    if axis_primary_for_bet == "逃げ" and axis_secondary_for_bet == "なし":
+        current_bet_template["三連複"][2] = ["A", "E", "C"]
+    if axis_primary_for_bet == "先行" and axis_secondary_for_bet == "持続":
+        current_bet_template["三連複"][1] = ["A", "M", "I"]
+    current_bet_template["浮き輪"] = [["A", "M"]]
 
 
 alphabet_role_names = {
@@ -18367,7 +18202,7 @@ float_bets = make_bets_from_symbols(
 # 斬り捨て前の通常選出へ戻す。
 #
 # 南関以外は原則、A-Bワイドを外して三連複3点。
-# ただし盛岡だけは例外で、三連複2点＋通常ワイド2点＋浮き輪1点に戻す。
+# 盛岡・水沢は三連複3点＋ワイド2点（内部は通常ワイド1＋追加1）。
 # 園田は逃げ・先行軸のみ3点目A-E-K、それ以外はA-B-K。
 # 笠松・佐賀・水沢・高知は3点目A-B-L。
 # 金沢・名古屋・姫路・門別は3点目A-D-G、A=DならA-B-G。
@@ -19563,58 +19398,6 @@ if debug_mode:
                 "三連複2点目 A-E-G"
             )
 
-        if is_iwate_front_axis:
-            st.write(
-                "🟦 岩手・前受け軸："
-                "三連複1点目 A-B-L "
-                "｜浮き輪 L-K"
-            )
-
-        if (
-            baba_name == "盛岡"
-            and kyakushoku_type in {
-                "先行",
-                "持続",
-            }
-        ):
-            st.write(
-                "🟦 盛岡・先行／持続軸："
-                "三連複2点目 A-C-G"
-            )
-
-        if (
-            baba_name == "盛岡"
-            and kyakushoku_type in {
-                "差し",
-                "持続",
-            }
-        ):
-            st.write(
-                "🟦 盛岡・差し／持続軸："
-                "三連複1点目 A-B-C"
-            )
-
-        if (
-            baba_name == "盛岡"
-            and kyakushoku_type == "差し"
-        ):
-            st.write(
-                "🟦 盛岡・差し軸："
-                "浮き輪 K-L"
-            )
-
-
-            st.write(
-                "K＝3角→4角【勝負所重視】1位 "
-                "｜L＝2角→4角【総合追い込み】1位"
-            )
-
-        if baba_name == "盛岡":
-            st.write(
-                "🟦 盛岡専用：三連複2点＋通常ワイド2点＋浮き輪1点 "
-                "（ワイド系3点・合計5点）"
-            )
-
         if kyakushoku_type == "先行":
             st.write(
                 "先行軸マーブル分岐："
@@ -19656,7 +19439,7 @@ if debug_mode:
             f"{current_bet_template['三連複']}\n\n"
             f"ワイド記号："
             f"{current_bet_template['ワイド']}\n\n"
-            f"浮き輪記号："
+            f"ワイド2点目記号："
             f"{current_bet_template['浮き輪']}"
         )
 
