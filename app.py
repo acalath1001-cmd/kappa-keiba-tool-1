@@ -6759,7 +6759,7 @@ for horse in horses:
     if current_jockey.startswith(
         "望月"
     ):
-        score += 80
+        score += 120
 
     # 塚本征吾騎手は望月騎手より少し弱めの地力補正
     elif current_jockey.startswith(
@@ -10741,7 +10741,7 @@ for horse in horses:
     elif current_jockey.startswith(
         "望月"
     ):
-        jockey_bonus = 35
+        jockey_bonus = 52.5
 
     # 矢野貴之騎手。NAR表記「矢野貴」に対応。
     elif current_jockey.startswith(
@@ -14562,6 +14562,14 @@ def build_kawasaki_axis_bet_override(context):
     ):
         result["浮き輪"] = [["D", "G"]]
 
+    # 川崎1400m・主差し／副持続：ワイド3点目（浮き輪枠）をC-I。
+    if (
+        int(context.get("current_distance") or 0) == 1400
+        and context.get("axis_primary") == "差し"
+        and context.get("axis_secondary") == "持続"
+    ):
+        result["浮き輪"] = [["C", "I"]]
+
     return result
 
 
@@ -15871,6 +15879,14 @@ def build_sonoda_axis_bet_override(context):
     ):
         result["浮き輪"] = [["A", "B"]]
 
+    # 園田1400m限定：指定された主副脚質の三連複3点目。
+    if int(current_distance or 0) == 1400:
+        sonoda_style = (context.get("axis_primary"), context.get("axis_secondary"))
+        if sonoda_style == ("先行", "逃げ"):
+            result["三連複"][2] = ["A", "M", "K"]
+        elif sonoda_style == ("差し", "持続"):
+            result["三連複"][2] = ["A", "F", "D"]
+
     return result
 
 
@@ -17135,6 +17151,8 @@ if baba_name == "名古屋" and distance_num == 1500:
         current_bet_template["三連複"][2] = ["A", "E", "C"]
     if axis_primary_for_bet == "先行" and axis_secondary_for_bet == "持続":
         current_bet_template["三連複"][1] = ["A", "M", "I"]
+    if axis_primary_for_bet == "持続" and axis_secondary_for_bet == "なし":
+        current_bet_template["三連複"][1] = ["A", "C", "D"]
     current_bet_template["浮き輪"] = [["A", "M"]]
 
 
