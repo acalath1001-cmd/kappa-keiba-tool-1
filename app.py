@@ -1269,79 +1269,35 @@ def render_batch_results_summary():
 
     st.markdown("### 📈 全R一括検証結果")
 
-    total_col1, total_col2 = st.columns(2)
+    # スクショ用：1レース1行。距離・軸タイプ・個別回収率は省略。
+    from html import escape
 
-    with total_col1:
-        st.metric(
-            "総投資",
-            f"{total_batch_investment:,}円",
-        )
-        st.metric(
-            "総払戻",
-            f"{total_batch_return:,}円",
-        )
-
-    with total_col2:
-        st.metric(
-            "総収支",
-            f"{total_batch_profit:+,}円",
-        )
-        st.metric(
-            "全体回収率",
-            f"{total_batch_rate:.1f}%",
-        )
-
-    batch_copy_lines = [
-        "【全R一括検証】",
-    ]
-
-    for r in sorted(
-        completed_batch_results,
-        key=lambda x: x["R"],
-    ):
+    batch_copy_lines = ["【全R一括検証】"]
+    for r in sorted(completed_batch_results, key=lambda x: x["R"]):
         race_label = f"{r['R']}R"
         if r.get("状態") == "対象外":
-            batch_copy_lines.append(
-                f"{race_label}｜"
-                f"新馬戦・対象外｜"
-                f"投資0円｜"
-                f"払戻0円｜"
-                f"回収率0.0%"
-            )
-        elif r.get("検証モード") == "backfill":
-            batch_copy_lines.append(
-                f"{race_label}｜"
-                f"後詰め軸{r['軸']}番｜"
-                f"1番人気A{r.get('元A')}番｜"
-                f"後詰めF{r.get('元F')}番｜"
-                f"A-F"
-                f"{'一致' if r.get('AF一致') else '不一致'}｜"
-                f"結果{r['結果']}｜"
-                f"払戻{r['払戻']:,}円｜"
-                f"回収率{r['回収率']:.1f}%"
-            )
+            line = f"{race_label}｜新馬戦・対象外｜払戻0円"
         else:
-            batch_copy_lines.append(
-                f"{race_label}｜"
-                f"軸{r['軸']}番｜"
-                f"結果{r['結果']}｜"
-                f"払戻{r['払戻']:,}円｜"
-                f"回収率{r['回収率']:.1f}%"
-            )
+            axis_label = "後詰め軸" if r.get("検証モード") == "backfill" else "軸"
+            result_text = str(r["結果"]).replace(" ", "").replace("　", "")
+            line = f"{race_label}｜{axis_label}{r['軸']}番｜結果{result_text}｜払戻{r['払戻']:,}円"
+        batch_copy_lines.append(line)
 
     batch_copy_lines.extend([
         "",
-        f"総投資：{total_batch_investment:,}円",
-        f"総払戻：{total_batch_return:,}円",
-        f"総収支：{total_batch_profit:+,}円",
-        f"全体回収率：{total_batch_rate:.1f}%",
+        f"総投資：{total_batch_investment:,}円｜総払戻：{total_batch_return:,}円",
+        f"総収支：{total_batch_profit:+,}円｜全体回収率：{total_batch_rate:.1f}%",
     ])
-
-    st.markdown("### 📋 全R結果をコピー")
-    st.code(
-        "\n".join(batch_copy_lines),
-        language=None,
+    batch_summary_text = "\n".join(batch_copy_lines)
+    st.markdown(
+        '<div style="background:#fff;color:#17212b;border:1px solid #d9e2ec;'
+        'border-radius:8px;padding:10px;font-size:13px;line-height:1.4;'
+        'white-space:pre-wrap;overflow-wrap:anywhere;font-variant-numeric:tabular-nums;">'
+        + escape(batch_summary_text) + '</div>',
+        unsafe_allow_html=True,
     )
+    with st.expander("📋 全R結果をコピー"):
+        st.code(batch_summary_text, language=None)
 
     if st.button(
         "🗑 一括検証結果をクリア",
@@ -14570,6 +14526,23 @@ def build_kawasaki_axis_bet_override(context):
     ):
         result["浮き輪"] = [["C", "I"]]
 
+    # 川崎1400m・主先行／副逃げ：ワイド3点目（浮き輪枠）をF-J。
+    if (
+        int(context.get("current_distance") or 0) == 1400
+        and context.get("axis_primary") == "先行"
+        and context.get("axis_secondary") == "逃げ"
+    ):
+        result["浮き輪"] = [["F", "J"]]
+
+    # 川崎1600m限定・主先行／副持続：三連複3点目 A-B-I。
+    # ほかの距離・脚質条件や、三連複1/2点目・ワイドは維持する。
+    if (
+        int(context.get("current_distance") or 0) == 1600
+        and context.get("axis_primary") == "先行"
+        and context.get("axis_secondary") == "持続"
+    ):
+        result["三連複"][2] = ["A", "B", "I"]
+
     return result
 
 
@@ -14766,6 +14739,15 @@ def build_nagoya_himeji_axis_bet_override(context):
         # 展開待ち・他会場・他の買い目には影響させない。
         if context.get("axis_primary") == "差し":
             result["浮き輪"] = [["A", "F"]]
+
+    # 名古屋1500m・主差し／副なし：三連複1点目をA-B-M。
+    if (
+        context["track"] == "名古屋"
+        and int(context.get("current_distance") or 0) == 1500
+        and context.get("axis_primary") == "差し"
+        and context.get("axis_secondary") == "なし"
+    ):
+        result["三連複"][0] = ["A", "B", "M"]
 
     return result
 
@@ -15282,6 +15264,33 @@ def build_monbetsu_axis_bet_override(context):
         result["ワイド"][0] = ["A", "B"]
     else:
         result["ワイド"] = [["A", "B"]]
+
+    # 門別1000mのみ・主＝先行／副＝持続のとき、
+    # ワイド1点目を A-M にする。他の買い目は変更しない。
+    if (
+        int(context.get("current_distance") or 0) == 1000
+        and context.get("axis_primary") == "先行"
+        and context.get("axis_secondary") == "持続"
+    ):
+        result["ワイド"][0] = ["A", "M"]
+
+    # 門別1200mのみ・主＝逃げ／副＝先行のとき、
+    # 画面上のワイド2点目（浮き輪枠）を D-M2 に固定する。
+    # ワイド1点目・三連複・他の距離／脚質／会場は維持。
+    if (
+        int(context.get("current_distance") or 0) == 1200
+        and context.get("axis_primary") == "逃げ"
+        and context.get("axis_secondary") == "先行"
+    ):
+        result["浮き輪"] = [["D", "M2"]]
+
+    # 門別1200m・主先行／副逃げ：三連複2点目をA-F-H（穴4）。
+    if (
+        int(context.get("current_distance") or 0) == 1200
+        and context.get("axis_primary") == "先行"
+        and context.get("axis_secondary") == "逃げ"
+    ):
+        result["三連複"][1] = ["A", "F", "H"]
 
     return result
 
@@ -16158,6 +16167,13 @@ i_pool = [
     if get_num(item) != hole3_number_for_i
 ]
 
+# H＝穴4（後穴4）。未使用時も役割検証に候補1位を表示する。
+h_pool = unique_texts(
+    [ana_fourth_horse, ana_fifth_horse, ana_horse, ana_second_horse, ana_third_horse]
+    + [horse_text(h) for h in ana_fallback]
+    + all_bet_pool
+)
+
 # N＝穴5
 # 穴5を最優先にし、買い目内でA・Iと被った時だけ
 # 穴4 → 穴1 → 穴2 → 穴3 → その他候補の順へ送る。
@@ -16649,6 +16665,38 @@ m_horse_name_map = {
     for h in horses
 }
 
+# 門別のみ：Lと同じ「完全同距離・速い上がり2走平均」加点をM/M2にも使用。
+# 全出走馬の上がり順位から配点する。Mの候補資格や優先グループは変更しない。
+monbetsu_m_agari = {}
+if baba_name == "門別":
+    m_agari_averages = {}
+    for h in horses:
+        values = []
+        for run in h.get("距離付きタイム", []):
+            if run.get("競馬場") != "門別":
+                continue
+            try:
+                run_distance = float(run.get("距離", 0))
+                agari = float(run.get("上がり3F"))
+            except (TypeError, ValueError):
+                continue
+            if run_distance == distance_num and 30.0 <= agari <= 50.0:
+                values.append(agari)
+        if values:
+            best_two = sorted(values)[:2]
+            m_agari_averages[int(h["馬番"])] = (
+                round(sum(best_two) / len(best_two), 3), len(best_two)
+            )
+    ordered_averages = sorted(value[0] for value in m_agari_averages.values())
+    for number, (average, count) in m_agari_averages.items():
+        agari_rank = ordered_averages.index(average) + 1
+        monbetsu_m_agari[number] = {
+            "平均": average,
+            "採用走数": count,
+            "順位": agari_rank,
+            "加点": {1: 50, 2: 35, 3: 20, 4: 10}.get(agari_rank, 0),
+        }
+
 m_candidates = []
 
 for horse_no, horse_name in m_horse_name_map.items():
@@ -16695,6 +16743,9 @@ for horse_no, horse_name in m_horse_name_map.items():
         "馬番": horse_no,
         "馬名": horse_name,
         "Mスコア": m_score,
+        "M上がり3F加点": monbetsu_m_agari.get(horse_no, {}).get("加点", 0),
+        "M加点後スコア": m_score + monbetsu_m_agari.get(horse_no, {}).get("加点", 0),
+        "M上がり3F情報": monbetsu_m_agari.get(horse_no, {}),
         "該当数": m_hit_count,
         "順位合計": m_rank_sum,
         "順位詳細": rank_details,
@@ -16835,6 +16886,9 @@ def sort_m_group_by_time(group):
     return sorted(
         group,
         key=lambda h: (
+            # 門別のみ同じ優先グループ内で上がり加点後のM点を優先。
+            # 他会場の順位と、M候補資格・優先グループの並びは維持する。
+            -h["M加点後スコア"] if baba_name == "門別" else 0,
             # 同距離タイムを持つ馬を先にする
             (0 if ability_distance_time_map[h["馬番"]]["完全同距離"] else 1)
             if get_m_same_distance_time(h) is not None
@@ -16929,7 +16983,9 @@ if debug_mode:
             "2位=4点・3位=3点・4位=2点・5位=1点｜"
             "2部門以上＋主要5役外を最優先｜"
             "転入M救済は最大1頭｜"
-            "全14会場・各グループ内は同距離持ちタイム順"
+            + ("｜門別のみ上がり3F加点後Mスコアを優先（1位+50／2位+35／3位+20／4位+10）"
+               if baba_name == "門別" else "")
+            + "｜その他の会場は各グループ内で同距離持ちタイム順"
         )
 
         if not m_candidates:
@@ -16976,7 +17032,9 @@ if debug_mode:
                     f"{h['馬番']}番 {h['馬名']} "
                     f"｜持ちタイム {m_time_text} "
                     f"｜M {h['Mスコア']}点 "
-                    f"｜該当{h['該当数']}部門"
+                    + (f"＋上がり{h['M上がり3F加点']}点＝{h['M加点後スコア']}点 "
+                       if baba_name == "門別" else "")
+                    + f"｜該当{h['該当数']}部門"
                     f"{major_mark}"
                     f"{transfer_mark}"
                 )
@@ -17027,6 +17085,7 @@ alphabet_candidate_pools = {
     "G": g_pool,
     "I": i_pool,
     "N": n_pool,
+    "H": h_pool,
     "J": j_pool,
     "P": p_pool,
     "K": k_pool,
@@ -17154,6 +17213,9 @@ if baba_name == "名古屋" and distance_num == 1500:
     if axis_primary_for_bet == "持続" and axis_secondary_for_bet == "なし":
         current_bet_template["三連複"][1] = ["A", "C", "D"]
     current_bet_template["浮き輪"] = [["A", "M"]]
+    # 名古屋1500m・主先行／副持続だけワイド2点目をA-L。
+    if axis_primary_for_bet == "先行" and axis_secondary_for_bet == "持続":
+        current_bet_template["浮き輪"] = [["A", "L"]]
 
 
 alphabet_role_names = {
@@ -17170,6 +17232,7 @@ alphabet_role_names = {
     "G": "穴3",
     "I": "穴2",
     "N": "穴5",
+    "H": "穴4",
     "J": (
         "大井・共通TOP5展開2位"
         if oi_axis_has_sustain
@@ -17223,7 +17286,7 @@ else:
 
 
 # Pは末尾に登録。買い目テンプレートには追加しない。
-alphabet_priority.append("P")
+alphabet_priority.extend(["P", "H"])
 
 def collect_required_symbols(template):
     """
@@ -17906,7 +17969,7 @@ def make_unique_trio_bets(
             + [horse_text(h) for h in ana_fallback]
         )
     }
-    for symbol in ("E", "G", "I", "N"):
+    for symbol in ("E", "G", "I", "N", "H"):
         partner_rank_pools[symbol] = [
             h for h in alphabet_candidate_pools.get(symbol, [])
             if get_num(h) in hole_rank_numbers
@@ -18029,14 +18092,14 @@ def make_unique_trio_bets(
         search(0, [], [], [])
         return best_bet
 
-    def resolve_kochi_trio_fallback(symbol_list):
-        """高知専用。通常解決で落ちた三連複を3頭成立させる最終救済。
+    def resolve_kochi_nagoya_trio_fallback(symbol_list):
+        """高知・名古屋専用。通常解決で落ちた三連複を3頭成立させる最終救済。
 
         Aは現在の軸を固定し、相手2頭はまず各記号の本来候補順、
         それで成立しない時だけ全出走馬へ広げる。既存の1・2点目と
         同じ3頭になる組み合わせは採用しない。
         """
-        if baba_name != "高知" or len(symbol_list) != 3:
+        if baba_name not in {"高知", "名古屋"} or len(symbol_list) != 3:
             return None
 
         if "A" not in symbol_list:
@@ -18157,10 +18220,10 @@ def make_unique_trio_bets(
                 ["A", "D", "G"]
             )
 
-        # 高知だけ、通常の同役割繰り下げで成立しなかった時も
+        # 高知・名古屋だけ、通常の同役割繰り下げで成立しなかった時も
         # 三連複を欠落させない。Aは固定し、相手だけを救済する。
-        if resolved_bet is None and baba_name == "高知":
-            resolved_bet = resolve_kochi_trio_fallback(
+        if resolved_bet is None and baba_name in {"高知", "名古屋"}:
+            resolved_bet = resolve_kochi_nagoya_trio_fallback(
                 symbol_list
             )
 
