@@ -3106,7 +3106,8 @@ for i, horse in enumerate(real_horses, start=1):
     # JRA履歴馬の評価対象を整理
     #
     # JRAで走ったあと地方で1回でも走っていれば、
-    # 前進気勢・地力・展開・総合は地方走だけを使う。
+    # 共通の評価用データは地方走だけに絞る。
+    # 地力C・追い込みは別途、保存した全過去走からJRA実績も評価する。
     #
     # 地方未出走のJRA転入馬だけ、
     # JRA実績を残して警告対象にする。
@@ -5695,7 +5696,7 @@ def calc_corner_push_ranking(
             is_jra_push = run.get("競馬場") in JRA_PLACES
             if is_jra_push and start_index < 4 - run.get("実測地点数", 4):
                 continue
-            jra_push_factor = 1.30 if is_jra_push else 1.00
+            jra_push_factor = 1.70 if is_jra_push else 1.00
             flow = run[
                 "元通過順"
             ]
@@ -6006,9 +6007,6 @@ def render_corner_push_ranking(
             f"×{horse['距離倍率']}"
         )
 
-        st.caption(
-            f"詳細：{horse['詳細']}"
-        )
 
 
 # 2角→3角：中盤で自分から動ける力。
@@ -6182,10 +6180,13 @@ for horse in horses:
     # 同じ過去走データからセットで使用する
     # ==================================================
 
+    # 地力Cは転入後も、取得済みのJRA実績を地方実績と一緒に評価する。
+    # 他の役割で使う地方限定データは変更しない。
+    jiriki_runs = horse.get("全距離付きタイム", horse.get("距離付きタイム", []))
     evaluation_pairs = []
     mizusawa_long_distance_fallback_factor = 1.0
 
-    for item in horse.get("距離付きタイム", []):
+    for item in jiriki_runs:
         race_distance = item["距離"]
 
         if distance_num == 1400:
@@ -6210,10 +6211,7 @@ for horse in horses:
     # 対象距離がない場合だけ、
     # 取得済みの過去走全体へ戻す
     if not evaluation_pairs:
-        evaluation_pairs = horse.get(
-            "距離付きタイム",
-            []
-        )
+        evaluation_pairs = jiriki_runs
 
         # 水沢だけ、今回距離帯の実績がなく全過去走へ戻した場合は、
         # 近似距離の能力点を100％ではなく70％で評価する。
@@ -6248,7 +6246,7 @@ for horse in horses:
 
     # 過去5走すべてから、前に行った経験を数える
     # 距離フィルター前の通過順を使う
-    all_recent_flows = horse.get("通過順", [])[-5:]
+    all_recent_flows = [item.get("通過順", []) for item in jiriki_runs[-5:]]
 
     front_experience_count = sum(
         1
@@ -12524,11 +12522,11 @@ if distance_num >= 1900:
             info.get(
                 "同距離3着以内回数",
                 0,
-            ) >= 1
+            ) >= 2
             or info.get(
                 "同距離同格以上5着以内回数",
                 0,
-            ) >= 1
+            ) >= 2
         )
 
         if not is_strong_long_watch:
@@ -13233,6 +13231,25 @@ for horse in horses:
     existing_candidate["転入好走"] = True
 
 
+# P/K/L上位3頭の押し上げ実績を抑え候補へ反映する。
+# 同じ馬が複数部門に入っても加算せず、最高の順位ボーナスだけ使う。
+ana_push_bonus_map = {}
+for push_ranking in (corner_push_2to3, corner_push_3to4, corner_push_2to4):
+    for push_rank, push_horse in enumerate(push_ranking[:3], start=1):
+        if push_horse.get("スコア", 0) <= 0:
+            continue
+        push_number = int(push_horse["馬番"])
+        ana_push_bonus_map[push_number] = max(
+            ana_push_bonus_map.get(push_number, 0),
+            {1: 30, 2: 20, 3: 10}[push_rank],
+        )
+
+for candidate in ana_candidates:
+    push_bonus = ana_push_bonus_map.get(int(candidate["馬番"]), 0)
+    candidate["追い込み順位加点"] = push_bonus
+    candidate["スコア"] += push_bonus
+
+
 ana_candidates = sorted(
     ana_candidates,
     key=lambda x: (
@@ -13278,6 +13295,9 @@ if debug_mode:
         for h in ana_candidates:
 
             watch_marks = []
+
+            if h.get("追い込み順位加点", 0):
+                watch_marks.append(f"追い込み+{h['追い込み順位加点']}")
 
             if h.get(
                 "転入好走",
@@ -17149,6 +17169,66 @@ if baba_name in {"盛岡", "水沢"}:
     current_bet_template["浮き輪"] = current_bet_template["浮き輪"][:1]
 
 
+# 門別1700mのみ：主先行・副追い込みのワイド2点目をI-G。
+if (
+    baba_name == "門別"
+    and distance_num == 1700
+    and axis_primary_for_bet == "先行"
+    and axis_secondary_for_bet == "追い込み"
+):
+    current_bet_template["浮き輪"] = [["I", "G"]]
+
+
+# 川崎1400mのみ：主逃げ・副先行のワイド2点目をA-L。
+if (
+    baba_name == "川崎"
+    and distance_num == 1400
+    and axis_primary_for_bet == "逃げ"
+    and axis_secondary_for_bet == "先行"
+):
+    current_bet_template["浮き輪"] = [["A", "L"]]
+
+
+# 門別1200mのみ：主逃げ・副なしの三連複3点目をA-E-I、ワイド2点目をA-E。
+if (
+    baba_name == "門別"
+    and distance_num == 1200
+    and axis_primary_for_bet == "逃げ"
+    and axis_secondary_for_bet == "なし"
+):
+    current_bet_template["三連複"][2] = ["A", "E", "I"]
+    current_bet_template["浮き輪"] = [["A", "E"]]
+
+
+# 門別1500mのみ：主逃げ・副先行の三連複1点目をA-B-D。
+if (
+    baba_name == "門別"
+    and distance_num == 1500
+    and axis_primary_for_bet == "逃げ"
+    and axis_secondary_for_bet == "先行"
+):
+    current_bet_template["三連複"][0] = ["A", "B", "D"]
+
+
+# 園田1700mのみ：主先行・副タイプ不問で三連複2点目をA-B-L。
+if (
+    baba_name == "園田"
+    and distance_num == 1700
+    and axis_primary_for_bet == "先行"
+):
+    current_bet_template["三連複"][1] = ["A", "B", "L"]
+
+
+# 園田1400mのみ：主差し・副逃げの三連複2点目をA-F-D。
+if (
+    baba_name == "園田"
+    and distance_num == 1400
+    and axis_primary_for_bet == "差し"
+    and axis_secondary_for_bet == "逃げ"
+):
+    current_bet_template["三連複"][1] = ["A", "F", "D"]
+
+
 # 園田1230m：全軸タイプ共通でワイド1点目のみA-M。
 # 主脚質・副脚質ごとの既存ルール適用後に最優先で反映する。
 if baba_name == "園田" and distance_num == 1230:
@@ -17170,15 +17250,23 @@ if (
 
 
 
-# 園田1230mのみ：主逃げ・副先行の三連複2点目をA-M-G、3点目をA-F-E。
+# 園田1230mのみ：主逃げ・副先行の三連複2点目をA-B-F、3点目をA-F-E。
 if (
     baba_name == "園田"
     and distance_num == 1230
     and axis_primary_for_bet == "逃げ"
     and axis_secondary_for_bet == "先行"
 ):
-    current_bet_template["三連複"][1] = ["A", "M", "G"]
+    current_bet_template["三連複"][1] = ["A", "B", "F"]
     current_bet_template["三連複"][2] = ["A", "F", "E"]
+    current_bet_template["ワイド"][0] = ["A", "B"]
+
+# 園田1230mのみ：副なしの個別指定。
+if baba_name == "園田" and distance_num == 1230 and axis_secondary_for_bet == "なし":
+    if axis_primary_for_bet == "逃げ":
+        current_bet_template["三連複"][2] = ["A", "I", "H"]
+    elif axis_primary_for_bet == "差し":
+        current_bet_template["浮き輪"] = [["A", "E"]]
 
 
 
@@ -17213,6 +17301,9 @@ if baba_name == "名古屋" and distance_num == 1500:
     if axis_primary_for_bet == "持続" and axis_secondary_for_bet == "なし":
         current_bet_template["三連複"][1] = ["A", "C", "D"]
     current_bet_template["浮き輪"] = [["A", "M"]]
+    # 名古屋1500m・主差し／副なし：三連複3点目をA-F-H。
+    if axis_primary_for_bet == "差し" and axis_secondary_for_bet == "なし":
+        current_bet_template["三連複"][2] = ["A", "F", "H"]
     # 名古屋1500m・主先行／副持続だけワイド2点目をA-L。
     if axis_primary_for_bet == "先行" and axis_secondary_for_bet == "持続":
         current_bet_template["浮き輪"] = [["A", "L"]]
