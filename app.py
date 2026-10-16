@@ -14563,6 +14563,24 @@ def build_kawasaki_axis_bet_override(context):
     ):
         result["三連複"][2] = ["A", "B", "I"]
 
+    # 川崎1600m限定・主逃げ／副なし：三連複3点目 A-F-E、ワイド2点目 F-E。
+    if (
+        int(context.get("current_distance") or 0) == 1600
+        and context.get("axis_primary") == "逃げ"
+        and context.get("axis_secondary") == "なし"
+    ):
+        result["三連複"][2] = ["A", "F", "E"]
+        result["ワイド"][1] = ["F", "E"]
+
+    # 川崎1500m限定・主差し／副持続：三連複3点目 A-E-C、ワイド2点目 A-C。
+    if (
+        int(context.get("current_distance") or 0) == 1500
+        and context.get("axis_primary") == "差し"
+        and context.get("axis_secondary") == "持続"
+    ):
+        result["三連複"][2] = ["A", "E", "C"]
+        result["ワイド"][1] = ["A", "C"]
+
     return result
 
 
