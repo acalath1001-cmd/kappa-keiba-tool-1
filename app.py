@@ -13250,6 +13250,22 @@ for candidate in ana_candidates:
     candidate["スコア"] += push_bonus
 
 
+# 抑え共通（E/I/G/H/N）：持ちタイムを強めに直接加点する。
+# 総合のタイム点だけを再利用し、距離・走数・高知・NAR救済の補正を維持。
+# Eはこの共通ランキングの1位。既存の救済優先順位は維持する。
+# 通常120点→180点、80点→120点、40点→60点。追加点の上限は180点。
+ana_time_score_map = {
+    int(h["馬番"]): max(0.0, float(h.get("持ちタイムスコア", 0) or 0))
+    for h in total_candidates
+}
+for candidate in ana_candidates:
+    time_base = ana_time_score_map.get(int(candidate["馬番"]), 0.0)
+    time_bonus = round(min(180.0, time_base * 1.5), 1)
+    candidate["抑え持ちタイム元点"] = time_base
+    candidate["抑え持ちタイム加点"] = time_bonus
+    candidate["スコア"] += time_bonus
+
+
 ana_candidates = sorted(
     ana_candidates,
     key=lambda x: (
@@ -13295,6 +13311,9 @@ if debug_mode:
         for h in ana_candidates:
 
             watch_marks = []
+
+            if h.get("抑え持ちタイム加点", 0):
+                watch_marks.append(f"持ちタイム+{h['抑え持ちタイム加点']:.1f}")
 
             if h.get("追い込み順位加点", 0):
                 watch_marks.append(f"追い込み+{h['追い込み順位加点']}")
@@ -15071,6 +15090,7 @@ def build_kochi_saga_axis_bet_override(context):
         elif saga_style == ("逃げ", "なし"):
             result["三連複"][0] = ["A", "B", "E"]
             result["三連複"][1] = ["A", "M", "G"]
+            result["浮き輪"] = [["M", "I"]]  # 画面上のワイド2点目
         elif saga_style == ("持続", "追い込み"):
             result["三連複"][2] = ["A", "I", "N"]
         elif saga_style == ("先行", "逃げ"):
@@ -20642,6 +20662,55 @@ if debug_mode and odds_adjustment_logs:
                 f" → {after_text}（{after_odds_text}）"
                 f"｜{item['変更記号']}の次候補"
             )
+
+# 全会場・展開待ち／副なし：3点設定の不足をA-B-E優先で補充。
+# A固定、Bを維持してEの次候補、次にBの次候補を試す。
+# 既存買い目・除外指定を維持し、候補不足時だけ全出走馬を安全網にする。
+def fill_wait_none_trios(existing, target, primary, secondary, selected, fallback,
+                         pools, runners, excluded, number_of):
+    if primary != "展開待ち" or secondary != "なし" or target < 3 or len(existing) >= target:
+        return existing
+    result = list(existing)
+    excluded = set(excluded or ())
+    runner_map = {number_of(h): h for h in runners if number_of(h) is not None}
+    axis = selected.get("A") or fallback.get("A")
+    axis_num = number_of(axis) if axis else None
+    if axis_num is None or axis_num not in runner_map or axis_num in excluded:
+        return result
+    used = {frozenset(number_of(h) for h in bet) for bet in result}
+
+    def candidates(role, include_all=False):
+        values = [selected.get(role), fallback.get(role)] + list(pools.get(role, []))
+        if include_all:
+            values += list(runners)
+        seen = set()
+        out = []
+        for horse in values:
+            num = number_of(horse) if horse else None
+            if num is None or num == axis_num or num in excluded or num not in runner_map or num in seen:
+                continue
+            seen.add(num)
+            out.append(horse)
+        return out
+
+    for include_all in (False, True):
+        for b_horse in candidates("B", include_all):
+            for e_horse in candidates("E", include_all):
+                key = frozenset((axis_num, number_of(b_horse), number_of(e_horse)))
+                if len(key) != 3 or key in used:
+                    continue
+                result.append([axis, b_horse, e_horse])
+                used.add(key)
+                if len(result) >= target:
+                    return result
+    return result
+
+trio_bets = fill_wait_none_trios(
+    trio_bets, required_trio_count, axis_primary_for_bet, axis_secondary_for_bet,
+    final_bet_symbols, normal_bet_symbols, alphabet_candidate_pools,
+    all_bet_pool, set(kirisute_horse_numbers or ()) | set(cut_numbers_for_bets or ()), get_num,
+)
+
 
 # ==================================================
 # 笠松専用・最終三連複不足ガード
