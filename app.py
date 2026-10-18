@@ -15142,6 +15142,19 @@ def build_kochi_saga_axis_bet_override(context):
             result["三連複"][2] = ["A", "D", "I"]
         result["浮き輪"] = [["B", "M2"]]
 
+    # 佐賀1300m・主軸が持続：副タイプ不問で三連複3点目をA-C-K。
+    if (
+        context["track"] == "佐賀"
+        and int(context.get("current_distance") or 0) == 1300
+        and context.get("axis_primary") == "持続"
+    ):
+        result["三連複"][2] = ["A", "C", "K"]
+
+    # 佐賀・全距離／全軸共通：ワイド1点目はA-F、同一馬ならA-B。
+    # 距離・脚質別の指定より後で適用し、2点目（浮き輪枠）は維持する。
+    if context["track"] == "佐賀":
+        result["ワイド"] = [["A", "B" if context["a_is_f"] else "F"]]
+
     return result
 
 
@@ -17345,6 +17358,36 @@ if baba_name == "名古屋" and distance_num == 1500:
     # 名古屋1500m・主先行／副持続だけワイド2点目をA-L。
     if axis_primary_for_bet == "先行" and axis_secondary_for_bet == "持続":
         current_bet_template["浮き輪"] = [["A", "L"]]
+
+
+
+# 全会場共通：三連複1点目A-B、2点目A-Fを基本にする。
+# 会場・距離・脚質別ルール確定後に適用し、各3頭目と3点目以降は維持。
+# 同一馬判定は競合回避前の各役候補1位で行う（A=Fを最優先）。
+def unify_first_two_trio_templates(template, pools, number_of):
+    updated = {kind: [list(bet) for bet in bets] for kind, bets in template.items()}
+    trios = updated.get("三連複", [])
+
+    def first_number(role):
+        candidates = pools.get(role, [])
+        return number_of(candidates[0]) if candidates else None
+
+    a_num, b_num, f_num = (first_number(role) for role in ("A", "B", "F"))
+    second_role = "F"
+    if a_num is not None and f_num is not None and a_num == f_num:
+        second_role = "B"
+    elif b_num is not None and f_num is not None and b_num == f_num:
+        second_role = "M"
+
+    if trios and len(trios[0]) == 3:
+        trios[0] = ["A", "B", trios[0][2]]
+    if len(trios) >= 2 and len(trios[1]) == 3:
+        trios[1] = ["A", second_role, trios[1][2]]
+    return updated
+
+current_bet_template = unify_first_two_trio_templates(
+    current_bet_template, alphabet_candidate_pools, get_num,
+)
 
 
 alphabet_role_names = {
