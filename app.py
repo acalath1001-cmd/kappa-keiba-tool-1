@@ -14088,15 +14088,18 @@ def build_kanazawa_axis_bet_override(context):
             result["三連複"][0] = ["A", "B", "I"]
     elif distance == 1400:
         if style == ("逃げ", "先行"):
-            result["三連複"][0] = ["A", "F", "M"]
-            # 2点目・3点目とも指定はA-M-E。実馬重複は既存処理で扱う。
-            result["三連複"][1] = ["A", "M", "E"]
-            result["三連複"][2] = ["A", "M", "E"]
+            result["三連複"][0] = ["A", "B", "E"]
+            result["三連複"][1] = ["A", "F", "H"]
+            result["三連複"][2] = ["A", "K", "E"]
             result["ワイド"] = [["A", "B"]]
             result["浮き輪"] = [["A", "M"]]
         elif style == ("先行", "逃げ"):
             result["三連複"][0] = ["A", "B", "I"]
             result["ワイド"] = [["A", "B"]]
+
+    # 金沢1500m限定：主逃げなら副タイプに関係なく三連複3点目をA-D-K。
+    if distance == 1500 and context.get("axis_primary") == "逃げ":
+        result["三連複"][2] = ["A", "D", "K"]
 
     return result
 
@@ -17210,7 +17213,7 @@ current_bet_template = apply_venue_axis_bet_override(
 
 # 岩手は他会場と同様、三連複3点＋ワイド2点（通常1点＋追加1点）。
 # 先頭2点の三連複とアルファベット優先順位は変更しない。
-# 3点目は共通の補完形を使用し、岩手専用の脚質・距離別上書きは行わない。
+# 3点目は共通の補完形を使用し、下記の盛岡限定条件だけ個別に上書きする。
 if baba_name in {"盛岡", "水沢"}:
     current_bet_template["三連複"] = (
         current_bet_template["三連複"][:2]
@@ -17218,6 +17221,40 @@ if baba_name in {"盛岡", "水沢"}:
     )
     current_bet_template["ワイド"] = current_bet_template["ワイド"][:1]
     current_bet_template["浮き輪"] = current_bet_template["浮き輪"][:1]
+
+
+# 盛岡1600m限定：全軸タイプ共通でワイド2点目をF-M2にする。
+if baba_name == "盛岡" and distance_num == 1600:
+    current_bet_template["浮き輪"] = [["F", "M2"]]
+
+
+# 盛岡1000m限定：主先行なら副タイプに関係なく三連複1点目をA-B-Cにする。
+if (
+    baba_name == "盛岡"
+    and distance_num == 1000
+    and axis_primary_for_bet == "先行"
+):
+    current_bet_template["三連複"][0] = ["A", "B", "C"]
+
+
+# 盛岡1600m限定：主差し・副持続の三連複1点目をA-B-Cにする。
+if (
+    baba_name == "盛岡"
+    and distance_num == 1600
+    and axis_primary_for_bet == "差し"
+    and axis_secondary_for_bet == "持続"
+):
+    current_bet_template["三連複"][0] = ["A", "B", "C"]
+
+
+# 盛岡1200m限定：主逃げ・副なしの三連複3点目をA-E-Dにする。
+if (
+    baba_name == "盛岡"
+    and distance_num == 1200
+    and axis_primary_for_bet == "逃げ"
+    and axis_secondary_for_bet == "なし"
+):
+    current_bet_template["三連複"][2] = ["A", "E", "D"]
 
 
 # 門別1700mのみ：主先行・副追い込みのワイド2点目をI-G。
@@ -17359,6 +17396,17 @@ if baba_name == "名古屋" and distance_num == 1500:
     if axis_primary_for_bet == "先行" and axis_secondary_for_bet == "持続":
         current_bet_template["浮き輪"] = [["A", "L"]]
 
+
+
+# 浦和1500m限定：全軸共通ワイド3点目と、主副タイプ別の三連複指定。
+if baba_name == "浦和" and distance_num == 1500:
+    current_bet_template["浮き輪"] = [["F", "C"]]  # 表示上のワイド3点目
+    if axis_primary_for_bet == "持続" and axis_secondary_for_bet == "追い込み":
+        current_bet_template["三連複"][0] = ["A", "B", "H"]
+    elif axis_primary_for_bet == "逃げ" and axis_secondary_for_bet == "先行":
+        current_bet_template["三連複"][0] = ["A", "B", "E"]
+    elif axis_primary_for_bet == "持続" and axis_secondary_for_bet == "なし":
+        current_bet_template["三連複"][2] = ["A", "K", "N"]
 
 
 # 全会場共通：三連複1点目A-B、2点目A-Fを基本にする。
