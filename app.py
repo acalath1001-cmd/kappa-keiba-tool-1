@@ -8774,10 +8774,26 @@ def get_tenkai_time_leader_numbers(horse_list):
 tenkai_time_leader_numbers = get_tenkai_time_leader_numbers(horses)
 
 
+def is_tenkai_distance_shortening(horse, current_distance):
+    """全過去走の先頭（前走）より今回が短い時だけ消去を免除する。"""
+    runs = horse.get("全距離付きタイム")
+    if runs is None:
+        runs = horse.get("距離付きタイム", [])
+    if not runs:
+        return False
+    try:
+        previous = float(runs[0].get("距離", 0))
+        current = float(current_distance or 0)
+    except (TypeError, ValueError):
+        return False
+    return 0 < current < previous < float("inf")
+
+
 def judge_tenkai_elimination(
     horse,
     long_distance_info=None,
     relax_recent_losses=False,
+    current_distance=None,
 ):
     """
     展開馬をスコア比較する前の消去判定。
@@ -8806,6 +8822,7 @@ def judge_tenkai_elimination(
 
     NAR当距離の最高タイム1位（同率含む）は①のみ免除する。
     ②〜④と通常の垂れ減点は維持する。時計の比較は2頭以上必要。
+    前走より今回が距離短縮なら①〜④すべて免除する。数値減点は維持。
     軸馬自身は別で除外する。
     """
 
@@ -8901,6 +8918,10 @@ def judge_tenkai_elimination(
                 "最新走大失速＋8着以下"
             )
 
+    distance_shortening_rescue = is_tenkai_distance_shortening(horse, current_distance)
+    if distance_shortening_rescue:
+        reasons = []
+
     # 同じ理由が重なった時は表示を整理する
     unique_reasons = []
     for reason in reasons:
@@ -8908,6 +8929,7 @@ def judge_tenkai_elimination(
             unique_reasons.append(reason)
 
     return {
+        "距離短縮消去救済": distance_shortening_rescue,
         "消去": bool(unique_reasons),
         "理由": unique_reasons,
         "直近着順": recent_finishes,
@@ -9444,7 +9466,7 @@ def calc_sonoda_820_shortening_bonus(
 # ・直近2走連続大敗条件
 # を消去理由から外す。
 #
-# 重度近走前崩れと最新走大失速＋大敗は強制消去として残す。
+# 距離短縮馬は全会場で着順不振・前崩れ・大失速の強制消去を免除する。
 # --------------------------------------------------
 tenkai_pre_candidates = []
 tenkai_eliminated_candidates = []
@@ -9473,6 +9495,7 @@ for horse in horses:
         horse,
         long_distance_info=long_distance_info,
         relax_recent_losses=sonoda_820_relax,
+        current_distance=distance_num,
     )
 
     if elimination["消去"]:
@@ -11154,6 +11177,7 @@ if not tenkai_candidates:
         if (
             horse.get("展開消去前崩れ", False)
             and horse_no not in tenkai_time_leader_numbers
+            and not is_tenkai_distance_shortening(horse, distance_num)
         ):
             continue
 
@@ -14079,7 +14103,10 @@ def build_kanazawa_axis_bet_override(context):
     distance = int(context.get("current_distance") or 0)
     style = (context.get("axis_primary"), context.get("axis_secondary"))
     if distance == 1500:
-        if style == ("先行", "持続"):
+        if style == ("先行", "追い込み"):
+            result["三連複"][1] = ["A", "F", "C"]
+            result["浮き輪"] = [["A", "C"]]
+        elif style == ("先行", "持続"):
             result["三連複"][1] = ["A", "B", "G"]
             result["三連複"][2] = ["A", "M", "N"]
         elif style == ("差し", "なし"):
@@ -14254,22 +14281,25 @@ def build_kasamatsu_axis_bet_override(context):
     ):
         result["三連複"][1] = ["A", "F", "L"]
 
-    # 笠松1400mのみ・主＝先行／副＝追い込みの時は、三連複1点目を A-B-M にする。
+    # 笠松1400m・主先行／副追い込み：三連複1点目A-B-M、3点目A-M-E、ワイド2点目M-E。
     if (
         int(context.get("current_distance") or 0) == 1400
         and context.get("axis_primary") == "先行"
         and context.get("axis_secondary") == "追い込み"
     ):
         result["三連複"][0] = ["A", "B", "M"]
+        result["三連複"][2] = ["A", "M", "E"]
+        result["浮き輪"] = [["M", "E"]]
 
     # 笠松1400mのみ・主＝差し／副＝なしの時は、
-    # 三連複3点目を A-M2-D、画面上のワイド2点目を A-D にする。
+    # 三連複1点目A-B-D、3点目A-M2-D、画面上のワイド2点目A-D。
     # 既存の差し副なしA-M-Dより後で上書きし、1400mだけ変更する。
     if (
         int(context.get("current_distance") or 0) == 1400
         and context.get("axis_primary") == "差し"
         and context.get("axis_secondary") == "なし"
     ):
+        result["三連複"][0] = ["A", "B", "D"]
         result["三連複"][2] = ["A", "M2", "D"]
         result["浮き輪"] = [["A", "D"]]
 
@@ -15158,6 +15188,16 @@ def build_kochi_saga_axis_bet_override(context):
     if context["track"] == "佐賀":
         result["ワイド"] = [["A", "B" if context["a_is_f"] else "F"]]
 
+    # 高知1600mのみ・主先行／副持続：三連複2点目A-F-H、ワイド2点目A-I。
+    if (
+        context["track"] == "高知"
+        and int(context.get("current_distance") or 0) == 1600
+        and context.get("axis_primary") == "先行"
+        and context.get("axis_secondary") == "持続"
+    ):
+        result["三連複"][1] = ["A", "F", "H"]
+        result["浮き輪"] = [["A", "I"]]
+
     return result
 
 
@@ -15365,6 +15405,23 @@ def build_monbetsu_axis_bet_override(context):
         and context.get("axis_secondary") == "逃げ"
     ):
         result["三連複"][1] = ["A", "F", "H"]
+
+    # 門別1200mのみ・主先行／副持続：三連複3点目A-E-D、ワイド2点目A-D。
+    if (
+        int(context.get("current_distance") or 0) == 1200
+        and context.get("axis_primary") == "先行"
+        and context.get("axis_secondary") == "持続"
+    ):
+        result["三連複"][2] = ["A", "E", "D"]
+        result["浮き輪"] = [["A", "D"]]
+
+    # 門別1000mのみ・主逃げ／副先行：ワイド2点目M-I。
+    if (
+        int(context.get("current_distance") or 0) == 1000
+        and context.get("axis_primary") == "逃げ"
+        and context.get("axis_secondary") == "先行"
+    ):
+        result["浮き輪"] = [["M", "I"]]
 
     return result
 
@@ -15943,14 +16000,14 @@ def build_sonoda_axis_bet_override(context):
         result["三連複"][2] = ["A", "B", "I"]
 
     # 園田1400mのみ・主＝先行／副＝持続の時は、
-    # 画面上のワイド2点目（浮き輪枠）だけを A-F にする。
+    # 画面上のワイド2点目（浮き輪枠）だけを A-L にする。
     # ワイド1点目・三連複・他距離・他会場には影響させない。
     if (
         int(current_distance or 0) == 1400
         and context.get("axis_primary") == "先行"
         and context.get("axis_secondary") == "持続"
     ):
-        result["浮き輪"] = [["A", "F"]]
+        result["浮き輪"] = [["A", "L"]]
 
     # 園田1400mのみ・主＝先行／副＝逃げの時は、
     # 画面上のワイド2点目（浮き輪枠）だけを A-B にする。
@@ -15969,6 +16026,34 @@ def build_sonoda_axis_bet_override(context):
             result["三連複"][2] = ["A", "M", "K"]
         elif sonoda_style == ("差し", "持続"):
             result["三連複"][2] = ["A", "F", "D"]
+
+    # 園田1870mのみ・主逃げ／副追い込み：三連複3点目A-E-K。
+    # 1700m以上の逃げ共通指定より後で適用する。
+    if (
+        int(current_distance or 0) == 1870
+        and context.get("axis_primary") == "逃げ"
+        and context.get("axis_secondary") == "追い込み"
+    ):
+        result["三連複"][2] = ["A", "E", "K"]
+
+    # 園田820mのみ・主先行／副持続：三連複3点目A-E-G、ワイド2点目A-E。
+    # 820m前受け・主先行の共通指定より後で適用する。
+    if (
+        int(current_distance or 0) == 820
+        and context.get("axis_primary") == "先行"
+        and context.get("axis_secondary") == "持続"
+    ):
+        result["三連複"][2] = ["A", "E", "G"]
+        result["浮き輪"] = [["A", "E"]]
+
+    # 園田1230mのみ・主先行／副持続：三連複3点目A-M2-D、ワイド2点目A-M2。
+    if (
+        int(current_distance or 0) == 1230
+        and context.get("axis_primary") == "先行"
+        and context.get("axis_secondary") == "持続"
+    ):
+        result["三連複"][2] = ["A", "M2", "D"]
+        result["浮き輪"] = [["A", "M2"]]
 
     return result
 
@@ -17396,6 +17481,17 @@ if baba_name == "名古屋" and distance_num == 1500:
     if axis_primary_for_bet == "先行" and axis_secondary_for_bet == "持続":
         current_bet_template["浮き輪"] = [["A", "L"]]
 
+
+
+# 浦和2000mのみ・主先行／副追い込み：三連複3点目A-F-M、ワイド2点目A-M。
+if (
+    baba_name == "浦和"
+    and distance_num == 2000
+    and axis_primary_for_bet == "先行"
+    and axis_secondary_for_bet == "追い込み"
+):
+    current_bet_template["三連複"][2] = ["A", "F", "M"]
+    current_bet_template["ワイド"][1] = ["A", "M"]
 
 
 # 浦和1500m限定：全軸共通ワイド3点目と、主副タイプ別の三連複指定。
