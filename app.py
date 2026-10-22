@@ -14198,14 +14198,14 @@ def build_kasamatsu_axis_bet_override(context):
         result["三連複"][2] = ["A", "B", "G"]
 
     # 笠松1400mのみ・主＝先行／副＝逃げの時は、
-    # 三連複2点目だけを A-D-G に変更する。
+    # 三連複2点目だけを A-F-C に変更する。
     # 既存の3点目A-B-G、1点目・ワイド、他距離・他会場には影響させない。
     if (
         int(context.get("current_distance") or 0) == 1400
         and context.get("axis_primary") == "先行"
         and context.get("axis_secondary") == "逃げ"
     ):
-        result["三連複"][1] = ["A", "D", "G"]
+        result["三連複"][1] = ["A", "F", "C"]
 
     # 笠松のみ、主：先行・副：追い込みのとき、
     # 三連複3点目だけをA-B-Kに変更する。
@@ -14313,14 +14313,38 @@ def build_kasamatsu_axis_bet_override(context):
             result["ワイド"] = [["A", "B"]]
 
     # 笠松1580mのみ、軸タイプ・主副脚質に関係なく
-    # 三連複2点目を A-B-F、ワイド1点目を A-E に固定する。
+    # 三連複2点目を A-F-E、ワイド1点目を A-E に固定する。
     # 他の買い目・1400m・他会場には影響させない。
     if int(context.get("current_distance") or 0) == 1580:
-        result["三連複"][1] = ["A", "B", "F"]
+        result["三連複"][1] = ["A", "F", "E"]
         if result.get("ワイド"):
             result["ワイド"][0] = ["A", "E"]
         else:
             result["ワイド"] = [["A", "E"]]
+
+    # 笠松1580mのみ・主先行／副なし：三連複2点目A-F-E。
+    if (
+        int(context.get("current_distance") or 0) == 1580
+        and context.get("axis_primary") == "先行"
+        and context.get("axis_secondary") == "なし"
+    ):
+        result["三連複"][1] = ["A", "F", "E"]
+
+    # 笠松1580mのみ・主逃げ／副追い込み：三連複2点目A-F-E。
+    if (
+        int(context.get("current_distance") or 0) == 1580
+        and context.get("axis_primary") == "逃げ"
+        and context.get("axis_secondary") == "追い込み"
+    ):
+        result["三連複"][1] = ["A", "F", "E"]
+
+    # 笠松1580mのみ・主先行／副追い込み：三連複2点目A-F-E。
+    if (
+        int(context.get("current_distance") or 0) == 1580
+        and context.get("axis_primary") == "先行"
+        and context.get("axis_secondary") == "追い込み"
+    ):
+        result["三連複"][1] = ["A", "F", "E"]
 
     # 笠松1400m・1580mのみ、主＝逃げ／副＝先行の時、
     # 三連複3点目だけ A-B-M にする。
@@ -14422,7 +14446,7 @@ def build_urawa_funabashi_axis_bet_override(context):
         result["ワイド"][1] = ["A", "L"]
 
     # 浦和1500mのみ・主：逃げ・副：先行の時だけ、
-    # 三連複2点目を A-C-E に固定する。
+    # 三連複2点目を A-F-G に固定する。
     # 他距離・他主副脚質・ワイド・浮き輪・船橋には影響させない。
     if (
         context.get("track") == "浦和"
@@ -14430,7 +14454,7 @@ def build_urawa_funabashi_axis_bet_override(context):
         and context.get("axis_primary") == "逃げ"
         and context.get("axis_secondary") == "先行"
     ):
-        result["三連複"][1] = ["A", "C", "E"]
+        result["三連複"][1] = ["A", "F", "G"]
 
     # 浦和1400m・1500mのみ、軸タイプが差しの時は、
     # 三連複3点目を A-M-M2 に固定する。
@@ -15102,8 +15126,8 @@ def build_kochi_saga_axis_bet_override(context):
         elif saga_style == ("逃げ", "先行"):
             result["三連複"][1] = ["A", "F", "E"]
         elif saga_style in {("先行", "追い込み"), ("差し", "なし")}:
-            result["三連複"][1] = ["A", "B", "F"]
-            result["三連複"][2] = ["A", "F", "E"]
+            result["三連複"][1] = ["A", "F", "E"]
+            result["三連複"][2] = ["A", "M", "E"]
         elif saga_style == ("持続", "追い込み"):
             result["三連複"][2] = ["A", "B", "K"]
 
@@ -15330,7 +15354,7 @@ def build_monbetsu_axis_bet_override(context):
         result["三連複"][2] = ["A", "D", "E"]
 
     # 門別1600m・2000mのみ・主脚質が逃げの時だけ、
-    # 三連複2点目を A-B-F に固定する。
+    # 三連複2点目を A-F-E に固定する。
     # 先行を含む他の前受け軸には適用しない。
     # 門別内の他の主副脚質例外より後で最終上書きすることで、
     # 1600m・2000m以外・他脚質・他会場には影響させない。
@@ -15338,7 +15362,7 @@ def build_monbetsu_axis_bet_override(context):
         context.get("axis_primary") == "逃げ"
         and int(context.get("current_distance") or 0) in {1600, 2000}
     ):
-        result["三連複"][1] = ["A", "B", "F"]
+        result["三連複"][1] = ["A", "F", "E"]
 
     # 門別1700mのみ・主脚質が逃げの時だけ、
     # 三連複2点目を A-D-L に固定する。
@@ -15422,6 +15446,14 @@ def build_monbetsu_axis_bet_override(context):
         and context.get("axis_secondary") == "先行"
     ):
         result["浮き輪"] = [["M", "I"]]
+
+    # 門別1800mのみ・主持続／副なし：三連複3点目A-M-G。
+    if (
+        int(context.get("current_distance") or 0) == 1800
+        and context.get("axis_primary") == "持続"
+        and context.get("axis_secondary") == "なし"
+    ):
+        result["三連複"][2] = ["A", "M", "G"]
 
     return result
 
@@ -16045,6 +16077,22 @@ def build_sonoda_axis_bet_override(context):
     ):
         result["三連複"][2] = ["A", "E", "G"]
         result["浮き輪"] = [["A", "E"]]
+
+    # 園田1400mのみ・主持続／副追い込み：三連複3点目A-M-D。
+    if (
+        int(current_distance or 0) == 1400
+        and context.get("axis_primary") == "持続"
+        and context.get("axis_secondary") == "追い込み"
+    ):
+        result["三連複"][2] = ["A", "M", "D"]
+
+    # 園田1230mのみ・主先行／副追い込み：三連複3点目A-M-C。
+    if (
+        int(current_distance or 0) == 1230
+        and context.get("axis_primary") == "先行"
+        and context.get("axis_secondary") == "追い込み"
+    ):
+        result["三連複"][2] = ["A", "M", "C"]
 
     # 園田1230mのみ・主先行／副持続：三連複3点目A-M2-D、ワイド2点目A-M2。
     if (
@@ -17423,15 +17471,15 @@ if (
 
 
 
-# 園田1230mのみ：主逃げ・副先行の三連複2点目をA-B-F、3点目をA-F-E。
+# 園田1230mのみ：主逃げ・副先行の三連複2点目A-F-E、3点目A-M-D。
 if (
     baba_name == "園田"
     and distance_num == 1230
     and axis_primary_for_bet == "逃げ"
     and axis_secondary_for_bet == "先行"
 ):
-    current_bet_template["三連複"][1] = ["A", "B", "F"]
-    current_bet_template["三連複"][2] = ["A", "F", "E"]
+    current_bet_template["三連複"][1] = ["A", "F", "E"]
+    current_bet_template["三連複"][2] = ["A", "M", "D"]
     current_bet_template["ワイド"][0] = ["A", "B"]
 
 # 園田1230mのみ：副なしの個別指定。
@@ -17483,6 +17531,17 @@ if baba_name == "名古屋" and distance_num == 1500:
 
 
 
+# 浦和1400mのみ・主先行／副持続：三連複1点目A-B-C、ワイド2点目A-L。
+if (
+    baba_name == "浦和"
+    and distance_num == 1400
+    and axis_primary_for_bet == "先行"
+    and axis_secondary_for_bet == "持続"
+):
+    current_bet_template["三連複"][0] = ["A", "B", "C"]
+    current_bet_template["ワイド"][1] = ["A", "L"]
+
+
 # 浦和2000mのみ・主先行／副追い込み：三連複3点目A-F-M、ワイド2点目A-M。
 if (
     baba_name == "浦和"
@@ -17507,7 +17566,7 @@ if baba_name == "浦和" and distance_num == 1500:
 
 # 全会場共通：三連複1点目A-B、2点目A-Fを基本にする。
 # 会場・距離・脚質別ルール確定後に適用し、各3頭目と3点目以降は維持。
-# 同一馬判定は競合回避前の各役候補1位で行う（A=Fを最優先）。
+# 同一馬判定はAとの重複候補を除いて行う。F候補なしはB、B=FはM。
 def unify_first_two_trio_templates(template, pools, number_of):
     updated = {kind: [list(bet) for bet in bets] for kind, bets in template.items()}
     trios = updated.get("三連複", [])
@@ -17516,11 +17575,22 @@ def unify_first_two_trio_templates(template, pools, number_of):
         candidates = pools.get(role, [])
         return number_of(candidates[0]) if candidates else None
 
-    a_num, b_num, f_num = (first_number(role) for role in ("A", "B", "F"))
+    a_num = first_number("A")
+    # Aと同じ馬は実際の記号選出でも次候補へ繰り下がる。
+    # 繰り下げ前の候補1位だけでFをBに変更しない。
+    def first_non_axis_number(role):
+        for candidate in pools.get(role, []):
+            number = number_of(candidate)
+            if number is not None and number != a_num:
+                return number
+        return None
+
+    b_num = first_non_axis_number("B")
+    f_num = first_non_axis_number("F")
     second_role = "F"
-    if a_num is not None and f_num is not None and a_num == f_num:
+    if f_num is None:
         second_role = "B"
-    elif b_num is not None and f_num is not None and b_num == f_num:
+    elif b_num is not None and b_num == f_num:
         second_role = "M"
 
     if trios and len(trios[0]) == 3:
@@ -21115,6 +21185,49 @@ if (
                     continue
                 trio_bets[2] = [axis_horse, partner, overlapping_horse]
                 break
+
+# 全会場・全軸共通：M2とG/H/Nの候補1位の重複馬を3点目の2頭目に固定。
+def apply_m2_overlap_third(trios, template, pools, number_of, excluded):
+    if len(trios) < 3 or len(template.get("三連複", [])) < 3:
+        return trios, False
+    m2_candidates = pools.get("M2", [])
+    if not m2_candidates:
+        return trios, False
+    overlap = m2_candidates[0]
+    overlap_num = number_of(overlap)
+    if overlap_num is None or not any(
+        pools.get(role) and number_of(pools[role][0]) == overlap_num
+        for role in ("G", "H", "N")
+    ):
+        return trios, False
+    third = trios[2]
+    if len(third) != 3:
+        return trios, False
+    axis_num = number_of(third[0])
+    forbidden = set(excluded or ())
+    if overlap_num == axis_num or overlap_num in forbidden:
+        return trios, False
+    last_role = template["三連複"][2][2]
+    # 3頭目は元の馬を優先し、重複時のみ同じ役割の候補へ繰り下げる。
+    candidates = [third[2]] + list(pools.get(last_role, []))
+    used = {frozenset(number_of(h) for h in bet) for bet in trios[:2]}
+    for partner in candidates:
+        partner_num = number_of(partner)
+        if partner_num is None or partner_num in forbidden or partner_num in (axis_num, overlap_num):
+            continue
+        if frozenset((axis_num, overlap_num, partner_num)) in used:
+            continue
+        updated = [list(bet) for bet in trios]
+        updated[2] = [third[0], overlap, partner]
+        return updated, True
+    return trios, False
+
+trio_bets, m2_overlap_third_applied = apply_m2_overlap_third(
+    trio_bets, current_bet_template, alphabet_candidate_pools, get_num,
+    set(kirisute_horse_numbers or ()) | set(cut_numbers_for_bets or ()),
+)
+if m2_overlap_third_applied:
+    st.caption("三連複3点目：M2とG・H・Nの重複馬を2頭目に優先採用")
 
 st.subheader(
     f"おすすめの三連複 {len(trio_bets)}点"
