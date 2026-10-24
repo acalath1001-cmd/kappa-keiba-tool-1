@@ -21190,6 +21190,10 @@ if (
 def apply_m2_overlap_third(trios, template, pools, number_of, excluded):
     if len(trios) < 3 or len(template.get("三連複", [])) < 3:
         return trios, False
+    # 3点目が A-B-F と指定されている場合は、B・F の確定馬を守る。
+    # M2重複馬による強制上書きは行わない（それ以外は従来どおり）。
+    if template["三連複"][2] == ["A", "B", "F"]:
+        return trios, False
     m2_candidates = pools.get("M2", [])
     if not m2_candidates:
         return trios, False
