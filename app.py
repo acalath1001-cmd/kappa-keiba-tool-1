@@ -7487,10 +7487,9 @@ def format_marble_style(profile):
     if not profile:
         return "主：不明｜副：なし"
 
-    return (
-        f"主：{profile.get('主脚質', '不明')}"
-        f"｜副：{profile.get('副脚質表示', 'なし')}"
-    )
+    sub = str(profile.get("副脚質表示", "なし") or "なし").strip()
+    main = str(profile.get("主脚質", "不明") or "不明").strip()
+    return f"主：{main}｜副：{sub}"
 strong_firsts = [flow[0] for flow in strong_flows if len(flow) >= 2]
 strong_lasts = [flow[-1] for flow in strong_flows if len(flow) >= 2]
 
@@ -7908,6 +7907,18 @@ axis_marble_profile = build_marble_style_profile(
     ),
 )
 
+
+# 主が展開待ちで副脚質がある場合は、副を正式な主脚質に昇格する。
+# 展開待ちは副なしの場合にだけ残す。
+if axis_marble_profile.get("主脚質") == "展開待ち":
+    promoted_style = axis_marble_profile.get("副脚質表示", "なし")
+    if promoted_style not in ("なし", "無し", ""):
+        axis_marble_profile["主脚質"] = promoted_style
+        axis_marble_profile["副脚質表示"] = "なし"
+        axis_marble_profile["副脚質"] = [
+            tag for tag in axis_marble_profile.get("副脚質", [])
+            if tag != promoted_style
+        ]
 
 # 人気馬が差してくるタイプなのに先行気勢1位にも出る場合は、
 # 先行気勢の馬を次点候補にずらす
@@ -14128,6 +14139,10 @@ def build_kanazawa_axis_bet_override(context):
     if distance == 1500 and context.get("axis_primary") == "逃げ":
         result["三連複"][2] = ["A", "D", "K"]
 
+    # 金沢1400m限定：軸主脚質が逃げなら副脚質を問わず3点目A-E-D。
+    if distance == 1400 and context.get("axis_primary") == "逃げ":
+        result["三連複"][2] = ["A", "E", "D"]
+
     return result
 
 def build_kasamatsu_axis_bet_override(context):
@@ -15120,6 +15135,8 @@ def build_kochi_saga_axis_bet_override(context):
         and int(context.get("current_distance") or 0) == 1300
     ):
         saga_style = (context.get("axis_primary"), context.get("axis_secondary"))
+        if saga_style == ("先行", "逃げ"):
+            result["三連複"][2] = ["A", "M2", "E"]
         if saga_style == ("先行", "持続"):
             result["三連複"][2] = ["A", "E", "I"]
             result["浮き輪"] = [["A", "E"]]
@@ -17390,6 +17407,15 @@ if (
     current_bet_template["三連複"][2] = ["A", "E", "D"]
 
 
+# 盛岡1400m限定：軸主脚質が逃げなら、副脚質に関係なく三連複3点目をA-F-Iにする。
+if (
+    baba_name == "盛岡"
+    and distance_num == 1400
+    and axis_primary_for_bet == "逃げ"
+):
+    current_bet_template["三連複"][2] = ["A", "F", "I"]
+
+
 # 門別1700mのみ：主先行・副追い込みのワイド2点目をI-G。
 if (
     baba_name == "門別"
@@ -17562,6 +17588,24 @@ if baba_name == "浦和" and distance_num == 1500:
         current_bet_template["三連複"][0] = ["A", "B", "E"]
     elif axis_primary_for_bet == "持続" and axis_secondary_for_bet == "なし":
         current_bet_template["三連複"][2] = ["A", "K", "N"]
+
+
+# 高知1400m限定：軸主先行・副逃げの三連複3点目をA-B-Gにする。
+# 1・2点目、ワイド、他会場・他条件は変更しない。
+if (
+    baba_name == "高知"
+    and int(distance_num) == 1400
+    and axis_primary_for_bet == "先行"
+    and axis_secondary_for_bet == "逃げ"
+    and len(current_bet_template.get("三連複", [])) >= 3
+):
+    current_bet_template["三連複"][2] = ["A", "B", "G"]
+
+
+# 高知・全距離／全軸タイプ共通：ワイド2点目（浮き輪）をF-Eに統一。
+# 距離・脚質別の高知ルールより優先し、ワイド1点目と三連複は変更しない。
+if baba_name == "高知":
+    current_bet_template["浮き輪"] = [["F", "E"]]
 
 
 # 全会場共通：三連複1点目A-B、2点目A-Fを基本にする。
@@ -19053,6 +19097,7 @@ def ensure_saga_front_third_trio(
     # 距離別の変更対象では、補充候補も指定した3点目の記号に合わせる。
     saga_third_pair = {
         1300: {
+            ("先行", "逃げ"): ("M2", "E"),
             ("先行", "持続"): ("E", "I"),
             ("先行", "追い込み"): ("F", "E"),
         },
@@ -21186,52 +21231,6 @@ if (
                 trio_bets[2] = [axis_horse, partner, overlapping_horse]
                 break
 
-# 全会場・全軸共通：M2とG/H/Nの候補1位の重複馬を3点目の2頭目に固定。
-def apply_m2_overlap_third(trios, template, pools, number_of, excluded):
-    if len(trios) < 3 or len(template.get("三連複", [])) < 3:
-        return trios, False
-    # 3点目が A-B-F と指定されている場合は、B・F の確定馬を守る。
-    # M2重複馬による強制上書きは行わない（それ以外は従来どおり）。
-    if template["三連複"][2] == ["A", "B", "F"]:
-        return trios, False
-    m2_candidates = pools.get("M2", [])
-    if not m2_candidates:
-        return trios, False
-    overlap = m2_candidates[0]
-    overlap_num = number_of(overlap)
-    if overlap_num is None or not any(
-        pools.get(role) and number_of(pools[role][0]) == overlap_num
-        for role in ("G", "H", "N")
-    ):
-        return trios, False
-    third = trios[2]
-    if len(third) != 3:
-        return trios, False
-    axis_num = number_of(third[0])
-    forbidden = set(excluded or ())
-    if overlap_num == axis_num or overlap_num in forbidden:
-        return trios, False
-    last_role = template["三連複"][2][2]
-    # 3頭目は元の馬を優先し、重複時のみ同じ役割の候補へ繰り下げる。
-    candidates = [third[2]] + list(pools.get(last_role, []))
-    used = {frozenset(number_of(h) for h in bet) for bet in trios[:2]}
-    for partner in candidates:
-        partner_num = number_of(partner)
-        if partner_num is None or partner_num in forbidden or partner_num in (axis_num, overlap_num):
-            continue
-        if frozenset((axis_num, overlap_num, partner_num)) in used:
-            continue
-        updated = [list(bet) for bet in trios]
-        updated[2] = [third[0], overlap, partner]
-        return updated, True
-    return trios, False
-
-trio_bets, m2_overlap_third_applied = apply_m2_overlap_third(
-    trio_bets, current_bet_template, alphabet_candidate_pools, get_num,
-    set(kirisute_horse_numbers or ()) | set(cut_numbers_for_bets or ()),
-)
-if m2_overlap_third_applied:
-    st.caption("三連複3点目：M2とG・H・Nの重複馬を2頭目に優先採用")
 
 st.subheader(
     f"おすすめの三連複 {len(trio_bets)}点"
@@ -21649,24 +21648,12 @@ if check_result:
 
         # 結果の役割検証で、Aが来た時にAの軸タイプを表示する。
         # 副タイプが「なし」の場合は主タイプだけを表示。
-        a_axis_label_parts = []
-
-        if axis_primary_for_bet:
-            a_axis_label_parts.append(
-                str(axis_primary_for_bet)
-            )
-
-        if (
-            axis_secondary_for_bet
-            and axis_secondary_for_bet != "なし"
-        ):
-            a_axis_label_parts.append(
-                str(axis_secondary_for_bet)
-            )
-
-        a_axis_label_for_role = "・".join(
-            a_axis_label_parts
-        )
+        # 副タイプがある場合は副タイプだけを表示する。
+        # 展開待ちは副タイプが「なし」の場合だけ表示する。
+        if axis_secondary_for_bet and axis_secondary_for_bet != "なし":
+            a_axis_label_for_role = str(axis_secondary_for_bet)
+        else:
+            a_axis_label_for_role = str(axis_primary_for_bet or "展開待ち")
 
         if st.session_state.get("role_validation_running") and st.session_state.batch_mode:
             if has_confirmed_top_finishers(top3):
