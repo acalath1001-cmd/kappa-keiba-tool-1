@@ -15136,6 +15136,8 @@ def build_kochi_saga_axis_bet_override(context):
     ):
         saga_style = (context.get("axis_primary"), context.get("axis_secondary"))
         if saga_style == ("先行", "逃げ"):
+            # 佐賀1300mのみ：三連複1点目をA-B-Cに変更。
+            result["三連複"][0] = ["A", "B", "C"]
             result["三連複"][2] = ["A", "M2", "E"]
         if saga_style == ("先行", "持続"):
             result["三連複"][2] = ["A", "E", "I"]
@@ -15159,7 +15161,7 @@ def build_kochi_saga_axis_bet_override(context):
             result["三連複"][2] = ["A", "F", "I"]
         elif saga_style == ("先行", "持続"):
             result["三連複"][0] = ["A", "B", "F"]
-            result["三連複"][1] = ["A", "B", "M"]
+            result["三連複"][1] = ["A", "F", "M2"]
             result["浮き輪"] = [["A", "G"]]
         elif saga_style == ("逃げ", "なし"):
             result["三連複"][0] = ["A", "B", "E"]
@@ -15174,7 +15176,7 @@ def build_kochi_saga_axis_bet_override(context):
         elif saga_style == ("逃げ", "先行"):
             result["三連複"][0] = ["A", "B", "I"]
             result["三連複"][1] = ["A", "M", "N"]
-            result["三連複"][2] = ["A", "F", "E"]
+            result["三連複"][2] = ["A", "F", "C"]
         elif saga_style == ("差し", "持続"):
             result["三連複"][1] = ["A", "B", "J"]
         elif saga_style == ("持続", "なし"):
@@ -15787,6 +15789,17 @@ def build_ooi_axis_bet_override(context):
         and context.get("axis_secondary") == "追い込み"
     ):
         result["三連複"][0] = ["A", "B", "E"]
+
+    # 大井1800mのみ・軸タイプ／主脚質／副脚質に関係なく、
+    # 三連複3点目を A-E-D に固定する。
+    # 1点目・2点目・ワイド・他距離・他会場には影響させない。
+    if int(context.get("current_distance") or 0) == 1800:
+        if len(result.get("三連複", [])) >= 3:
+            result["三連複"][2] = ["A", "E", "D"]
+        else:
+            while len(result.setdefault("三連複", [])) < 2:
+                result["三連複"].append([])
+            result["三連複"].append(["A", "E", "D"])
 
     return result
 
@@ -19103,7 +19116,7 @@ def ensure_saga_front_third_trio(
         },
         1400: {
             ("先行", "逃げ"): ("M2", "G"),
-            ("逃げ", "先行"): ("F", "E"),
+            ("逃げ", "先行"): ("F", "C"),
             ("先行", "なし"): ("D", "K"),
         },
     }.get(int(distance_num), {}).get((axis_primary_for_bet, axis_secondary_for_bet))
@@ -21181,7 +21194,7 @@ if (
     baba_name == "大井"
     and bet_axis_type == "前受け"
     and axis_primary_for_bet == "先行"
-    and distance_num != 1600  # 1600mの3点目A-M-Eを優先する。
+    and distance_num not in {1600, 1800}  # 1600m・1800mの専用3点目を優先する。
     and len(trio_bets) >= 3
 ):
     m2_pool = alphabet_candidate_pools.get("M2", [])
@@ -21646,14 +21659,14 @@ if check_result:
             "着順"
         ]
 
-        # 結果の役割検証で、Aが来た時にAの軸タイプを表示する。
-        # 副タイプが「なし」の場合は主タイプだけを表示。
-        # 副タイプがある場合は副タイプだけを表示する。
-        # 展開待ちは副タイプが「なし」の場合だけ表示する。
-        if axis_secondary_for_bet and axis_secondary_for_bet != "なし":
-            a_axis_label_for_role = str(axis_secondary_for_bet)
+        # 結果の役割検証：Aが来た時は主タイプと副タイプを併記する。
+        # 副なしは主タイプのみ。評価・買い目の脚質判定は変更しない。
+        role_main = str(axis_primary_for_bet or "展開待ち")
+        role_sub = str(axis_secondary_for_bet or "なし")
+        if role_sub not in ("なし", "無し", "") and role_sub != role_main:
+            a_axis_label_for_role = f"{role_main}・{role_sub}"
         else:
-            a_axis_label_for_role = str(axis_primary_for_bet or "展開待ち")
+            a_axis_label_for_role = role_main
 
         if st.session_state.get("role_validation_running") and st.session_state.batch_mode:
             if has_confirmed_top_finishers(top3):
