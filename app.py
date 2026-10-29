@@ -1322,7 +1322,7 @@ def build_all_validation_symbols(selected, candidate_pools, used_symbols):
 def make_role_result(top3, symbols, used_symbols=None, a_axis_label=None):
     """1〜3着の役割照合。同着（1着2頭・3着2頭など）にも対応。
 
-    Aが該当した場合だけ、Aの軸タイプを併記する。
+    Aが3着以内なら役割に、圏外なら行末にAの軸タイプを併記する。
     例：A（先行・持続）
     """
     used_symbols = set(symbols) if used_symbols is None else set(used_symbols)
@@ -1351,6 +1351,16 @@ def make_role_result(top3, symbols, used_symbols=None, a_axis_label=None):
         for place in (1, 2, 3)
     )
 
+    axis_horse = symbols.get("A")
+    axis_in_top3 = bool(axis_horse) and any(
+        get_num(axis_horse) in numbers_for_place(place)
+        for place in (1, 2, 3)
+    )
+    axis_suffix = (
+        f" ｜ A（{a_axis_label}）"
+        if a_axis_label and not axis_in_top3 else ""
+    )
+
     # 通常時は従来表示をそのまま維持する。
     if not is_dead_heat:
         entries = []
@@ -1366,7 +1376,7 @@ def make_role_result(top3, symbols, used_symbols=None, a_axis_label=None):
                 if roles
                 else f"{number} ✕"
             )
-        return " ／ ".join(entries)
+        return " ／ ".join(entries) + axis_suffix
 
     # 同着時は着順ラベルを付け、同着馬をすべて照合する。
     entries = []
@@ -1388,7 +1398,7 @@ def make_role_result(top3, symbols, used_symbols=None, a_axis_label=None):
                 f"{place}着 " + "・".join(place_entries)
             )
 
-    return " ／ ".join(entries)
+    return " ／ ".join(entries) + axis_suffix
 
 
 def finish_role_race(status, detail, venue, distance, race_number):
@@ -4406,6 +4416,35 @@ jra_top5_bonus_map = {
     for horse in horses
 }
 
+def calculate_jra_no_progress_penalty(horse):
+    """JRAで全地点10番手以下、着順まで一度も前進しない走りを減点。"""
+    runs = horse.get("全距離付きタイム", []) or []
+    local_count = sum(r.get("競馬場") in LOCAL_TRACKS for r in runs)
+    factor = {0: 1.0, 1: 0.7, 2: 0.4}.get(local_count, 0.0)
+    details = []
+    for run in runs:
+        if run.get("競馬場") not in JRA_TRACKS:
+            continue
+        flow = run.get("元通過順") or run.get("通過順") or []
+        if not isinstance(flow, (list, tuple)) or len(flow) < 2:
+            continue
+        try:
+            positions = [int(str(p).strip()) for p in flow]
+            positions.append(int(str(run.get("着順", "")).strip()))
+        except (ValueError, TypeError):
+            continue
+        if min(positions) >= 10 and all(
+            after >= before for before, after in zip(positions, positions[1:])
+        ):
+            details.append(positions)
+    return {"減点": round(min(240, 120 * len(details)) * factor, 1),
+            "該当走": details, "地方走数": local_count}
+
+
+jra_no_progress_map = {
+    h["馬番"]: calculate_jra_no_progress_penalty(h) for h in horses
+}
+
 # 地方0走：JRA転入直後
 jra_horse_numbers = {
     horse_no
@@ -4617,13 +4656,23 @@ else:
     if st.session_state.axis_horse_input > len(real_horses):
         st.session_state.axis_horse_input = 1
 
-    popular_horse_num = st.number_input(
+    # 分析用の軸とウィジェットの状態を分離する。
+    # レースを開いた直後も、自動設定した馬番を表示・分析の両方に使う。
+    def sync_axis_horse_input():
+        st.session_state.axis_horse_input = int(
+            st.session_state.axis_horse_widget
+        )
+
+    st.session_state.axis_horse_widget = int(st.session_state.axis_horse_input)
+    st.number_input(
         "軸馬の馬番",
         min_value=1,
         max_value=len(real_horses),
         step=1,
-        key="axis_horse_input",
+        key="axis_horse_widget",
+        on_change=sync_axis_horse_input,
     )
+    popular_horse_num = int(st.session_state.axis_horse_input)
 
     current_axis_race_key = (
         f"{race_date}|"
@@ -10936,6 +10985,9 @@ for horse in horses:
     # 水沢の総合Fは、C/Dの補正前スコアから組み立てた
     # 完成後のtotal_scoreへクラス係数を1回だけ適用する。
     # これによりC/D補正との二重掛けを防ぐ。
+    jra_no_progress_penalty = jra_no_progress_map.get(horse_no, {}).get("減点", 0)
+    total_score -= jra_no_progress_penalty
+    debug_total_parts["JRA後方停滞"] = -jra_no_progress_penalty
     total_score_before_class = total_score
     total_class_adjustment = None
 
@@ -11133,7 +11185,8 @@ for candidate in tenkai_pre_candidates:
         candidate["予備展開点"]
         + total_rank_bonus
         + jra_top5_bonus_map.get(horse_no, {}).get("展開", 0)
-        - big_fourth_fade_tenkai_penalty,
+        - big_fourth_fade_tenkai_penalty
+        - jra_no_progress_map.get(horse_no, {}).get("減点", 0),
         1,
     )
 
@@ -11142,6 +11195,7 @@ for candidate in tenkai_pre_candidates:
     candidate["最終総合順位"] = total_rank
     candidate["総合順位加点"] = total_rank_bonus
     candidate["JRA好走加点"] = jra_top5_bonus_map.get(horse_no, {}).get("展開", 0)
+    candidate["JRA後方停滞減点"] = jra_no_progress_map.get(horse_no, {}).get("減点", 0)
     candidate["4角大垂れ減点"] = big_fourth_fade_tenkai_penalty
     candidate["展開最終点"] = final_tenkai_score
 
@@ -16124,13 +16178,13 @@ def build_sonoda_axis_bet_override(context):
     ):
         result["三連複"][2] = ["A", "M", "C"]
 
-    # 園田1230mのみ・主先行／副持続：三連複3点目A-M2-D、ワイド2点目A-M2。
+    # 園田1230mのみ・主先行／副持続：三連複3点目A-H-L、ワイド2点目A-M2。
     if (
         int(current_distance or 0) == 1230
         and context.get("axis_primary") == "先行"
         and context.get("axis_secondary") == "持続"
     ):
-        result["三連複"][2] = ["A", "M2", "D"]
+        result["三連複"][2] = ["A", "H", "L"]
         result["浮き輪"] = [["A", "M2"]]
 
     return result
@@ -17489,6 +17543,16 @@ if (
     current_bet_template["三連複"][1] = ["A", "F", "D"]
 
 
+# 大井1200mのみ・主逃げ／副先行：三連複2点目A-B-N。
+if (
+    baba_name == "大井"
+    and distance_num == 1200
+    and axis_primary_for_bet == "逃げ"
+    and axis_secondary_for_bet == "先行"
+):
+    current_bet_template["三連複"][1] = ["A", "B", "N"]
+
+
 # 園田1230m：全軸タイプ共通でワイド1点目のみA-M。
 # 主脚質・副脚質ごとの既存ルール適用後に最優先で反映する。
 if baba_name == "園田" and distance_num == 1230:
@@ -17510,7 +17574,7 @@ if (
 
 
 
-# 園田1230mのみ：主逃げ・副先行の三連複2点目A-F-E、3点目A-M-D。
+# 園田1230mのみ：主逃げ・副先行の三連複2点目A-F-E、3点目A-K-D。
 if (
     baba_name == "園田"
     and distance_num == 1230
@@ -17518,7 +17582,7 @@ if (
     and axis_secondary_for_bet == "先行"
 ):
     current_bet_template["三連複"][1] = ["A", "F", "E"]
-    current_bet_template["三連複"][2] = ["A", "M", "D"]
+    current_bet_template["三連複"][2] = ["A", "K", "D"]
     current_bet_template["ワイド"][0] = ["A", "B"]
 
 # 園田1230mのみ：副なしの個別指定。
@@ -17659,6 +17723,47 @@ def unify_first_two_trio_templates(template, pools, number_of):
 current_bet_template = unify_first_two_trio_templates(
     current_bet_template, alphabet_candidate_pools, get_num,
 )
+
+
+# ==================================================
+# 園田・今回追加の最優先買い目ルール
+#
+# 全会場共通の「三連複1点目A-B／2点目A-F」統一後に適用し、
+# 下記2条件だけは今回指定の形を最終優先する。
+# 他距離・他軸タイプ・他会場には影響させない。
+# ==================================================
+
+# 園田1400mのみ：主差し・副逃げ
+# 三連複 1点目 A-B-F / 2点目は既存A-F-Dを維持 / 3点目 A-B-C
+# ワイド 1点目 A-B / 2点目 F-C
+if (
+    baba_name == "園田"
+    and distance_num == 1400
+    and axis_primary_for_bet == "差し"
+    and axis_secondary_for_bet == "逃げ"
+):
+    current_bet_template["三連複"][0] = ["A", "B", "F"]
+    current_bet_template["三連複"][2] = ["A", "B", "C"]
+
+    if current_bet_template.get("ワイド"):
+        current_bet_template["ワイド"][0] = ["A", "B"]
+    else:
+        current_bet_template["ワイド"] = [["A", "B"]]
+
+    current_bet_template["浮き輪"] = [["F", "C"]]
+
+
+# 園田1230mのみ：主先行・副追い込み
+# 三連複 1点目 A-M-D / 3点目 A-I-C
+# 2点目とワイドは既存ルールを維持する。
+if (
+    baba_name == "園田"
+    and distance_num == 1230
+    and axis_primary_for_bet == "先行"
+    and axis_secondary_for_bet == "追い込み"
+):
+    current_bet_template["三連複"][0] = ["A", "M", "D"]
+    current_bet_template["三連複"][2] = ["A", "I", "C"]
 
 
 alphabet_role_names = {
@@ -21266,7 +21371,15 @@ def render_original_trio_grid():
     )
     symbols['A'] = popular_horse_label
     labels = {get_num(f"{h['馬番']}番 {h['馬名']}"): f"{h['馬番']}番 {h['馬名']}" for h in horses}
-    numbers = {role: get_num(symbols.get(role) or '') for role in roles}
+    # 候補がない役割は空文字を数値化せず、選択不可のマスにする。
+    def grid_number(value):
+        try:
+            number = get_num(value)
+        except (ValueError, TypeError, AttributeError):
+            return None
+        return number if number in labels else None
+
+    numbers = {role: grid_number(symbols.get(role)) for role in roles}
     axis = get_num(popular_horse_label)
     groups = {}
     for role, number in numbers.items():
@@ -21667,7 +21780,7 @@ if check_result:
             "着順"
         ]
 
-        # 結果の役割検証：Aが来た時は主タイプと副タイプを併記する。
+        # 結果の役割検証：Aの着順に関わらず主タイプと副タイプを併記する。
         # 副なしは主タイプのみ。評価・買い目の脚質判定は変更しない。
         role_main = str(axis_primary_for_bet or "展開待ち")
         role_sub = str(axis_secondary_for_bet or "なし")
