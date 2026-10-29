@@ -21258,69 +21258,77 @@ for bet in trio_bets:
         )
     )
 
-# 通常買い目とは完全に独立した、使用者の追加1点。
-all_horse_options = [
-    f"{h['馬番']}番 {h['馬名']}"
-    for h in horses
-]
-unselected_option = "未選択"
-
-st.markdown("#### 三連複オリジナル")
-st.caption(f"軸馬：{popular_horse_label}")
-
-original_trio_options = [
-    horse_label
-    for horse_label in all_horse_options
-    if get_num(horse_label) != popular_horse_num
-]
-
-if st.session_state.get("original_trio_first") not in (
-    [unselected_option] + original_trio_options
-):
-    st.session_state.pop("original_trio_first", None)
-
-trio_original_col1, trio_original_col2 = st.columns(2)
-
-with trio_original_col1:
-    original_trio_first = st.selectbox(
-        "相手馬1",
-        [unselected_option] + original_trio_options,
-        key="original_trio_first",
+# 通常買い目とは独立した、役割の格子から選ぶ追加1点。
+def render_original_trio_grid():
+    roles = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'K', 'L', 'M', 'M2', 'N', 'P']
+    symbols = build_all_validation_symbols(
+        final_bet_symbols, alphabet_candidate_pools, required_symbols
     )
+    symbols['A'] = popular_horse_label
+    labels = {get_num(f"{h['馬番']}番 {h['馬名']}"): f"{h['馬番']}番 {h['馬名']}" for h in horses}
+    numbers = {role: get_num(symbols.get(role) or '') for role in roles}
+    axis = get_num(popular_horse_label)
+    groups = {}
+    for role, number in numbers.items():
+        if number in labels:
+            groups.setdefault(number, []).append(role)
 
-with trio_original_col2:
-    original_trio_second_options = [
-        horse_label
-        for horse_label in original_trio_options
-        if horse_label != original_trio_first
-    ]
-    if st.session_state.get("original_trio_second") not in (
-        [unselected_option] + original_trio_second_options
-    ):
-        st.session_state.pop("original_trio_second", None)
-    original_trio_second = st.selectbox(
-        "相手馬2",
-        [unselected_option] + original_trio_second_options,
-        key="original_trio_second",
-    )
+    # レース・軸・役割配置が変わった場合、前の選択を持ち越さない。
+    context = (str(st.session_state.get('race_url', url)), axis, tuple(numbers.items()))
+    if st.session_state.get('original_trio_grid_context') != context:
+        st.session_state['original_trio_grid_context'] = context
+        st.session_state['original_trio_grid_selected'] = []
+    selected = st.session_state.get('original_trio_grid_selected', [])
+    selected = list(dict.fromkeys(n for n in selected if n in groups and n != axis))[:2]
+    st.session_state['original_trio_grid_selected'] = selected
 
-if (
-    original_trio_first != unselected_option
-    and original_trio_second != unselected_option
-):
-    original_trio_bet = (
-        popular_horse_label,
-        original_trio_first,
-        original_trio_second,
-    )
-    st.write(
-        f"{popular_horse_label} - "
-        f"{original_trio_first} - {original_trio_second}"
-        + get_trio_odds_suffix(
-            original_trio_bet,
-            trio_odds_map,
-        )
-    )
+    def toggle(number):
+        current = list(st.session_state.get('original_trio_grid_selected', []))
+        if number in current:
+            current.remove(number)
+        elif number != axis and len(current) < 2:
+            current.append(number)
+        st.session_state['original_trio_grid_selected'] = current
+
+    def clear():
+        st.session_state['original_trio_grid_selected'] = []
+
+    st.markdown('#### 三連複オリジナル')
+    st.caption(f'軸馬：{popular_horse_label}（A固定）｜相手を2頭タップ。再タップで解除。')
+    st.caption('同馬のマスはまとめて選択されます。※はおすすめ買い目で未使用の役割の候補1位。')
+    for offset in range(0, len(roles), 3):
+        columns = st.columns(3)
+        for column, role in zip(columns, roles[offset:offset + 3]):
+            number = numbers[role]
+            available = number in labels
+            fixed = available and number == axis
+            active = fixed or number in selected
+            marker = '' if role in required_symbols or role == 'A' else '※'
+            text = f"{'✓ ' if active else ''}{role}{marker}｜{str(number) + '番' if available else '候補なし'}"
+            with column:
+                st.button(
+                    text, key=f'original_trio_grid_{role}',
+                    type='primary' if active else 'secondary',
+                    use_container_width=True,
+                    disabled=not available or fixed or (len(selected) == 2 and number not in selected),
+                    on_click=toggle, args=(number,),
+                    help=f"{alphabet_role_names.get(role, role)}：{labels.get(number, '候補なし')}",
+                )
+                peers = groups.get(number, [])
+                st.caption(('A軸固定' if fixed else alphabet_role_names.get(role, role))
+                           + (' · 同馬 ' + '・'.join(peers) if len(peers) > 1 else ''))
+    st.button('相手をクリア', key='original_trio_grid_clear', on_click=clear, disabled=not selected)
+    if len(selected) == 2:
+        bet = (popular_horse_label, labels[selected[0]], labels[selected[1]])
+        odds = get_trio_odds_suffix(bet, trio_odds_map)
+        st.success('三連複：' + ' - '.join(str(n) for n in sorted([axis] + selected)) + (odds or '（オッズ未取得）'))
+        st.write(' ／ '.join(bet))
+    else:
+        st.info(f'相手をあと{2 - len(selected)}頭選んでください。')
+
+
+if not st.session_state.get('batch_mode', False):
+    render_original_trio_grid()
 
 all_wide_bets = list(wide_bets) + list(float_bets)
 
