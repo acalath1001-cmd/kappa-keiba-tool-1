@@ -3530,9 +3530,9 @@ for i, horse in enumerate(real_horses, start=1):
     # 4角位置から最終着順まで7つ以上順位を落とした走だけ。
     # 4角の位置そのものは問わない。
     #
-    # 過去5走を対象に、最新走ほど重くする。
-    # 1走前 -300 / 2走前 -240 / 3走前 -180 /
-    # 4走前 -120 / 5走前 -80 を共通基準点として蓄積し、
+    # 直近2走のみを減点対象にする。
+    # 1走前 -300 / 2走前 -240 / 3〜5走前 減点なし。
+    # 直近2走の該当分を共通基準点として蓄積し、
     # 主要5系統（総合・展開・地力・先行・抑え）で
     # 役割ごとの倍率を掛けて強めに減点する。
     #
@@ -3546,13 +3546,10 @@ for i, horse in enumerate(real_horses, start=1):
     big_fourth_fade_recent_penalties = [
         300,
         240,
-        180,
-        120,
-        80,
     ]
 
     big_fourth_fade_check_count = min(
-        5,
+        2,
         len(race_flows),
         len(finish_positions),
     )
@@ -3590,8 +3587,7 @@ for i, horse in enumerate(real_horses, start=1):
             "共通基準減点": race_penalty,
         })
 
-    # 何度も大垂れしている馬は強く下げるが、
-    # 5走すべて該当でも無制限にはしない。
+    # 直近2走の大垂れのみ合算し、上限は従来どおり維持。
     big_fourth_fade_base_penalty = min(
         big_fourth_fade_base_penalty,
         700,
