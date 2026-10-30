@@ -1281,6 +1281,8 @@ def render_batch_results_summary():
             axis_label = "後詰め軸" if r.get("検証モード") == "backfill" else "軸"
             result_text = str(r["結果"]).replace(" ", "").replace("　", "")
             line = f"{race_label}｜{axis_label}{r['軸']}番｜結果{result_text}｜払戻{r['払戻']:,}円"
+        if r.get("状態") != "対象外" and r.get("投資", 0) != 500:
+            line += f"｜⚠ 投資{r.get('投資', 0)}円（5点未満の可能性）"
         batch_copy_lines.append(line)
 
     batch_copy_lines.extend([
@@ -4412,6 +4414,72 @@ jra_top5_bonus_map = {
     for horse in horses
 }
 
+# ==================================================
+# 全会場共通・門別からの転入好走ボーナス
+# JRA好走加点のおよそ半分。総合F・展開Bのみ加点する。
+# 現在門別での開催時は対象外。
+# 過去5走の直近の地方走が門別であり、今回会場での出走が
+# 0～2走の馬だけ対象。3走以上なら通常評価へ戻す。
+# ==================================================
+def calculate_monbetsu_transfer_bonus(horse, current_venue):
+    empty = {"総合": 0.0, "展開": 0.0, "最良着順": None,
+             "今回会場走数": 0, "係数": 0.0}
+    if current_venue == "門別" or not current_venue:
+        return empty
+    runs = (horse.get("全距離付きタイム", []) or [])[:5]
+    local_runs = [r for r in runs if r.get("競馬場") in LOCAL_TRACKS]
+    # 最新の地方走が門別でない馬は、すでに他地区へ移ったと判定。
+    # 今回会場で走った馬も2走までは救済するため、
+    # 門別以降の今回会場の走歴だけは許容する。
+    if not any(r.get("競馬場") == "門別" for r in local_runs):
+        return empty
+    current_count = sum(r.get("競馬場") == current_venue for r in local_runs)
+    if current_count >= 3:
+        return empty
+    # 門別より新しい他地区の記録を許可するのは今回会場のみ。
+    first_monbetsu = next(i for i, r in enumerate(runs)
+                          if r.get("競馬場") == "門別")
+    if any(r.get("競馬場") in LOCAL_TRACKS
+           and r.get("競馬場") != current_venue
+           for r in runs[:first_monbetsu]):
+        return empty
+    finishes = []
+    for r in runs:
+        if r.get("競馬場") != "門別":
+            continue
+        try:
+            finish = int(r.get("着順"))
+        except (ValueError, TypeError):
+            continue
+        if 1 <= finish <= 7:
+            finishes.append(finish)
+    best = min(finishes) if finishes else None
+    if best is None:
+        return {**empty, "今回会場走数": current_count}
+    total, pace = (40, 30) if best <= 3 else (35, 20)
+    factor = {0: 1.0, 1: 0.7, 2: 0.4}[current_count]
+    return {"総合": round(total * factor, 1),
+            "展開": round(pace * factor, 1),
+            "最良着順": best, "今回会場走数": current_count,
+            "係数": factor}
+
+monbetsu_transfer_bonus_map = {
+    horse["馬番"]: calculate_monbetsu_transfer_bonus(horse, baba_name)
+    for horse in horses
+}
+
+if debug_mode and baba_name != "門別":
+    with st.expander("🐎 門別転入ボーナス（F・B）", expanded=False):
+        applicable = [h for h in horses
+                      if monbetsu_transfer_bonus_map[h["馬番"]]["総合"] > 0]
+        if not applicable:
+            st.write("対象馬なし")
+        for h in applicable:
+            info = monbetsu_transfer_bonus_map[h["馬番"]]
+            st.write(f"{h['馬番']}番 {h['馬名']}｜門別最良{info['最良着順']}着 "
+                     f"｜今回会場{info['今回会場走数']}走 "
+                     f"｜F+{info['総合']}・B+{info['展開']}")
+
 def calculate_jra_no_progress_penalty(horse):
     """JRAで全地点10番手以下、着順まで一度も前進しない走りを減点。"""
     runs = horse.get("全距離付きタイム", []) or []
@@ -5070,6 +5138,30 @@ if debug_mode:
 
 
 # ==================================================
+# 大井1200m限定：長距離・後方一辺倒馬の過大評価を抑制
+# 直近取得5走に1200/1400mがなく、1600m以上で
+# 1角7番手以下の走りが3走以上ある馬だけ対象。
+# ==================================================
+def is_ooi_1200_long_rear_only(horse, current_distance):
+    if baba_name != "大井" or current_distance != 1200:
+        return False
+    runs = (horse.get("距離付きタイム") or [])[:5]
+    if any(run.get("距離") in (1200, 1400) for run in runs):
+        return False
+    long_runs = [
+        run for run in runs
+        if (run.get("距離") or 0) >= 1600
+        and (run.get("元通過順") or run.get("通過順"))
+    ]
+    return (
+        len(long_runs) >= 3
+        and all(
+            (run.get("元通過順") or run.get("通過順"))[0] >= 7
+            for run in long_runs
+        )
+    )
+
+# ==================================================
 # 🚀 2〜4角・追い込みランキング（デバッグ専用）
 #
 # 目的：
@@ -5725,6 +5817,9 @@ def calc_corner_push_ranking(
         distance_weight = target[
             "距離倍率"
         ]
+        # 大井1200mだけ：1600m以上で後方一辺倒の馬は追い込み0.1倍
+        if is_ooi_1200_long_rear_only(horse, current_distance):
+            distance_weight = min(distance_weight, 0.10)
 
         if not target_runs:
             continue
@@ -6893,6 +6988,106 @@ for horse in horses:
         # 善戦止まり確認用
         "決め手不足減点": decisive_penalty,
     })
+
+# ==================================================
+# 大井限定・降級実力馬ボーナス（地力C / 抑えE）
+# 上位クラスで走り、同距離の時計と末脚も優秀な馬を救済。
+# 人気順・結果を使用しない。対象は大井で走った過去5走。
+# ==================================================
+ooi_drop_bonus_map = {}
+ooi_drop_debug_rows = []
+if baba_name == "大井":
+    current_class_value = get_race_class_value(current_race_class)
+    member_bests = {}
+    member_agari = {}
+    qualifying_runs_by_number = {}
+    for hh in horses:
+        number = int(hh["馬番"])
+        local_same_runs = [
+            run for run in hh.get("距離付きタイム", [])[:5]
+            if run.get("距離") == distance_num
+            and run.get("競馬場") == "大井"
+        ]
+        valid_times = [
+            t for run in local_same_runs
+            if (t := parse_time_to_seconds(run.get("タイム"))) is not None
+        ]
+        if valid_times:
+            member_bests[number] = min(valid_times)
+        valid_agari = sorted(
+            float(run["上がり3F"])
+            for run in local_same_runs
+            if isinstance(run.get("上がり3F"), (int, float))
+            and 30 <= float(run["上がり3F"]) <= 50
+        )
+        if len(valid_agari) >= 2:
+            member_agari[number] = sum(valid_agari[:2]) / 2
+        if current_class_value is not None:
+            qualifying_runs_by_number[number] = [
+                run for run in hh.get("距離付きタイム", [])[:5]
+                if run.get("競馬場") == "大井"
+                and (class_value := get_race_class_value(run.get("クラス"))) is not None
+                and class_value < current_class_value
+            ]
+
+    time_order = sorted(member_bests, key=lambda n: (member_bests[n], n))
+    agari_order = sorted(member_agari, key=lambda n: (member_agari[n], n))
+    time_rank_map = {number: pos for pos, number in enumerate(time_order, 1)}
+    agari_rank_map = {number: pos for pos, number in enumerate(agari_order, 1)}
+
+    for hh in horses:
+        number = int(hh["馬番"])
+        better_runs = qualifying_runs_by_number.get(number, [])
+        # 格上経験を満たした上で、同距離の速い走破時計と
+        # 速い上がり2走がともに格上走の中に存在することを要求。
+        superior_same = [
+            run for run in better_runs if run.get("距離") == distance_num
+        ]
+        superior_times = [
+            t for run in superior_same
+            if (t := parse_time_to_seconds(run.get("タイム"))) is not None
+        ]
+        superior_agari = sorted(
+            float(run["上がり3F"])
+            for run in superior_same
+            if isinstance(run.get("上がり3F"), (int, float))
+            and 30 <= float(run["上がり3F"]) <= 50
+        )
+        same_best_is_superior = (
+            number in member_bests and bool(superior_times)
+            and abs(min(superior_times) - member_bests[number]) < 0.001
+        )
+        same_agari_is_superior = (
+            number in member_agari and len(superior_agari) >= 2
+            and abs(sum(superior_agari[:2]) / 2 - member_agari[number]) < 0.001
+        )
+        eligible = (
+            len(better_runs) >= 3
+            and 1 <= time_rank_map.get(number, 99) <= 5
+            and 1 <= agari_rank_map.get(number, 99) <= 3
+            and same_best_is_superior and same_agari_is_superior
+            and not hh.get("直近大失速", False)
+        )
+        ooi_drop_bonus_map[number] = 50 if eligible else 0
+        ooi_drop_debug_rows.append({
+            "馬番": number, "馬名": hh["馬名"],
+            "格上走数": len(better_runs),
+            "同距離最速順位": time_rank_map.get(number),
+            "上がり2走平均順位": agari_rank_map.get(number),
+            "格上の時計・上がり": bool(same_best_is_superior and same_agari_is_superior),
+            "直近大失速": hh.get("直近大失速", False),
+            "C・E各加点": ooi_drop_bonus_map[number],
+        })
+
+if debug_mode and baba_name == "大井":
+    with st.expander("🏇 大井・降級実力馬ボーナス", expanded=False):
+        st.caption("同距離の大井過去走で比較。上がりは速い2走平均。格上3走以上かつ時計5位以内・上がり3位以内でC/Eに各50点。")
+        st.dataframe(ooi_drop_debug_rows, use_container_width=True, hide_index=True)
+
+for candidate in long_spurt_candidates:
+    ooi_bonus = ooi_drop_bonus_map.get(int(candidate["馬番"]), 0)
+    candidate["大井降級実力馬加点"] = ooi_bonus
+    candidate["スコア"] += ooi_bonus
 
 long_spurt_candidates = sorted(
     long_spurt_candidates,
@@ -10708,6 +10903,9 @@ for horse in horses:
     jra_top5_total_bonus = jra_top5_bonus_map.get(horse_no, {}).get("総合", 0)
     total_score += jra_top5_total_bonus
     debug_total_parts["JRA好走"] = jra_top5_total_bonus
+    monbetsu_total_bonus = monbetsu_transfer_bonus_map.get(horse_no, {}).get("総合", 0)
+    total_score += monbetsu_total_bonus
+    debug_total_parts["門別転入"] = monbetsu_total_bonus
     # ==================================================
     # 南関転入成功ボーナス
     # 南関経験があり、今回の競馬場でも好走している馬を評価
@@ -11148,6 +11346,30 @@ if (
 # ⑤ 最終点の高い順に展開馬を決める
 # ==================================================
 
+# 南関限定：過去5走で「最初の2地点が1-1」なのに2着以下へ失速した走が
+# 3回以上ある馬は、展開Bの候補から除外する。
+# 例：1-1-1-1→2着、1-1-1-2→2着、1-1-2→3着など。
+# 元通過順の実測2地点を使用し、補完した通過順は使わない。
+# 他の役割（C・D・E・Fなど）は変更しない。
+def calc_nankan_all_lead_minor_finish_penalty(horse):
+    if baba_name not in {"浦和", "船橋", "大井", "川崎"}:
+        return 0, 0
+
+    qualifying_count = 0
+    for past_run in horse.get("距離付きタイム", [])[:5]:
+        flow = past_run.get("元通過順") or []
+        finish = past_run.get("着順")
+        try:
+            finish = int(finish)
+            first_two = [int(pos) for pos in flow[:2]]
+        except (TypeError, ValueError):
+            continue
+        if len(first_two) == 2 and first_two == [1, 1] and finish >= 2:
+            qualifying_count += 1
+
+    return (120 if qualifying_count >= 3 else 0), qualifying_count
+
+
 tenkai_candidates = []
 
 for candidate in tenkai_pre_candidates:
@@ -11177,11 +11399,23 @@ for candidate in tenkai_pre_candidates:
         )
     )
 
+    nankan_lead_penalty, nankan_lead_count = (
+        calc_nankan_all_lead_minor_finish_penalty(
+            target_horse_for_big_fade or {}
+        )
+    )
+
+    # 3走以上なら点数にかかわらず展開B候補から除外。
+    if nankan_lead_count >= 3 and baba_name in {"浦和", "船橋", "大井", "川崎"}:
+        continue
+
     final_tenkai_score = round(
         candidate["予備展開点"]
         + total_rank_bonus
         + jra_top5_bonus_map.get(horse_no, {}).get("展開", 0)
+        + monbetsu_transfer_bonus_map.get(horse_no, {}).get("展開", 0)
         - big_fourth_fade_tenkai_penalty
+        - nankan_lead_penalty
         - jra_no_progress_map.get(horse_no, {}).get("減点", 0),
         1,
     )
@@ -11191,8 +11425,11 @@ for candidate in tenkai_pre_candidates:
     candidate["最終総合順位"] = total_rank
     candidate["総合順位加点"] = total_rank_bonus
     candidate["JRA好走加点"] = jra_top5_bonus_map.get(horse_no, {}).get("展開", 0)
+    candidate["門別転入加点"] = monbetsu_transfer_bonus_map.get(horse_no, {}).get("展開", 0)
     candidate["JRA後方停滞減点"] = jra_no_progress_map.get(horse_no, {}).get("減点", 0)
     candidate["4角大垂れ減点"] = big_fourth_fade_tenkai_penalty
+    candidate["南関逃げ惜敗減点"] = nankan_lead_penalty
+    candidate["南関逃げ惜敗該当走"] = nankan_lead_count
     candidate["展開最終点"] = final_tenkai_score
 
     # 既存の後段処理は "スコア" を参照するため、
@@ -11306,6 +11543,14 @@ if not tenkai_candidates:
             )
         )
 
+        nankan_lead_penalty, nankan_lead_count = (
+            calc_nankan_all_lead_minor_finish_penalty(horse)
+        )
+
+        # 緊急救済でも同じ除外条件を守る。
+        if nankan_lead_count >= 3 and baba_name in {"浦和", "船橋", "大井", "川崎"}:
+            continue
+
         rescue_score = (
             rescue_recent_score
             + max(
@@ -11317,11 +11562,13 @@ if not tenkai_candidates:
                 * 0.30,
             )
             + jra_top5_bonus_map.get(horse_no, {}).get("展開", 0)
+            + monbetsu_transfer_bonus_map.get(horse_no, {}).get("展開", 0)
             + 0  # 総合順位は緊急救済でも加点しない
             + rescue_class_adjustment[
                 "経験加点"
             ]
             - big_fourth_fade_rescue_penalty
+            - nankan_lead_penalty
         )
 
         emergency_candidates.append({
@@ -11330,6 +11577,8 @@ if not tenkai_candidates:
             "スコア": round(rescue_score, 1),
             "展開最終点": round(rescue_score, 1),
             "4角大垂れ減点": big_fourth_fade_rescue_penalty,
+            "南関逃げ惜敗減点": nankan_lead_penalty,
+            "南関逃げ惜敗該当走": nankan_lead_count,
             "候補脚質": style_info.get("候補脚質", "展開待ち"),
             "主脚質": style_info.get("主脚質", "展開待ち"),
             "副脚質": style_info.get("副脚質", []),
@@ -11569,6 +11818,7 @@ if debug_mode:
         ):
             st.write(
                 f"{rank}位｜{h['馬番']}番 {h['馬名']} "
+                f"｜南関逃げ惜敗 {h.get('南関逃げ惜敗該当走', 0)}走/減点{h.get('南関逃げ惜敗減点', 0)} "
                 f"｜最終 {round(h.get('展開最終点', 0), 1)} "
                 f"｜近況 {round(h.get('近況点', 0), 1)} "
                 f"｜前進+{h.get('前進加点', 0)} "
@@ -12413,9 +12663,29 @@ for h in ana_base_candidates:
                     "垂れ減点係数",
                     1.0,
                 )
+                # 大井C3への降級時だけ、過去C2での失速を軽く扱う。
+                # C2で前へ行けた能力は、C3では相対的に評価できるため。
+                # C3自身の失速、その他のクラス・会場には適用しない。
+                ooi_c3_c2_fade_factor = 1.0
+                if (
+                    baba_name == "大井"
+                    and current_race_class is not None
+                    and current_race_class.get("記号") == "C"
+                    and current_race_class.get("番号") == 3
+                ):
+                    past_runs = target_horse.get("距離付きタイム", [])
+                    if idx < len(past_runs):
+                        past_class = past_runs[idx].get("クラス") or {}
+                        if (
+                            past_class.get("記号") == "C"
+                            and past_class.get("番号") == 2
+                        ):
+                            ooi_c3_c2_fade_factor = 0.50
+
                 race_penalty = round(
                     base_race_penalty
-                    * fade_relief_factor,
+                    * fade_relief_factor
+                    * ooi_c3_c2_fade_factor,
                     1,
                 )
 
@@ -12432,6 +12702,7 @@ for h in ana_base_candidates:
                     "元減点": base_race_penalty,
                     "減点": race_penalty,
                     "垂れ減点係数": fade_relief_factor,
+                    "大井C3降級C2失速係数": ooi_c3_c2_fade_factor,
                 })
 
         # 1600m以上は差し・押し上げ型を少し評価
@@ -13351,6 +13622,23 @@ for candidate in ana_candidates:
     candidate["スコア"] += time_bonus
 
 
+# 大井の降級実力馬は抑え系共通順位にも加点する。
+for candidate in ana_candidates:
+    ooi_bonus = ooi_drop_bonus_map.get(int(candidate["馬番"]), 0)
+    candidate["大井降級実力馬加点"] = ooi_bonus
+    candidate["スコア"] += ooi_bonus
+
+# 大井1200m：1600m以上の後方一辺倒馬は抑えE系に-50点。
+# A/B/C/D/Fには影響させない。
+ooi_1200_long_rear_map = {
+    h["馬番"]: is_ooi_1200_long_rear_only(h, distance_num)
+    for h in horses
+}
+for candidate in ana_candidates:
+    penalty = 50 if ooi_1200_long_rear_map.get(candidate["馬番"], False) else 0
+    candidate["大井1200長距離後方減点"] = penalty
+    candidate["スコア"] -= penalty
+
 ana_candidates = sorted(
     ana_candidates,
     key=lambda x: (
@@ -13396,6 +13684,9 @@ if debug_mode:
         for h in ana_candidates:
 
             watch_marks = []
+
+            if h.get("大井1200長距離後方減点", 0):
+                watch_marks.append("大井1200長距離後方-50")
 
             if h.get("抑え持ちタイム加点", 0):
                 watch_marks.append(f"持ちタイム+{h['抑え持ちタイム加点']:.1f}")
@@ -14169,7 +14460,8 @@ def build_kanazawa_axis_bet_override(context):
             result["浮き輪"] = [["A", "C"]]
         elif style == ("先行", "持続"):
             result["三連複"][1] = ["A", "B", "G"]
-            result["三連複"][2] = ["A", "M", "N"]
+            # 金沢1500m・主先行／副持続のみ、三連複3点目をA-F-Eへ変更。
+            result["三連複"][2] = ["A", "F", "E"]
         elif style == ("差し", "なし"):
             result["三連複"][1] = ["A", "F", "E"]
         elif style == ("逃げ", "先行"):
@@ -17762,6 +18054,58 @@ if (
     current_bet_template["三連複"][2] = ["A", "I", "C"]
 
 
+# 園田820mのみ：主・持続／副・追い込み
+# 三連複3点目 A-M-E / ワイド2点目 M-E。
+# 園田のワイド2点目は既存構造上「浮き輪」枠で出力する。
+if (
+    baba_name == "園田"
+    and distance_num == 820
+    and axis_primary_for_bet == "持続"
+    and axis_secondary_for_bet == "追い込み"
+):
+    current_bet_template["三連複"][2] = ["A", "M", "E"]
+    current_bet_template["浮き輪"] = [["M", "E"]]
+
+
+# 園田1400mのみ：主・持続／副・追い込み
+# 三連複3点目 A-M-P、ワイド2点目 A-M。
+# 園田のワイド2点目は既存構造上「浮き輪」枠で指定する。
+if (
+    baba_name == "園田"
+    and distance_num == 1400
+    and axis_primary_for_bet == "持続"
+    and axis_secondary_for_bet == "追い込み"
+):
+    current_bet_template["三連複"][2] = ["A", "M", "P"]
+    current_bet_template["浮き輪"] = [["A", "M"]]
+
+
+# 大井1200mのみ・軸主：持続／副：追い込み
+# 三連複3点目 A-M-N、ワイド2点目（浮き輪）A-M。
+# それ以外の買い目・距離・競馬場は維持。
+if (
+    baba_name == "大井"
+    and distance_num == 1200
+    and axis_primary_for_bet == "持続"
+    and axis_secondary_for_bet == "追い込み"
+):
+    current_bet_template["三連複"][2] = ["A", "M", "N"]
+    current_bet_template["浮き輪"] = [["A", "M"]]
+
+
+# 大井1200mのみ・軸主：先行／副：持続
+# 三連複1点目 A-B-M、ワイド1点目 A-B。
+# 他の買い目・他距離・他会場は変更しない。
+if (
+    baba_name == "大井"
+    and distance_num == 1200
+    and axis_primary_for_bet == "先行"
+    and axis_secondary_for_bet == "持続"
+):
+    current_bet_template["三連複"][0] = ["A", "B", "M"]
+    current_bet_template["ワイド"][0] = ["A", "B"]
+
+
 alphabet_role_names = {
     "A": "軸",
     "F": "後詰め",
@@ -21345,6 +21689,90 @@ if (
                 trio_bets[2] = [axis_horse, partner, overlapping_horse]
                 break
 
+
+
+# ==================================================
+# 園田限定：最終買い目の不足を補完（3連複3点＋ワイド計2点）
+# 元の買い目は維持し、欠けた点数だけ候補順位順で補完する。
+# 役割候補で成立しない場合のみ実際の出走馬から補完する。
+# ==================================================
+if baba_name == "園田":
+    sonoda_excluded = set(kirisute_horse_numbers or ()) | set(cut_numbers_for_bets or ())
+    sonoda_axis = final_bet_symbols.get("A") or normal_bet_symbols.get("A")
+    sonoda_axis_no = get_num(sonoda_axis) if sonoda_axis else None
+    sonoda_all = [horse_text(h) for h in horses
+                  if h["馬番"] not in sonoda_excluded]
+    sonoda_used_trio = {frozenset(get_num(h) for h in bet)
+                        for bet in trio_bets if len(bet) == 3}
+    sonoda_used_wide = {frozenset(get_num(h) for h in bet)
+                        for bet in list(wide_bets) + list(float_bets) if len(bet) == 2}
+
+    def sonoda_role_pool(role, allow_all=False):
+        entries = ([final_bet_symbols.get(role), normal_bet_symbols.get(role)]
+                   + list(alphabet_candidate_pools.get(role, [])))
+        return unique_texts([h for h in entries if h]
+                            + (sonoda_all if allow_all else []))
+
+    if sonoda_axis_no is not None and len(trio_bets) < 3:
+        templates = list(current_bet_template.get("三連複", []))
+        for broaden in (False, True):
+            for tpl in templates:
+                if len(trio_bets) >= 3:
+                    break
+                if len(tpl) != 3 or tpl[0] != "A":
+                    continue
+                found = None
+                for left in sonoda_role_pool(tpl[1], broaden):
+                    ln = get_num(left)
+                    if ln is None or ln in sonoda_excluded or ln == sonoda_axis_no:
+                        continue
+                    for right in sonoda_role_pool(tpl[2], broaden):
+                        rn = get_num(right)
+                        key = frozenset((sonoda_axis_no, ln, rn))
+                        if (rn is not None and rn not in sonoda_excluded
+                                and len(key) == 3 and key not in sonoda_used_trio):
+                            found = [sonoda_axis, left, right]
+                            break
+                    if found:
+                        break
+                if found:
+                    trio_bets.append(found)
+                    sonoda_used_trio.add(frozenset(get_num(h) for h in found))
+            if len(trio_bets) >= 3:
+                break
+
+    # ワイド1点目・2点目が不足しているときだけ、テンプレートの役割候補を優先。
+    # 既存のワイドは変えず、追加分を通常ワイド枠の末尾に配置する。
+    sonoda_wide_templates = (list(current_bet_template.get("ワイド", []))
+                             + list(current_bet_template.get("浮き輪", [])))
+    for broaden in (False, True):
+        for tpl in sonoda_wide_templates:
+            if len(wide_bets) + len(float_bets) >= 2:
+                break
+            if len(tpl) != 2:
+                continue
+            found = None
+            for left in sonoda_role_pool(tpl[0], broaden):
+                ln = get_num(left)
+                if ln is None or ln in sonoda_excluded:
+                    continue
+                for right in sonoda_role_pool(tpl[1], broaden):
+                    rn = get_num(right)
+                    key = frozenset((ln, rn))
+                    if (rn is not None and rn not in sonoda_excluded
+                            and len(key) == 2 and key not in sonoda_used_wide):
+                        found = [left, right]
+                        break
+                if found:
+                    break
+            if found:
+                wide_bets.append(found)
+                sonoda_used_wide.add(frozenset(get_num(h) for h in found))
+        if len(wide_bets) + len(float_bets) >= 2:
+            break
+
+    if len(trio_bets) < 3 or len(wide_bets) + len(float_bets) < 2:
+        st.warning("園田の買い目が5点に満たないレースです。成立する候補を確認してください。")
 
 st.subheader(
     f"おすすめの三連複 {len(trio_bets)}点"
