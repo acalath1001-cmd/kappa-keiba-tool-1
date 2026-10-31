@@ -18106,6 +18106,41 @@ if (
     current_bet_template["ワイド"][0] = ["A", "B"]
 
 
+# ==================================================
+# 佐賀1400m・稍重検証用（2026/10/31）
+# Aの主・副タイプに「先行」を含む4パターンのみ。
+# 順位・候補プール・他距離・他会場は一切変更しない。
+# ==================================================
+SAGA_1400_TRIAL_BETS = {
+    ("先行", "追い込み"): {
+        "三連複": [["A", "F", "G"], ["A", "M", "E"], ["A", "E", "G"]],
+        "ワイド": [["A", "E"]], "浮き輪": [["A", "F"]],
+    },
+    ("先行", "持続"): {
+        "三連複": [["A", "B", "G"], ["A", "M", "I"], ["A", "F", "B"]],
+        "ワイド": [["A", "B"]], "浮き輪": [["A", "M"]],
+    },
+    ("逃げ", "先行"): {
+        "三連複": [["A", "B", "F"], ["A", "F", "G"], ["A", "B", "M"]],
+        "ワイド": [["A", "B"]], "浮き輪": [["A", "G"]],
+    },
+    ("先行", "逃げ"): {
+        "三連複": [["A", "B", "E"], ["A", "B", "G"], ["A", "M", "E"]],
+        "ワイド": [["A", "B"]], "浮き輪": [["A", "E"]],
+    },
+}
+
+if baba_name == "佐賀" and int(distance_num) == 1400:
+    saga_trial = SAGA_1400_TRIAL_BETS.get(
+        (axis_primary_for_bet, axis_secondary_for_bet)
+    )
+    if saga_trial is not None:
+        current_bet_template.update({
+            key: [item[:] for item in values]
+            for key, values in saga_trial.items()
+        })
+
+
 alphabet_role_names = {
     "A": "軸",
     "F": "後詰め",
@@ -19565,6 +19600,12 @@ def ensure_saga_front_third_trio(
             ("先行", "なし"): ("D", "K"),
         },
     }.get(int(distance_num), {}).get((axis_primary_for_bet, axis_secondary_for_bet))
+    if (
+        baba_name == "佐賀" and int(distance_num) == 1400
+        and (axis_primary_for_bet, axis_secondary_for_bet) in SAGA_1400_TRIAL_BETS
+    ):
+        requested_third = current_bet_template["三連複"][2]
+        saga_third_pair = (requested_third[1], requested_third[2])
     if saga_third_pair is not None:
         def saga_role_candidates(symbol):
             return unique_texts(
