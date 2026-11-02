@@ -1281,8 +1281,6 @@ def render_batch_results_summary():
             axis_label = "後詰め軸" if r.get("検証モード") == "backfill" else "軸"
             result_text = str(r["結果"]).replace(" ", "").replace("　", "")
             line = f"{race_label}｜{axis_label}{r['軸']}番｜結果{result_text}｜払戻{r['払戻']:,}円"
-        if r.get("状態") != "対象外" and r.get("投資", 0) != 500:
-            line += f"｜⚠ 投資{r.get('投資', 0)}円（5点未満の可能性）"
         batch_copy_lines.append(line)
 
     batch_copy_lines.extend([
@@ -18139,6 +18137,31 @@ if baba_name == "佐賀" and int(distance_num) == 1400:
             key: [item[:] for item in values]
             for key, values in saga_trial.items()
         })
+
+
+# 笠松800m・1400m限定：軸の主／副タイプに差し・追い込みを含む場合、
+# 表示上のワイド2点目（浮き輪枠）をF-Eにする。
+# ワイド1点目・三連複・他距離／他会場は変更しない。
+if (
+    baba_name == "笠松"
+    and int(distance_num) in (800, 1400)
+    and (
+        axis_primary_for_bet in ("差し", "追い込み")
+        or axis_secondary_for_bet in ("差し", "追い込み")
+    )
+):
+    current_bet_template["浮き輪"] = [["F", "E"]]
+
+
+# 笠松1400m限定：軸の主＝先行、副＝追い込みの場合、
+# 三連複2点目のみ A-F-E に変更（前回のワイドF-Eは維持）。
+if (
+    baba_name == "笠松"
+    and int(distance_num) == 1400
+    and axis_primary_for_bet == "先行"
+    and axis_secondary_for_bet == "追い込み"
+):
+    current_bet_template["三連複"][1] = ["A", "F", "E"]
 
 
 alphabet_role_names = {
