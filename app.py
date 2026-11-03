@@ -17190,10 +17190,10 @@ transfer_m_info_map = {
 # 点数：2位=4 / 3位=3 / 4位=2 / 5位=1
 # 2〜5位に2部門以上入った馬を最優先。
 #
-# さらに「画面の主要5役」
-#   A軸 / B展開 / 地力代表 / D先行 / E抑え
+# さらに、軸に依存しない固定評価代表
+#   F総合 / C地力 / D先行 / 全馬共通の抑え1位
 # と違う馬を先に並べる。
-# これにより既存5頭から漏れた中間馬を優先して試す。
+# AやBや実際のE（穴馬）の変動でM順位を動かさない。
 #
 # 候補不足時は、同条件の主要5役馬 → 1部門だけ該当馬
 # → 全馬の順で安全にフォールバックする。
@@ -17209,6 +17209,168 @@ def build_rank_map(ranking):
     }
 
 
+# ==================================================
+# 2026/11/03：M/M2専用・軸に依存しない抑え評価
+#
+# E/G/H/I/Nは従来どおり軸や主要5役を除外して穴を選ぶ。
+# 一方M/M2の「抑え順位」には、除外後のana_candidatesを
+# 渡さない。全出走馬を同一条件で採点して別ランキングを作る。
+#
+# 主要Eの評価材料（二段脚・地力・距離・失速・転入・
+# 追い込み・持ちタイムなど）を共有しつつ、
+# 軸で変動する展開Bの候補スコアは基礎点に使用しない。
+# E側の既存ランキング・選出・買い目には影響させない。
+# ==================================================
+def build_m_axis_independent_ana_ranking():
+    total_by_no = {
+        int(h["馬番"]): h for h in total_candidates
+    }
+    horse_by_no = {
+        int(h["馬番"]): h for h in horses
+    }
+    result = []
+
+    for horse_no in sorted(horse_by_no):
+        horse = horse_by_no[horse_no]
+        total_item = total_by_no.get(horse_no, {})
+
+        # 全馬共通の総合基礎点（展開Bには依存しない）。
+        base_score = float(total_item.get(
+            "クラス補正前スコア",
+            total_item.get("総合スコア", 0),
+        ) or 0) * 0.5
+        score = base_score
+
+        second_wind_info = second_wind_ana_info_map.get(horse_no, {})
+        score += float(second_wind_info.get("加点", 0) or 0)
+
+        long_distance_info = calc_long_distance_special_info(
+            horse, distance_num, current_race_class,
+        )
+        score += float(long_distance_info.get("加点", 0) or 0) * 0.80
+
+        # 既存Eと同じ「地力順位点＋地力スコア5％（上限75）」。
+        long_rank = long_rank_map_for_ana.get(horse_no, 99)
+        long_score = float(long_score_map_for_ana.get(horse_no, 0) or 0)
+        score += ana_long_rank_bonus_table.get(long_rank, 0)
+        if long_rank <= 5:
+            score += min(max(long_score, 0) * 0.05, 75)
+
+        # E本体と同じ過去走の垂れ減点を、主要馬を含む全馬へ適用。
+        flows = horse.get("通過順", [])
+        finishes = horse.get("着順", [])
+        for idx, flow in enumerate(flows):
+            if len(flow) < 2 or idx >= len(finishes):
+                continue
+            finish = finishes[idx]
+            if finish is None:
+                continue
+            last = flow[-1]
+            raw_penalty = 0
+            if last <= 4 and finish >= 6:
+                raw_penalty = 50
+            if last <= 3 and 8 <= finish <= 9:
+                raw_penalty = 80
+            if last <= 3 and finish >= 10:
+                raw_penalty = 150
+            if raw_penalty:
+                ooi_c3_factor = 1.0
+                if (
+                    baba_name == "大井"
+                    and current_race_class is not None
+                    and current_race_class.get("記号") == "C"
+                    and current_race_class.get("番号") == 3
+                ):
+                    past_runs = horse.get("距離付きタイム", [])
+                    if idx < len(past_runs):
+                        past_class = past_runs[idx].get("クラス") or {}
+                        if (
+                            past_class.get("記号") == "C"
+                            and past_class.get("番号") == 2
+                        ):
+                            ooi_c3_factor = 0.50
+                score -= round(
+                    raw_penalty
+                    * horse.get("垂れ減点係数", 1.0)
+                    * ooi_c3_factor, 1,
+                )
+
+        if distance_num >= 1600:
+            firsts = [f[0] for f in flows if len(f) >= 2]
+            lasts = [f[-1] for f in flows if len(f) >= 2]
+            if firsts and lasts and (
+                sum(firsts) / len(firsts) >= 7
+                and sum(lasts) / len(lasts) <= 5
+            ):
+                score += 50
+
+        score -= calc_major_list_big_fourth_fade_penalty(horse, "抑え")
+
+        # E本体と同じ適用順：水沢クラス係数 → 名古屋総合加点
+        # → 転入・追い込み・タイム・大井補正。
+        if baba_name == "水沢":
+            score, _ = apply_mizusawa_ranking_class_factor(
+                score, horse, current_race_class, distance_num,
+            )
+        if baba_name == "名古屋":
+            score += round(max(total_score_map_for_ana.get(horse_no, 0), 0) * 0.25, 1)
+
+        transfer = transfer_ana_rescue_info_map.get(horse_no, {})
+        if transfer.get("対象", False):
+            score += float(transfer.get("抑え加点", 0) or 0)
+        score += ana_push_bonus_map.get(horse_no, 0)
+        score += round(min(
+            180.0, ana_time_score_map.get(horse_no, 0.0) * 1.5,
+        ), 1)
+        score += ooi_drop_bonus_map.get(horse_no, 0)
+        if ooi_1200_long_rear_map.get(horse_no, False):
+            score -= 50
+
+        # 足切り馬にもスコアを付けるが、二段脚で救済されない場合は
+        # E本体と同様に通常候補の後ろへ回す。
+        cut_without_rescue = (
+            horse_no in ana_cut_horse_numbers
+            and second_wind_info.get("加点", 0) <= 0
+        )
+
+        result.append({
+            "馬番": horse_no,
+            "馬名": horse["馬名"],
+            "スコア": round(score, 2),
+            "足切り対象": cut_without_rescue,
+            "超短距離最高タイム警戒": (
+                horse_no in ultra_short_best_time_watch_numbers
+            ),
+            "長距離適性救済": (
+                horse_no in long_distance_special_watch_numbers
+            ),
+            "同距離逃げ切り警戒": (
+                horse_no in same_distance_escape_win_horse_numbers
+            ),
+            "総合TOP3地力TOP3救済": (
+                horse_no in total_top3_numbers
+                and horse_no in long_top3_numbers
+            ),
+        })
+
+    # Eの警戒馬優先と最終スコアを利用するが、主要馬除外なし。
+    # 最下位2部門の足切りだけは原則として後ろに回す。
+    result.sort(key=lambda h: (
+        not h["足切り対象"],
+        h["超短距離最高タイム警戒"],
+        h["長距離適性救済"],
+        h["同距離逃げ切り警戒"],
+        h["総合TOP3地力TOP3救済"],
+        h["スコア"],
+        -h["馬番"],
+    ), reverse=True)
+    return result
+
+
+m_axis_independent_ana_candidates = (
+    build_m_axis_independent_ana_ranking()
+)
+
 m_rank_maps = {
     "総合": build_rank_map(
         total_candidates
@@ -17219,8 +17381,9 @@ m_rank_maps = {
     "前進": build_rank_map(
         front_candidates
     ),
+    # E系の穴馬選出後の順位ではなく、全出走馬の除外前の抑え順位。
     "抑え": build_rank_map(
-        ana_candidates
+        m_axis_independent_ana_candidates
     ),
     "3→4追い込み": build_rank_map(
         corner_push_3to4
@@ -17359,14 +17522,19 @@ m_candidates.sort(
     )
 )
 
-# 画面主要5役。Mではまず、この5頭以外を優先する。
+# M用の「主要評価馬」は軸変更で変わらない代表だけ。
+# A/B（軸・展開）と、Aによって入れ替わる穴Eは含めない。
+# E相当は上で算出した「全馬共通の除外前抑え1位」を使う。
+# これでMの優先グループも軸選択から独立する。
 m_major_numbers = {
-    int(popular_horse_num),
-    int(tenkai_best["馬番"]),
+    int(total_best["馬番"]),
     int(long_best["馬番"]),
     int(front_best["馬番"]),
-    int(ana_best["馬番"]),
 }
+if m_axis_independent_ana_candidates:
+    m_major_numbers.add(
+        int(m_axis_independent_ana_candidates[0]["馬番"])
+    )
 
 m_primary = [
     h
@@ -17429,8 +17597,8 @@ m_single = [
 # まず従来どおり「中間重複」で候補を絞る。
 #
 # 優先順位：
-#   1) 2部門以上＋主要5役外
-#   2) 2部門以上＋主要5役
+#   1) 2部門以上＋固定評価代表外
+#   2) 2部門以上＋固定評価代表
 #   3) 1部門だけ該当
 #
 # 各グループ内だけ、
@@ -17502,9 +17670,9 @@ m_single = sort_m_group_by_time(
 )
 
 # 優先順位：
-# 1) 従来の2部門以上＋主要5役外
+# 1) 2部門以上＋固定評価代表外
 # 2) 転入M救済（最大1頭）
-# 3) 従来の2部門以上＋主要5役
+# 3) 2部門以上＋固定評価代表
 # 4) 従来の1部門だけ該当
 #
 # 通常Mの強い候補を最優先に残したまま、
@@ -17556,9 +17724,10 @@ if debug_mode:
         expanded=False,
     ):
         st.caption(
+            "抑え順位は全馬共通・軸除外前｜"
             "2〜5位のみ加点｜"
             "2位=4点・3位=3点・4位=2点・5位=1点｜"
-            "2部門以上＋主要5役外を最優先｜"
+            "2部門以上＋固定評価代表外を最優先｜"
             "転入M救済は最大1頭｜"
             + ("｜門別のみ上がり3F加点後Mスコアを優先（1位+50／2位+35／3位+20／4位+10）"
                if baba_name == "門別" else "")
@@ -17581,10 +17750,10 @@ if debug_mode:
                 )
 
                 major_mark = (
-                    "｜主要5役"
+                    "｜固定代表"
                     if h["馬番"]
                     in m_major_numbers
-                    else "｜主要5役外"
+                    else "｜固定代表外"
                 )
 
                 m_time = (
@@ -18164,6 +18333,65 @@ if (
     current_bet_template["三連複"][1] = ["A", "F", "E"]
 
 
+
+# ==================================================
+# 船橋1200m：軸の主・副脚質別・実験買い目（5種類）
+# 2026/11/03 の役割検証をもとにした指定。
+#
+# 最終優先で適用する理由：
+# 全会場共通の「三連複1点目 A-B / 2点目 A-F」統一処理より
+# 後で適用しないと、今回指定した5パターンの買い目が壊れる。
+#
+# ・三連複：3点
+# ・ワイド：3点（通常ワイド2点＋浮き輪枠1点）
+# ・ワイド2/3点目にAは入れない。
+# ・F、M、M2などの評価・候補順位には変更を加えない。
+# ・船橋1200m以外と、表にない主副組み合わせは従来通り。
+# ==================================================
+FUNABASHI_1200_FIVE_AXIS_RULES = {
+    ("先行", "持続"): {
+        "三連複": [["A", "B", "E"], ["A", "M", "H"], ["A", "M2", "E"]],
+        "ワイド": [["A", "I"], ["B", "E"]],
+        "浮き輪": [["B", "N"]],
+    },
+    ("先行", "追い込み"): {
+        "三連複": [["A", "B", "H"], ["A", "M", "H"], ["A", "B", "I"]],
+        "ワイド": [["A", "H"], ["B", "I"]],
+        "浮き輪": [["D", "M2"]],
+    },
+    ("逃げ", "先行"): {
+        "三連複": [["A", "B", "M"], ["A", "B", "I"], ["A", "E", "J"]],
+        "ワイド": [["A", "I"], ["I", "J"]],
+        "浮き輪": [["B", "I"]],
+    },
+    ("逃げ", "なし"): {
+        "三連複": [["A", "E", "I"], ["A", "E", "M"], ["A", "M", "G"]],
+        "ワイド": [["A", "E"], ["E", "I"]],
+        "浮き輪": [["I", "D"]],
+    },
+    ("持続", "なし"): {
+        "三連複": [["A", "E", "M"], ["A", "I", "E"], ["A", "M2", "E"]],
+        "ワイド": [["A", "E"], ["E", "M"]],
+        "浮き輪": [["I", "E"]],
+    },
+    ("持続", "追い込み"): {
+        "三連複": [["A", "E", "M"], ["A", "I", "E"], ["A", "M2", "E"]],
+        "ワイド": [["A", "E"], ["E", "M"]],
+        "浮き輪": [["I", "E"]],
+    },
+}
+
+if baba_name == "船橋" and int(distance_num) == 1200:
+    funabashi_1200_rule = FUNABASHI_1200_FIVE_AXIS_RULES.get(
+        (axis_primary_for_bet, axis_secondary_for_bet)
+    )
+    if funabashi_1200_rule is not None:
+        current_bet_template.update({
+            bet_type: [symbols[:] for symbols in bets]
+            for bet_type, bets in funabashi_1200_rule.items()
+        })
+
+
 alphabet_role_names = {
     "A": "軸",
     "F": "後詰め",
@@ -18516,6 +18744,22 @@ def select_bet_alphabet_horses(
     # B（展開）とF（後詰め）が同じ馬でも、
     # Fを先に確定し、後から処理されるBを次候補へ繰り下げる。
     for symbol in selection_order:
+
+        # F/M/M2の「役割」そのものはA・B・他記号と重なっても固定。
+        # 三連複・ワイドの同一馬重複は後段の買い目生成時にだけ解決。
+        # 斬り捨てが再導入された場合は、その除外だけを尊重する。
+        if symbol in {"F", "M", "M2"}:
+            selected_horse = next(
+                (
+                    candidate
+                    for candidate in alphabet_candidate_pools.get(symbol, [])
+                    if get_num(candidate) not in excluded_numbers
+                ),
+                None,
+            )
+            if selected_horse is not None:
+                selected_symbols[symbol] = selected_horse
+            continue
 
         selected_horse = choose_alphabet_horse(
             symbol,
@@ -18904,6 +19148,7 @@ def make_unique_trio_bets(
                 [horse_text(h) for h in m_selection_candidates]
             )
         ),
+        "M2": list(m2_pool),
         "J": list(j_pool),
         "K": list(k_pool),
         "L": unique_texts(l_base_pool),
