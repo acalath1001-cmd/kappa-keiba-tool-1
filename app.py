@@ -1401,10 +1401,342 @@ def make_role_result(top3, symbols, used_symbols=None, a_axis_label=None):
     return " ／ ".join(entries) + axis_suffix
 
 
-def finish_role_race(status, detail, venue, distance, race_number):
+# ==================================================
+# 📊 役割検証 → Excel蓄積用CSV
+# 1着・2着・3着をそれぞれ1行で保存。役割重複・※を保持。
+# A〜P列: 0=該当なし / 1=使用中 / 2=未使用候補1位(※)
+# CSVはExcelで文字化けしにくいUTF-8 BOM付き。
+# ==================================================
+ROLE_EXCEL_SYMBOLS = [
+    "A", "B", "C", "D", "E", "F", "G", "H", "I",
+    "J", "K", "L", "M", "M2", "N", "P",
+]
+ROLE_EXCEL_COLUMNS = [
+    "日付", "会場", "R", "距離m", "馬場", "軸馬番", "軸主タイプ",
+    "軸副タイプ", "着順", "馬番", "役割(全て)", "使用記号",
+    "未使用候補", "該当なし",
+] + ROLE_EXCEL_SYMBOLS
+
+
+def make_excel_role_rows(top3, symbols, used_symbols):
+    """結果取得済みレースをExcel向けの馬別レコードに変換。"""
+    used = set(used_symbols)
+    result_rows = []
+    for place in (1, 2, 3):
+        numbers = top3.get(place, [])
+        if not isinstance(numbers, (list, tuple, set)):
+            numbers = [] if numbers in (None, "") else [numbers]
+        for number in numbers:
+            try:
+                number = int(number)
+            except (ValueError, TypeError):
+                continue
+            roles = [
+                symbol for symbol, horse in symbols.items()
+                if horse and get_num(horse) == number
+            ]
+            active_roles = [symbol for symbol in roles if symbol in used]
+            candidate_roles = [symbol for symbol in roles if symbol not in used]
+            entry = {
+                "着順": place,
+                "馬番": number,
+                "役割(全て)": "/".join(
+                    symbol + ("" if symbol in used else "※")
+                    for symbol in roles
+                ) if roles else "✕",
+                "使用記号": "/".join(active_roles),
+                "未使用候補": "/".join(candidate_roles),
+                "該当なし": 1 if not roles else 0,
+            }
+            for symbol in ROLE_EXCEL_SYMBOLS:
+                entry[symbol] = (1 if symbol in active_roles
+                                 else 2 if symbol in candidate_roles else 0)
+            result_rows.append(entry)
+    return result_rows
+
+
+def make_current_role_csv_records(session_rows, date_value):
+    records = []
+    for race in session_rows:
+        if race.get("状態") != "完了":
+            continue
+        for finisher in race.get("着順別", []):
+            record = {
+                "日付": str(date_value).replace("/", "-"),
+                "会場": race.get("会場", ""),
+                "R": race.get("R", ""),
+                "距離m": race.get("距離", ""),
+                "馬場": race.get("馬場", "不明"),
+                "軸馬番": race.get("軸馬番", ""),
+                "軸主タイプ": race.get("軸主タイプ", ""),
+                "軸副タイプ": race.get("軸副タイプ", ""),
+            }
+            record.update(finisher)
+            records.append({k: record.get(k, "") for k in ROLE_EXCEL_COLUMNS})
+    return records
+
+
+def merge_role_csv_records(old_records, new_records):
+    """同一日・会場・R・着順・馬番は重複登録せず新しい方を優先。"""
+    merged = {}
+    for item in list(old_records) + list(new_records):
+        row = {k: item.get(k, "") for k in ROLE_EXCEL_COLUMNS}
+        key = tuple(str(row[k]).strip() for k in
+                    ("日付", "会場", "R", "着順", "馬番"))
+        if all(key):
+            merged[key] = row
+
+    def numeric(value):
+        try:
+            return int(value)
+        except (ValueError, TypeError):
+            return 999
+
+    return sorted(merged.values(), key=lambda r: (
+        str(r["日付"]), str(r["会場"]), numeric(r["R"]),
+        numeric(r["着順"]), numeric(r["馬番"])))
+
+
+def role_csv_bytes(records):
+    import csv
+    import io
+    buffer = io.StringIO(newline="")
+    writer = csv.DictWriter(buffer, fieldnames=ROLE_EXCEL_COLUMNS,
+                            extrasaction="ignore", lineterminator="\n")
+    writer.writeheader()
+    writer.writerows(records)
+    return ("\ufeff" + buffer.getvalue()).encode("utf-8")
+
+
+def parse_prior_role_csv(uploaded_file):
+    import csv
+    import io
+    text_data = uploaded_file.getvalue().decode("utf-8-sig")
+    reader = csv.DictReader(io.StringIO(text_data))
+    if not reader.fieldnames or not set(ROLE_EXCEL_COLUMNS).issubset(reader.fieldnames):
+        raise ValueError("このツールで保存した『役割検証_累積.csv』を選択してください。")
+    return list(reader)
+
+
+# ==================================================
+# 📊 会場別のExcel (.xlsx) 入出力
+# 追加ライブラリ不要で、保存した.xlsxを次回アップロードして蓄積可能。
+# 「全会場」＋会場別シートを作成し、CSV版も従来どおり利用可能。
+# ==================================================
+def role_venue_sheet_names(records):
+    """過去データの有無にかかわらず、全会場タブを常に作成する。"""
+    preferred = [name.removesuffix("競馬") for name in keibajo.values()]
+    present = {str(r.get("会場", "")).strip() for r in records if r.get("会場")}
+    return preferred + sorted(present - set(preferred))
+
+
+def role_xlsx_bytes(records):
+    """役割検証をExcelブックへ。全会場＋会場ごとのシート。"""
+    import io
+    import zipfile
+    from xml.sax.saxutils import escape as xml_escape
+
+    # シート名はExcelの31文字制限・禁止文字に適合させる。
+    def safe_sheet(name):
+        clean = "".join("_" if ch in r"[]:*?/\\" else ch for ch in str(name))
+        return clean[:31] or "会場不明"
+
+    venues = role_venue_sheet_names(records)
+    tabs = [("全会場", records)] + [
+        (safe_sheet(venue), [r for r in records if str(r.get("会場", "")).strip() == venue])
+        for venue in venues
+    ]
+
+    def cell_ref(col_index, row_index):
+        n = col_index + 1
+        letters = ""
+        while n:
+            n, digit = divmod(n - 1, 26)
+            letters = chr(65 + digit) + letters
+        return f"{letters}{row_index}"
+
+    numeric_cols = set(["R", "距離m", "軸馬番", "着順", "馬番", "該当なし"]
+                       + ROLE_EXCEL_SYMBOLS)
+
+    def cell_xml(col_idx, row_idx, col, value, header=False):
+        address = cell_ref(col_idx, row_idx)
+        style = ' s="1"' if header else ''
+        if not header and col in numeric_cols:
+            try:
+                number = int(str(value).strip())
+            except (ValueError, TypeError):
+                pass
+            else:
+                return f'<c r="{address}"{style}><v>{number}</v></c>'
+        value = "" if value is None else str(value)
+        # XML 1.0: Excelで無効な制御文字を除去
+        value = "".join(c for c in value if ord(c) >= 32 or c in "\\n\\t\\r")
+        preserve = ' xml:space="preserve"' if value != value.strip() else ''
+        return (f'<c r="{address}" t="inlineStr"{style}>'
+                f'<is><t{preserve}>{xml_escape(value)}</t></is></c>')
+
+    def sheet_xml(rows):
+        widths = [13, 12, 7, 9, 9, 9, 13, 13, 7, 7, 24, 22, 22, 10]
+        widths += [7] * len(ROLE_EXCEL_SYMBOLS)
+        col_parts = [f'<col min="{i}" max="{i}" width="{width}" customWidth="1"/>'
+                     for i, width in enumerate(widths, 1)]
+        rows_xml = []
+        data_rows = [dict(zip(ROLE_EXCEL_COLUMNS, ROLE_EXCEL_COLUMNS))] + rows
+        for row_number, data in enumerate(data_rows, 1):
+            cells = ''.join(cell_xml(i, row_number, col, data.get(col, ""),
+                                     header=(row_number == 1))
+                            for i, col in enumerate(ROLE_EXCEL_COLUMNS))
+            row_style = ' ht="27" customHeight="1"' if row_number == 1 else ''
+            rows_xml.append(f'<row r="{row_number}"{row_style}>{cells}</row>')
+        last = cell_ref(len(ROLE_EXCEL_COLUMNS) - 1, max(len(data_rows), 1))
+        return ( '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+                 '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+                 '<sheetViews><sheetView workbookViewId="0">'
+                 '<pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/>'
+                 '</sheetView></sheetViews>'
+                 '<cols>' + ''.join(col_parts) + '</cols>'
+                 '<sheetData>' + ''.join(rows_xml) + '</sheetData>'
+                 f'<autoFilter ref="A1:{last}"/>'
+                 '</worksheet>' )
+
+    workbook_sheets = ''.join(
+        f'<sheet name="{xml_escape(name, {chr(34): "&quot;"})}" sheetId="{i}" r:id="rId{i}"/>'
+        for i, (name, _) in enumerate(tabs, 1)
+    )
+    workbook = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+                '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+                'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+                '<bookViews><workbookView activeTab="0"/></bookViews>'
+                '<sheets>' + workbook_sheets + '</sheets>'
+                '</workbook>')
+    rels = ''.join(
+        f'<Relationship Id="rId{i}" '
+        'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" '
+        f'Target="worksheets/sheet{i}.xml"/>' for i in range(1, len(tabs) + 1)
+    )
+    rels += (f'<Relationship Id="rId{len(tabs) + 1}" '
+             'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" '
+             'Target="styles.xml"/>')
+    rels = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            + rels + '</Relationships>')
+    content_types = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+       '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+       '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+       '<Default Extension="xml" ContentType="application/xml"/>'
+       '<Override PartName="/xl/workbook.xml" '
+       'ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
+       '<Override PartName="/xl/styles.xml" '
+       'ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>'
+       + ''.join(f'<Override PartName="/xl/worksheets/sheet{i}.xml" '
+                   'ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
+                   for i in range(1, len(tabs) + 1)) + '</Types>')
+    styles = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+       '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+       '<fonts count="2"><font><sz val="11"/><name val="Aptos"/></font>'
+       '<font><b/><color rgb="FFFFFFFF"/><sz val="11"/><name val="Aptos"/></font></fonts>'
+       '<fills count="3"><fill><patternFill patternType="none"/></fill>'
+       '<fill><patternFill patternType="gray125"/></fill>'
+       '<fill><patternFill patternType="solid"><fgColor rgb="FF153B52"/>'
+       '<bgColor indexed="64"/></patternFill></fill></fills>'
+       '<borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>'
+       '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>'
+       '<cellXfs count="2"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>'
+       '<xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFill="1" applyFont="1"/>'
+       '</cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>'
+       '</styleSheet>')
+    root_rels = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+       '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+       '<Relationship Id="rId1" '
+       'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" '
+       'Target="xl/workbook.xml"/></Relationships>')
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, 'w', zipfile.ZIP_DEFLATED) as z:
+        z.writestr('[Content_Types].xml', content_types)
+        z.writestr('_rels/.rels', root_rels)
+        z.writestr('xl/workbook.xml', workbook)
+        z.writestr('xl/_rels/workbook.xml.rels', rels)
+        z.writestr('xl/styles.xml', styles)
+        for i, (_, data) in enumerate(tabs, 1):
+            z.writestr(f'xl/worksheets/sheet{i}.xml', sheet_xml(data))
+    return out.getvalue()
+
+
+def parse_prior_role_xlsx(uploaded_file):
+    """先頭の全会場シートから過去分を復元。Excel再保存後のsharedStringsにも対応。"""
+    import io
+    import posixpath
+    import zipfile
+    import xml.etree.ElementTree as ET
+    ns = {'m': 'http://schemas.openxmlformats.org/spreadsheetml/2006/main',
+          'r': 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'}
+    relns = '{http://schemas.openxmlformats.org/package/2006/relationships}'
+    with zipfile.ZipFile(io.BytesIO(uploaded_file.getvalue())) as z:
+        workbook = ET.fromstring(z.read('xl/workbook.xml'))
+        sheet = next((s for s in workbook.findall('m:sheets/m:sheet', ns)
+                      if s.get('name') == '全会場'), None)
+        if sheet is None:
+            raise ValueError('会場別Excelの「全会場」シートが見つかりません。')
+        rel_id = sheet.get('{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id')
+        rel_root = ET.fromstring(z.read('xl/_rels/workbook.xml.rels'))
+        relation = next((r for r in rel_root.findall(relns + 'Relationship')
+                         if r.get('Id') == rel_id), None)
+        if relation is None:
+            raise ValueError('Excelのシート情報を取得できません。')
+        target = relation.get('Target', '')
+        path = target.lstrip('/') if target.startswith('/') else posixpath.normpath('xl/' + target)
+        if not path.startswith('xl/'):
+            raise ValueError('Excelのシート情報が不正です。')
+        shared_strings = []
+        if 'xl/sharedStrings.xml' in z.namelist():
+            shared_root = ET.fromstring(z.read('xl/sharedStrings.xml'))
+            for si in shared_root.findall('m:si', ns):
+                shared_strings.append(''.join(t.text or '' for t in si.findall('.//m:t', ns)))
+        sheet_root = ET.fromstring(z.read(path))
+        data_rows = []
+        for row in sheet_root.findall('m:sheetData/m:row', ns):
+            vals = {}
+            for cell in row.findall('m:c', ns):
+                address = cell.get('r', '')
+                col_letters = ''.join(c for c in address if c.isalpha())
+                index = 0
+                for letter in col_letters.upper():
+                    index = index * 26 + (ord(letter) - 64)
+                if index < 1 or index > len(ROLE_EXCEL_COLUMNS):
+                    continue
+                v = cell.find('m:v', ns)
+                if cell.get('t') == 'inlineStr':
+                    value = ''.join(t.text or '' for t in cell.findall('.//m:t', ns))
+                elif cell.get('t') == 's' and v is not None:
+                    value = shared_strings[int(v.text)]
+                else:
+                    value = v.text if v is not None and v.text is not None else ''
+                vals[ROLE_EXCEL_COLUMNS[index - 1]] = value
+            data_rows.append(vals)
+        if not data_rows or any(data_rows[0].get(c) != c for c in ROLE_EXCEL_COLUMNS):
+            raise ValueError('役割検証の累積Excelではないか、列構成が異なります。')
+        return [{c: r.get(c, '') for c in ROLE_EXCEL_COLUMNS} for r in data_rows[1:]]
+
+
+
+# ==================================================
+# 📗 役割検証：セッション内で全会場をまとめるシンプル方式
+# 外部保存先なし。検証終了ごとに累積し、最後に1つのExcelで保存。
+# ==================================================
+def role_master_stats(records):
+    races = {(str(r['日付']), str(r['会場']), str(r['R'])) for r in records}
+    venues = {str(r.get('会場', '')).strip() for r in records if r.get('会場')}
+    return f'{len(races)}レース／{len(records)}頭／{len(venues)}会場'
+
+
+def finish_role_race(status, detail, venue, distance, race_number,
+                     role_detail_rows=None, baba="不明", axis_number=None,
+                     main_type="", sub_type=""):
     rows = st.session_state.setdefault("role_results", [])
     rows.append({"R": int(race_number), "会場": venue,
-                 "距離": distance, "状態": status, "照合": detail})
+                 "距離": distance, "馬場": baba, "状態": status, "照合": detail,
+                 "軸馬番": axis_number, "軸主タイプ": main_type,
+                 "軸副タイプ": sub_type, "着順別": role_detail_rows or []})
     reset_batch_axis_temp_state()
     if st.session_state.batch_race_no < st.session_state.batch_last_race:
         st.session_state.batch_race_no += 1
@@ -1418,9 +1750,9 @@ def finish_role_race(status, detail, venue, distance, race_number):
 def render_role_controls(source_url, key_suffix):
     st.markdown("---")
     st.markdown("## 🔎 全R・結果の役割検証")
-    if st.session_state.get("role_validation_schema") != "all_symbols_v3_P":
+    if st.session_state.get("role_validation_schema") != "all_symbols_v5_venue_xlsx":
         st.session_state.role_results = []
-        st.session_state.role_validation_schema = "all_symbols_v3_P"
+        st.session_state.role_validation_schema = "all_symbols_v5_venue_xlsx"
     st.caption("1番人気を軸に1Rから検証。1着→2着→3着の順に表示します。"
                "○＝役割あり、✕＝全記号に該当なし（馬券の的中判定ではありません）。"
                "複数の役割は併記。※は買い目で未使用の記号の候補1位です。使用記号は最終選出で照合します。")
@@ -1433,6 +1765,13 @@ def render_role_controls(source_url, key_suffix):
         if not date or not venue:
             st.error("出馬表URLから開催日・競馬場を取得できません。")
         else:
+            # 前の検証結果を保存してから、次の会場の検証を開始する。
+            # 取り込み済みデータとは日付・会場・R・着順・馬番で重複排除。
+            previous_run = make_current_role_csv_records(
+                st.session_state.get('role_results', []),
+                st.session_state.get('role_result_date', ''))
+            st.session_state.role_excel_accumulated = merge_role_csv_records(
+                st.session_state.get('role_excel_accumulated', []), previous_run)
             st.session_state.role_results = []
             st.session_state.role_result_date = date
             st.session_state.role_validation_running = True
@@ -1446,18 +1785,57 @@ def render_role_controls(source_url, key_suffix):
             st.session_state.analyzed = True
             st.rerun()
     rows = st.session_state.get("role_results", [])
-    if rows:
+    if rows or st.session_state.get('role_excel_accumulated'):
         lines = [f"【結果の役割検証】{st.session_state.get('role_result_date', '')}",
                  "1番人気軸／1着→2着→3着／○＝役割あり・✕＝全記号に該当なし／※＝未使用記号の候補1位"]
         for row in sorted(rows, key=lambda r: r["R"]):
-            title = f"{row['会場']}{row['R']}R・{row['距離']}m"
+            title = f"{row['会場']}{row['R']}R・{row['距離']}m・馬場{row.get('馬場', '不明')}"
             lines.append(f"{title}｜{row['照合']}" if row["状態"] == "完了"
                          else f"{title}｜{row['状態']}：{row['照合']}")
         st.code("\n".join(lines), language=None)
         st.download_button("📥 役割検証結果を保存", "\n".join(lines),
                            file_name="結果の役割検証.txt", mime="text/plain",
                            key=f"role_download_{key_suffix}")
-        if st.button("役割検証結果をクリア", key=f"role_clear_{key_suffix}"):
+        st.markdown("### 📗 全会場まとめてExcel保存")
+        st.caption("この画面を開いている間、検証した会場を全部まとめて保存できます。")
+        current_records = make_current_role_csv_records(
+            rows, st.session_state.get("role_result_date", ""))
+        accumulated = st.session_state.get('role_excel_accumulated', [])
+
+        # 翌日などに再開する場合、前回保存したExcelを1度だけ読み込む。
+        with st.expander("前回のExcelから続きを追加する（必要なときだけ）"):
+            uploaded = st.file_uploader(
+                "前回の全会場Excelを選択", type=["xlsx"],
+                key="role_excel_simple_previous")
+            if uploaded is not None:
+                try:
+                    uploaded_records = parse_prior_role_xlsx(uploaded)
+                    st.session_state.role_excel_accumulated = merge_role_csv_records(
+                        uploaded_records, accumulated)
+                    accumulated = st.session_state.role_excel_accumulated
+                    st.caption("前回分を読み込み済み：" + role_master_stats(uploaded_records))
+                except Exception as exc:
+                    st.error(f"Excelを読み込めませんでした：{exc}")
+
+        all_records = merge_role_csv_records(accumulated, current_records)
+        st.info("現在の蓄積：" + role_master_stats(all_records))
+        # 実行中フラグが残っていても、集まったデータはいつでも保存できる。
+        # 結果の取得が途中で止まっても、過去分と現在分の両方を失わない。
+        if all_records:
+            st.download_button(
+                "📗 全会場まとめてExcel保存",
+                data=role_xlsx_bytes(all_records),
+                file_name="役割検証_全会場_累積.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key=f"role_simple_download_{key_suffix}",
+                use_container_width=True)
+            if st.session_state.get('role_validation_running', False):
+                st.caption("検証途中でも、ここまでの蓄積を保存できます。")
+            else:
+                st.caption("次に別会場を検証してもデータは残ります。翌日は保存したExcelを上の欄から読み込んで続けてください。")
+        if st.button("今回の検証表示だけクリア", key=f"role_clear_{key_suffix}"):
+            st.session_state.role_excel_accumulated = merge_role_csv_records(
+                st.session_state.get('role_excel_accumulated', []), current_records)
             st.session_state.role_results = []
             st.rerun()
 
@@ -2724,10 +3102,7 @@ if baba_match:
 else:
     baba_status = "不明"
 
-if baba_status in ["重", "不良"]:
-    st.info("馬場状態：重・不良")
-else:
-    st.info("馬場状態：良")
+st.info(f"馬場状態：{baba_status}")
 distance_match = re.search(
     r"([０-９0-9]{3,4})\s*(?:m|ｍ|メートル)",
     page_text
@@ -14832,7 +15207,7 @@ def build_urawa_funabashi_axis_bet_override(context):
         result["浮き輪"] = [["F", "D"]]
 
     # 船橋1200mのみ・主＝逃げ／副＝先行の時は、
-    # 三連複3点目を A-B-M、ワイド2点目を M-E に変更する。
+    # 三連複3点目を A-E-L、ワイド2点目を M-E に変更する。
     # 他距離・他主副脚質・三連複1点目2点目・浮き輪・浦和には影響させない。
     if (
         context.get("track") == "船橋"
@@ -14840,7 +15215,7 @@ def build_urawa_funabashi_axis_bet_override(context):
         and context.get("axis_primary") == "逃げ"
         and context.get("axis_secondary") == "先行"
     ):
-        result["三連複"][2] = ["A", "B", "M"]
+        result["三連複"][2] = ["A", "E", "L"]
         result["ワイド"][1] = ["M", "E"]
 
     # 船橋1200mのみ・主＝先行／副＝持続の時は、
@@ -18360,7 +18735,7 @@ FUNABASHI_1200_FIVE_AXIS_RULES = {
         "浮き輪": [["D", "M2"]],
     },
     ("逃げ", "先行"): {
-        "三連複": [["A", "B", "M"], ["A", "B", "I"], ["A", "E", "J"]],
+        "三連複": [["A", "B", "M"], ["A", "B", "I"], ["A", "E", "L"]],
         "ワイド": [["A", "I"], ["I", "J"]],
         "浮き輪": [["B", "I"]],
     },
@@ -18390,6 +18765,18 @@ if baba_name == "船橋" and int(distance_num) == 1200:
             bet_type: [symbols[:] for symbols in bets]
             for bet_type, bets in funabashi_1200_rule.items()
         })
+
+
+# ==================================================
+# 佐賀1300m限定：三連複1点目を最終統一（2026/11/04）
+# 既存のA-B-Eだけはそのまま残し、それ以外はA-B-Mにする。
+# 2・3点目、ワイド、他距離、他会場には影響させない。
+# 主・副タイプに関係なく適用する。
+# ==================================================
+if baba_name == "佐賀" and int(distance_num) == 1300:
+    saga_first_trio = current_bet_template.get("三連複", [])
+    if saga_first_trio and saga_first_trio[0] != ["A", "B", "E"]:
+        saga_first_trio[0] = ["A", "B", "M"]
 
 
 alphabet_role_names = {
@@ -22524,14 +22911,24 @@ if check_result:
 
         if st.session_state.get("role_validation_running") and st.session_state.batch_mode:
             if has_confirmed_top_finishers(top3):
-                finish_role_race("完了", make_role_result(
-                    top3, build_all_validation_symbols(
-                        final_bet_symbols, alphabet_candidate_pools, required_symbols
-                    ), required_symbols, a_axis_label_for_role),
-                                 baba_name, distance_num, race_no)
+                all_role_symbols = build_all_validation_symbols(
+                    final_bet_symbols, alphabet_candidate_pools, required_symbols)
+                finish_role_race(
+                    "完了",
+                    make_role_result(top3, all_role_symbols, required_symbols,
+                                     a_axis_label_for_role),
+                    baba_name, distance_num, race_no,
+                    role_detail_rows=make_excel_role_rows(
+                        top3, all_role_symbols, required_symbols),
+                    baba=baba_status, axis_number=int(popular_horse_num),
+                    main_type=role_main,
+                    sub_type=(role_sub if role_sub not in ("なし", "無し", "")
+                              and role_sub != role_main else "なし"),
+                )
             else:
                 finish_role_race("未確定", "1〜3着を取得できません（未確定・中止等）",
-                                 baba_name, distance_num, race_no)
+                                 baba_name, distance_num, race_no,
+                                 baba=baba_status)
 
         if check_single_role_result:
             st.markdown("#### 🔎 このレースの役割検証")
@@ -22546,7 +22943,7 @@ if check_result:
                     f"【結果の役割検証】{single_role_date}\n"
                     "現在選択中の軸で検証／1着→2着→3着\n"
                     "○＝役割あり・✕＝全記号に該当なし／※＝未使用記号の候補1位\n"
-                    f"{baba_name}{race_no}R・{distance_num}m｜{single_role_detail}"
+                    f"{baba_name}{race_no}R・{distance_num}m・馬場{baba_status}｜{single_role_detail}"
                 )
                 st.code(single_role_text, language=None)
                 st.caption("使用記号は最終選出、未使用記号は候補1位で照合します。馬券の的中判定ではありません。")
