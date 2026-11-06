@@ -19069,6 +19069,27 @@ if baba_name == "園田" and int(distance_num or 0) == 820:
             ]
 
 
+# ==================================================
+# 水沢1300m限定・軸主副タイプ別の三連複変更（2026/11/06）
+# 馬場状態は問わない。
+# ・主差し／副なし    : 3点目 A-C-I
+# ・主持続／副なし    : 3点目 A-C-I
+# ・主先行／副持続  : 2点目 A-M-E
+# 他の三連複、ワイド、浮き輪や他会場・距離には手を加えない。
+# 既存の全会場A=FならM優先、A=F=MならF次候補の処理は維持。
+# ==================================================
+if baba_name == "水沢" and int(distance_num or 0) == 1300:
+    mizusawa_primary = str(axis_primary_for_bet or "").strip()
+    mizusawa_secondary = str(axis_secondary_for_bet or "なし").strip() or "なし"
+    if (
+        (mizusawa_primary, mizusawa_secondary)
+        in {("差し", "なし"), ("持続", "なし")}
+    ):
+        current_bet_template["三連複"][2] = ["A", "C", "I"]
+    elif (mizusawa_primary, mizusawa_secondary) == ("先行", "持続"):
+        current_bet_template["三連複"][1] = ["A", "M", "E"]
+
+
 alphabet_role_names = {
     "A": "軸",
     "F": "後詰め",
