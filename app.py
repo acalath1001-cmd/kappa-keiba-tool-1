@@ -3232,7 +3232,7 @@ for i, horse in enumerate(real_horses, start=1):
 
         d_match = re.search(
             r"(?:右|左|芝|ダ)\s*"
-            r"(800|820|850|900|920|1000|1100|1200|1230|1300|1400|1500|1580|1600|1650|1700|1800|1870|1900|2000|2100|2200)",
+            r"(800|820|850|900|920|1000|1100|1200|1230|1300|1400|1500|1580|1600|1650|1700|1800|1870|1900|2000|2100|2200|2300|2400|2500|2600|3000|3200|3400|3600)",
             block
         )
         if not d_match:
@@ -4788,6 +4788,126 @@ jra_top5_bonus_map = {
 }
 
 # ==================================================
+# JRA1600m以上・前付け＋位置維持ボーナス
+#
+# 着順にかかわらず、中央で「前へ行けて、その位置を保てた」
+# 実績を地方転入時に評価する（例：4-4-4-4で8着）。
+#
+# 条件：
+# ・中央の1600m以上（芝・ダートとも対象）
+# ・元通過順が2地点以上あること（補完値は使わない）
+# ・最初の地点が1～6番手
+# ・以降の地点で「最初の位置より2つ以上後退」しない
+#
+# 最良1走のみ採用。前付け1～4番手はF+50/B+35/C+60/D+20、
+# 5～6番手はF+30/B+20/C+35/D+10（地方出走数で減衰）。
+# Cは地力・持続して位置を保つ力としてDより強く加点。
+# 既存のJRA好走点との合計はF+100、B+80を上限にする。
+# Cはこのボーナス自身を最良1走に限定し、加点を重複させない。
+# 地方0走=100%、1走=70%、2走=40%、3走以上=0%。
+# ==================================================
+def calculate_jra_position_keeping_bonus(horse, good_finish_bonus=None):
+    runs = (horse.get("全距離付きタイム", []) or [])[:5]
+    local_count = sum(
+        run.get("競馬場", "") in LOCAL_TRACKS
+        for run in runs
+    )
+    factor = {0: 1.0, 1: 0.7, 2: 0.4}.get(local_count, 0.0)
+    empty = {
+        "総合": 0.0, "展開": 0.0, "持続": 0.0, "先行": 0.0,
+        "地方走数": local_count, "係数": factor, "該当走": None,
+    }
+    if factor <= 0:
+        return empty
+
+    candidates = []
+    for run in runs:
+        if run.get("競馬場", "") not in JRA_TRACKS:
+            continue
+        try:
+            past_distance = int(run.get("距離") or 0)
+        except (ValueError, TypeError):
+            continue
+        if past_distance < 1600:
+            continue
+
+        # 中央の2地点通過は3・4角など実測部分だけを使う。
+        # 4地点化した補完データでは「維持」と判定しない。
+        raw_flow = run.get("元通過順") or []
+        try:
+            positions = [int(p) for p in raw_flow]
+        except (ValueError, TypeError):
+            continue
+        if len(positions) < 2 or not all(p >= 1 for p in positions):
+            continue
+        first = positions[0]
+        if first > 6 or max(positions) > first + 1:
+            continue
+
+        if first <= 4:
+            raw_total, raw_pace, raw_sustain, raw_front = 50, 35, 60, 20
+        else:
+            raw_total, raw_pace, raw_sustain, raw_front = 30, 20, 35, 10
+
+        candidates.append((raw_total, raw_pace, raw_sustain, raw_front, run, positions))
+
+    if not candidates:
+        return empty
+
+    # 走数で積み重ねない。位置取りの良かった1走のみ採用。
+    raw_total, raw_pace, raw_sustain, raw_front, best_run, best_flow = max(
+        candidates, key=lambda item: (item[0], item[1], -max(item[5]))
+    )
+    good_finish_bonus = good_finish_bonus or {}
+    existing_total = good_finish_bonus.get("総合", 0) or 0
+    existing_pace = good_finish_bonus.get("展開", 0) or 0
+
+    return {
+        "総合": round(min(raw_total * factor,
+                          max(0, 100 * factor - existing_total)), 1),
+        "展開": round(min(raw_pace * factor,
+                          max(0, 80 * factor - existing_pace)), 1),
+        "持続": round(raw_sustain * factor, 1),
+        "先行": round(raw_front * factor, 1),
+        "地方走数": local_count,
+        "係数": factor,
+        "該当走": {
+            "競馬場": best_run.get("競馬場"),
+            "距離": best_run.get("距離"),
+            "着順": best_run.get("着順"),
+            "元通過順": best_flow,
+        },
+    }
+
+
+jra_position_keeping_bonus_map = {
+    horse["馬番"]: calculate_jra_position_keeping_bonus(
+        horse, jra_top5_bonus_map.get(horse["馬番"], {})
+    )
+    for horse in horses
+}
+
+if debug_mode:
+    with st.expander("🐎 JRA1600m以上・位置維持ボーナス（F・B・C・D）", expanded=False):
+        applicable = [
+            h for h in horses
+            if jra_position_keeping_bonus_map[h["馬番"]]["該当走"] is not None
+        ]
+        if not applicable:
+            st.write("対象馬なし")
+        for h in applicable:
+            info = jra_position_keeping_bonus_map[h["馬番"]]
+            run = info["該当走"]
+            st.write(
+                f"{h['馬番']}番 {h['馬名']}｜"
+                f"{run['競馬場']}{run['距離']}m "
+                f"{run['元通過順']}・{run['着順']}着｜"
+                f"地方{info['地方走数']}走｜"
+                f"F+{info['総合']} / B+{info['展開']} / "
+                f"C（持続）+{info['持続']} / D+{info['先行']}"
+            )
+
+# ==================================================
 # 全会場共通・門別からの転入好走ボーナス
 # JRA好走加点のおよそ半分。総合F・展開Bのみ加点する。
 # 現在門別での開催時は対象外。
@@ -5304,6 +5424,12 @@ for horse in horses:
                     front_score += 35
                 elif first <= 6:
                     front_score += 15
+    # 中央1600m以上で「前付け＋位置維持」できた経験を
+    # 先行Dへ加点（地方での出走数に応じて減衰）。
+    front_score += jra_position_keeping_bonus_map.get(
+        horse_no, {}
+    ).get("先行", 0)
+
     # ==================================================
     # 前進気勢では「前へ行ける能力」だけを見る
     #
@@ -7217,6 +7343,13 @@ for horse in horses:
 
     # 地力評価にも前進気勢を少し反映
     score += front_score_map.get(horse_no, 0) * 0.25
+    # JRA1600m以上の「前付け＋位置維持」は地力C（持続力）へ特別加点。
+    # 最良1走だけ採用し、地方転入後0/1/2/3走で100/70/40/0%に減衰。
+    # 既存の失速判定・持続上がり加点・脚質分類には手を加えない。
+    jra_sustain_bonus = jra_position_keeping_bonus_map.get(
+        horse_no, {}
+    ).get("持続", 0)
+    score += jra_sustain_bonus
     # 今回騎手が望月騎手の場合だけ地力補正
     current_jockey = horse.get(
         "今回騎手",
@@ -7314,6 +7447,7 @@ for horse in horses:
 
         # 前で運びながら速い上がりを使えた評価
         "持続上がり点": sustained_agari_bonus,
+        "JRA1600位置維持・持続加点": jra_sustain_bonus,
         "持続上がり回数": horse.get(
             "持続上がり回数",
             0
@@ -7611,6 +7745,8 @@ if debug_mode:
                 f"{h.get('前成功回数', 0)}回 "
                 f"｜持続上がり "
                 f"{h.get('持続上がり点', 0)} "
+                f"｜JRA位置維持・持続 "
+                f"+{h.get('JRA1600位置維持・持続加点', 0)} "
                 f"｜失速合計 "
                 f"-{h.get('失速減点', 0)} "
                 f"｜うち反復垂れ "
@@ -7653,6 +7789,8 @@ if debug_mode:
                 f"{h.get('前成功回数', 0)}回 "
                 f"｜持続上がり "
                 f"{h.get('持続上がり点', 0)} "
+                f"｜JRA位置維持・持続 "
+                f"+{h.get('JRA1600位置維持・持続加点', 0)} "
                 f"｜該当 "
                 f"{h.get('持続上がり回数', 0)}回 "
                 f"｜前経験減点 "
@@ -11276,6 +11414,12 @@ for horse in horses:
     jra_top5_total_bonus = jra_top5_bonus_map.get(horse_no, {}).get("総合", 0)
     total_score += jra_top5_total_bonus
     debug_total_parts["JRA好走"] = jra_top5_total_bonus
+    # 中央1600m以上の前付け・位置維持。既存JRA好走点と上限を共有。
+    jra_position_total_bonus = jra_position_keeping_bonus_map.get(
+        horse_no, {}
+    ).get("総合", 0)
+    total_score += jra_position_total_bonus
+    debug_total_parts["JRA位置維持"] = jra_position_total_bonus
     monbetsu_total_bonus = monbetsu_transfer_bonus_map.get(horse_no, {}).get("総合", 0)
     total_score += monbetsu_total_bonus
     debug_total_parts["門別転入"] = monbetsu_total_bonus
@@ -11786,6 +11930,7 @@ for candidate in tenkai_pre_candidates:
         candidate["予備展開点"]
         + total_rank_bonus
         + jra_top5_bonus_map.get(horse_no, {}).get("展開", 0)
+        + jra_position_keeping_bonus_map.get(horse_no, {}).get("展開", 0)
         + monbetsu_transfer_bonus_map.get(horse_no, {}).get("展開", 0)
         - big_fourth_fade_tenkai_penalty
         - nankan_lead_penalty
@@ -11798,6 +11943,7 @@ for candidate in tenkai_pre_candidates:
     candidate["最終総合順位"] = total_rank
     candidate["総合順位加点"] = total_rank_bonus
     candidate["JRA好走加点"] = jra_top5_bonus_map.get(horse_no, {}).get("展開", 0)
+    candidate["JRA位置維持加点"] = jra_position_keeping_bonus_map.get(horse_no, {}).get("展開", 0)
     candidate["門別転入加点"] = monbetsu_transfer_bonus_map.get(horse_no, {}).get("展開", 0)
     candidate["JRA後方停滞減点"] = jra_no_progress_map.get(horse_no, {}).get("減点", 0)
     candidate["4角大垂れ減点"] = big_fourth_fade_tenkai_penalty
@@ -11935,6 +12081,7 @@ if not tenkai_candidates:
                 * 0.30,
             )
             + jra_top5_bonus_map.get(horse_no, {}).get("展開", 0)
+            + jra_position_keeping_bonus_map.get(horse_no, {}).get("展開", 0)
             + monbetsu_transfer_bonus_map.get(horse_no, {}).get("展開", 0)
             + 0  # 総合順位は緊急救済でも加点しない
             + rescue_class_adjustment[
@@ -15241,7 +15388,7 @@ def build_urawa_funabashi_axis_bet_override(context):
         result["ワイド"][1] = ["A", "F"]
 
     # 船橋1800mのみ・主＝先行／副＝持続の時は、
-    # 三連複3点目を A-D-L、ワイド2点目を A-D に変更する。
+    # 三連複3点目を A-E-L、ワイド2点目を A-E に変更する。
     # 他距離・他主副脚質・1点目2点目・浮き輪・浦和には影響させない。
     if (
         context.get("track") == "船橋"
@@ -15249,8 +15396,8 @@ def build_urawa_funabashi_axis_bet_override(context):
         and context.get("axis_primary") == "先行"
         and context.get("axis_secondary") == "持続"
     ):
-        result["三連複"][2] = ["A", "D", "L"]
-        result["ワイド"][1] = ["A", "D"]
+        result["三連複"][2] = ["A", "E", "L"]
+        result["ワイド"][1] = ["A", "E"]
 
     # 船橋1500mのみ・主＝差し／副＝持続の時は、
     # 三連複3点目を A-C-I に固定する。
@@ -18649,13 +18796,13 @@ if (
 
 
 # ==================================================
-# 佐賀1400m・稍重検証用（2026/10/31）
-# Aの主・副タイプに「先行」を含む4パターンのみ。
+# 佐賀1400m・主副脚質別の買い目（2026/11/06 更新）
+# 馬場を問わず、主・副タイプに「先行」を含む4パターン。
 # 順位・候補プール・他距離・他会場は一切変更しない。
 # ==================================================
 SAGA_1400_TRIAL_BETS = {
     ("先行", "追い込み"): {
-        "三連複": [["A", "F", "G"], ["A", "M", "E"], ["A", "E", "G"]],
+        "三連複": [["A", "F", "G"], ["A", "M", "G"], ["A", "E", "H"]],
         "ワイド": [["A", "E"]], "浮き輪": [["A", "F"]],
     },
     ("先行", "持続"): {
@@ -18663,7 +18810,7 @@ SAGA_1400_TRIAL_BETS = {
         "ワイド": [["A", "B"]], "浮き輪": [["A", "M"]],
     },
     ("逃げ", "先行"): {
-        "三連複": [["A", "B", "F"], ["A", "F", "G"], ["A", "B", "M"]],
+        "三連複": [["A", "B", "I"], ["A", "B", "G"], ["A", "B", "M"]],
         "ワイド": [["A", "B"]], "浮き輪": [["A", "G"]],
     },
     ("先行", "逃げ"): {
@@ -18707,6 +18854,47 @@ if (
 ):
     current_bet_template["三連複"][1] = ["A", "F", "E"]
 
+
+
+
+# 笠松1400m・良馬場：2026/11/05検証を踏まえた主／副別三連複3点
+# C※は他記号との重複が多いため追加の優先処理は行わない。
+KASAMATSU_1400_GOOD_TRIOS = {
+    ("逃げ", "先行"): [["A", "B", "E"], ["A", "M", "C"], ["A", "D", "E"]],
+    ("先行", "持続"): [["A", "L", "E"], ["A", "M", "D"], ["A", "D", "M2"]],
+    ("先行", "逃げ"): [["A", "B", "H"], ["A", "F", "E"], ["A", "D", "G"]],
+    ("先行", "追い込み"): [["A", "B", "E"], ["A", "F", "C"], ["A", "E", "C"]],
+    ("差し", "逃げ"): [["A", "B", "I"], ["A", "F", "I"], ["A", "M", "C"]],
+    ("逃げ", "なし"): [["A", "B", "E"], ["A", "F", "E"], ["A", "M", "C"]],
+}
+if (
+    baba_name == "笠松"
+    and int(distance_num) == 1400
+    and str(baba_status).strip() == "良"
+):
+    kasa_key = (
+        str(axis_primary_for_bet or "").strip(),
+        str(axis_secondary_for_bet or "なし").strip(),
+    )
+    kasa_trios = KASAMATSU_1400_GOOD_TRIOS.get(kasa_key)
+    if kasa_trios is not None:
+        kasa_axis_num = int(popular_horse_num)
+        # A=Fの置換は全会場共通の三連複生成処理で行う。
+        # ここでFをMへ事前変換するとA=F=MでM2になってしまい、
+        # 今回指定の「Fの次候補」を優先できないため廃止する。
+        # 笠松の従来ルール：テンプレートに元からあるMがAと
+        # 一致した場合のM2置換は、そのまま維持する。
+        kasa_m = alphabet_candidate_pools.get("M", [])
+        kasa_m_num = get_num(kasa_m[0]) if kasa_m else None
+        kasa_trios = [roles[:] for roles in kasa_trios]
+        if kasa_m_num == kasa_axis_num:
+            kasa_trios = [
+                ["M2" if role == "M" else role for role in roles]
+                for roles in kasa_trios
+            ]
+        current_bet_template["三連複"] = kasa_trios
+        if kasa_key == ("先行", "持続"):
+            current_bet_template["ワイド"] = [["A", "B"], ["A", "K"]]
 
 
 # ==================================================
@@ -18768,6 +18956,22 @@ if baba_name == "船橋" and int(distance_num) == 1200:
 
 
 # ==================================================
+# 船橋1200m限定（2026/11/06）：軸の主タイプが「持続」なら、
+# 副タイプは何でも三連複1点目を A-B-M にする。
+# 上の船橋1200m・主副別ルール適用後に上書きすることで、
+# 「持続・なし」「持続・追い込み」だけでなく全副タイプへ適用。
+# 三連複2・3点目、ワイド、浮き輪、他距離・他会場は変更しない。
+# ==================================================
+if (
+    baba_name == "船橋"
+    and int(distance_num) == 1200
+    and str(axis_primary_for_bet or "").strip() == "持続"
+    and current_bet_template.get("三連複")
+):
+    current_bet_template["三連複"][0] = ["A", "B", "M"]
+
+
+# ==================================================
 # 佐賀1300m限定：三連複1点目を最終統一（2026/11/04）
 # 既存のA-B-Eだけはそのまま残し、それ以外はA-B-Mにする。
 # 2・3点目、ワイド、他距離、他会場には影響させない。
@@ -18777,6 +18981,92 @@ if baba_name == "佐賀" and int(distance_num) == 1300:
     saga_first_trio = current_bet_template.get("三連複", [])
     if saga_first_trio and saga_first_trio[0] != ["A", "B", "E"]:
         saga_first_trio[0] = ["A", "B", "M"]
+
+
+# ==================================================
+# 園田820m限定・軸主副タイプ別買い目の明示表（2026/11/06）
+# 馬場は良・稍重・重・不良のいずれも同じ買い目。
+# 2026/11/06に確認した三連複3点・ワイド2点を固定する。
+#
+# 園田のワイド2点目は画面の「浮き輪」枠で表示するため、
+# 「ワイド」先頭1点＋「浮き輪」1点で従来の2点構成を維持。
+# 5頭選出／各アルファベットの候補順位／他距離・他会場は変更しない。
+# A=F時のM優先（A=F=MならF次候補）は、既存の後段処理に任せる。
+# ==================================================
+SONODA_820_FIXED_BETS = {
+    ("逃げ", "先行"): {
+        "三連複": [["A", "B", "F"], ["A", "F", "E"], ["A", "D", "E"]],
+        "ワイド": [["A", "I"]], "浮き輪": [["D", "E"]],
+    },
+    ("逃げ", "持続"): {
+        "三連複": [["A", "B", "D"], ["A", "F", "E"], ["A", "D", "E"]],
+        "ワイド": [["A", "I"]], "浮き輪": [["D", "E"]],
+    },
+    ("逃げ", "追い込み"): {
+        "三連複": [["A", "B", "D"], ["A", "F", "E"], ["A", "D", "E"]],
+        "ワイド": [["A", "I"]], "浮き輪": [["D", "E"]],
+    },
+    ("逃げ", "なし"): {
+        "三連複": [["A", "B", "D"], ["A", "F", "E"], ["A", "D", "E"]],
+        "ワイド": [["A", "I"]], "浮き輪": [["D", "E"]],
+    },
+    ("先行", "逃げ"): {
+        "三連複": [["A", "B", "C"], ["A", "F", "E"], ["A", "B", "E"]],
+        "ワイド": [["A", "I"]], "浮き輪": [["D", "E"]],
+    },
+    ("先行", "持続"): {
+        "三連複": [["A", "B", "D"], ["A", "F", "E"], ["A", "E", "G"]],
+        "ワイド": [["A", "B"]], "浮き輪": [["A", "E"]],
+    },
+    ("先行", "追い込み"): {
+        "三連複": [["A", "B", "D"], ["A", "F", "E"], ["A", "B", "E"]],
+        "ワイド": [["A", "I"]], "浮き輪": [["D", "E"]],
+    },
+    ("先行", "なし"): {
+        "三連複": [["A", "B", "D"], ["A", "F", "E"], ["A", "B", "E"]],
+        "ワイド": [["A", "I"]], "浮き輪": [["D", "E"]],
+    },
+    ("持続", "逃げ"): {
+        "三連複": [["A", "B", "C"], ["A", "F", "E"], ["A", "B", "K"]],
+        "ワイド": [["A", "B"]], "浮き輪": [["E", "D"]],
+    },
+    ("持続", "追い込み"): {
+        "三連複": [["A", "B", "C"], ["A", "F", "E"], ["A", "M", "E"]],
+        "ワイド": [["A", "B"]], "浮き輪": [["M", "E"]],
+    },
+    ("持続", "なし"): {
+        "三連複": [["A", "B", "C"], ["A", "F", "E"], ["A", "B", "K"]],
+        "ワイド": [["A", "B"]], "浮き輪": [["E", "D"]],
+    },
+    ("差し", "逃げ"): {
+        "三連複": [["A", "B", "E"], ["A", "F", "K"], ["A", "M", "L"]],
+        "ワイド": [["A", "E"]], "浮き輪": [["I", "G"]],
+    },
+    ("差し", "持続"): {
+        "三連複": [["A", "B", "E"], ["A", "F", "K"], ["A", "M", "L"]],
+        "ワイド": [["A", "E"]], "浮き輪": [["I", "G"]],
+    },
+    ("差し", "なし"): {
+        "三連複": [["A", "B", "E"], ["A", "F", "K"], ["A", "M", "L"]],
+        "ワイド": [["A", "E"]], "浮き輪": [["I", "G"]],
+    },
+    ("展開待ち", "なし"): {
+        "三連複": [["A", "B", "C"], ["A", "F", "E"], ["A", "D", "G"]],
+        "ワイド": [["A", "E"]], "浮き輪": [["I", "G"]],
+    },
+}
+
+if baba_name == "園田" and int(distance_num or 0) == 820:
+    sonoda_820_axis_key = (
+        str(axis_primary_for_bet or "").strip(),
+        str(axis_secondary_for_bet or "なし").strip() or "なし",
+    )
+    sonoda_820_spec = SONODA_820_FIXED_BETS.get(sonoda_820_axis_key)
+    if sonoda_820_spec is not None:
+        for bet_kind in ("三連複", "ワイド", "浮き輪"):
+            current_bet_template[bet_kind] = [
+                roles[:] for roles in sonoda_820_spec[bet_kind]
+            ]
 
 
 alphabet_role_names = {
@@ -19553,19 +19843,25 @@ def make_unique_trio_bets(
             if get_num(h) in hole_rank_numbers
         ]
 
-    def resolve_one_trio(symbol_list):
-        """1点だけ解決する。used_trio_keys は外側の既確定点を参照。"""
+    def resolve_one_trio(symbol_list, selected_override=None, fixed_symbols=None):
+        """1点だけ解決する。used_trio_keys は外側の既確定点を参照。
+
+        selected_override は三連複1点の中だけでFをMへ差し替えるためのもの。
+        fixed_symbols は置換に使ったMの候補を勝手にM2相当へ動かさないための指定。
+        """
+        active_symbols = selected_symbols if selected_override is None else selected_override
+        fixed_symbols = set(fixed_symbols or ())
         if (
             len(symbol_list) != 3
             or any(
-                symbol not in selected_symbols
+                symbol not in active_symbols
                 for symbol in symbol_list
             )
         ):
             return None
 
         bet = [
-            selected_symbols[symbol]
+            active_symbols[symbol]
             for symbol in symbol_list
         ]
         numbers = [
@@ -19610,7 +19906,7 @@ def make_unique_trio_bets(
             zip(symbol_list, numbers)
         ):
             candidates = [bet[index]]
-            if symbol != "A" and (
+            if symbol != "A" and symbol not in fixed_symbols and (
                 not invalid_indices
                 or index in invalid_indices
             ):
@@ -19761,9 +20057,49 @@ def make_unique_trio_bets(
         return rescued
 
     for symbol_list in symbol_templates:
-        resolved_bet = resolve_one_trio(
-            symbol_list
-        )
+        # 全会場・三連複1〜3点目共通の A=F 置換ルール。
+        # A=FならまずMの代表馬を使う。M=A（A=F=M）または
+        # Mそのものを入れられない場合、従来のF順位2位以降を使う。
+        # M2はFの代わりには使わず、F/M本体の選出も変えない。
+        resolved_bet = None
+        axis_horse = selected_symbols.get("A")
+        f_horse = selected_symbols.get("F")
+        axis_num = get_num(axis_horse) if axis_horse else None
+        f_num = get_num(f_horse) if f_horse else None
+        if (
+            axis_num is not None
+            and f_num == axis_num
+            and "F" in symbol_list
+            and "A" in symbol_list
+            and "M" not in symbol_list
+        ):
+            # Mがこのテンプレートで未使用でも、既存Mランキングの
+            # 先頭候補を取得。買い目以外の記号選出や5頭表示には触れない。
+            m_horse = selected_symbols.get("M") or next(
+                (h for h in alphabet_candidate_pools.get("M", [])
+                 if get_num(h) not in excluded_numbers),
+                None,
+            )
+            m_num = get_num(m_horse) if m_horse else None
+            if (
+                m_num is not None
+                and m_num != axis_num
+                and m_num not in excluded_numbers
+            ):
+                trio_only_symbols = dict(selected_symbols)
+                trio_only_symbols["M"] = m_horse
+                # Mの1位は固定。重複があれば残りの役割候補で
+                # 解決し、無理ならFの次候補へ戻す。
+                resolved_bet = resolve_one_trio(
+                    ["M" if role == "F" else role for role in symbol_list],
+                    selected_override=trio_only_symbols,
+                    fixed_symbols={"M"},
+                )
+
+        # A=F=M、Mの候補なし、またはM置換が成立しなければ
+        # Fの2位→3位…を従来の候補順で試す。
+        if resolved_bet is None:
+            resolved_bet = resolve_one_trio(symbol_list)
 
         # 園田・持続の3点目だけの局所救済。
         # A-B-Kが成立する時は従来どおりKを使用し、
