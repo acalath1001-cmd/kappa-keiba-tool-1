@@ -19090,6 +19090,58 @@ if baba_name == "水沢" and int(distance_num or 0) == 1300:
         current_bet_template["三連複"][1] = ["A", "M", "E"]
 
 
+
+# ==================================================
+# 園田1400m限定：2026/11/08 採用ルール（項目1＋項目2、計7か所）
+#
+# 全会場共通の三連複1・2点目統一と、既存の園田個別指定、
+# 園田820m固定表・水沢1300m指定の「後」に適用する。
+# ワイド2点目はこのツールでは「浮き輪」枠で表示される。
+# 他会場・他距離・指定外の主副タイプには影響させない。
+# ==================================================
+def apply_sonoda_1400_20261108_rules(template, venue, distance, primary, secondary):
+    """園田1400mの買い目の採用7か所のみを変更する。"""
+    if venue != "園田" or int(distance or 0) != 1400:
+        return template
+
+    style = (
+        str(primary or "").strip(),
+        str(secondary or "なし").strip() or "なし",
+    )
+
+    # 【項目1】三連複2か所、ワイド2点目2か所
+    # 【項目2】三連複1か所、ワイド2点目2か所
+    trio_changes = {
+        ("先行", "持続"): (1, ["A", "B", "L"]),   # 2点目：A-F-E → A-B-L
+        ("逃げ", "先行"): (0, ["A", "B", "M"]),   # 1点目：A-B-F → A-B-M
+        ("先行", "逃げ"): (0, ["A", "B", "M"]),   # 1点目：A-B-G → A-B-M
+    }
+    second_wide_changes = {
+        ("逃げ", "先行"): ["A", "B"],         # D-E → A-B
+        ("先行", "追い込み"): ["A", "B"],     # D-E → A-B
+        ("差し", "なし"): ["A", "L"],         # A-M → A-L
+        ("持続", "追い込み"): ["A", "M"],     # E-D → A-M（元の最優先設定と同一）
+    }
+
+    if style in trio_changes:
+        position, letters = trio_changes[style]
+        if len(template.get("三連複", [])) > position:
+            template["三連複"][position] = list(letters)
+
+    if style in second_wide_changes:
+        template["浮き輪"] = [list(second_wide_changes[style])]
+
+    return template
+
+
+current_bet_template = apply_sonoda_1400_20261108_rules(
+    current_bet_template,
+    baba_name,
+    distance_num,
+    axis_primary_for_bet,
+    axis_secondary_for_bet,
+)
+
 alphabet_role_names = {
     "A": "軸",
     "F": "後詰め",
