@@ -1733,6 +1733,11 @@ def finish_role_race(status, detail, venue, distance, race_number,
                      role_detail_rows=None, baba="不明", axis_number=None,
                      main_type="", sub_type=""):
     rows = st.session_state.setdefault("role_results", [])
+    if status not in ("完了", "対象外"):
+        st.session_state.setdefault("role_queue_skipped_races", []).append({
+            "日付": st.session_state.get("role_result_date", ""),
+            "会場": venue, "R": int(race_number), "理由": detail,
+        })
     rows.append({"R": int(race_number), "会場": venue,
                  "距離": distance, "馬場": baba, "状態": status, "照合": detail,
                  "軸馬番": axis_number, "軸主タイプ": main_type,
@@ -1747,6 +1752,45 @@ def finish_role_race(status, detail, venue, distance, race_number,
     st.rerun()
 
 
+def skip_role_batch_if_unreadable(reason, state="要確認"):
+    """一括役割検証だけ、取得不能Rで入力待ちせず次へ進む。
+
+    読めない結果は完了扱いにしないためExcelにも書き込まれず、
+    検証結果の表示には「要確認」として記録する。通常分析には影響なし。
+    """
+    if not (st.session_state.get("role_validation_running")
+            and st.session_state.get("batch_mode")):
+        return False
+    venue = keibajo.get(
+        str(st.session_state.get("batch_baba_code", "")), "不明競馬"
+    ).removesuffix("競馬")
+    finish_role_race(
+        state, reason, venue, 0, st.session_state.batch_race_no
+    )
+    return True
+
+
+def import_role_master_once(uploaded):
+    """過去Excelをハッシュ単位で1回読み込み、最新のセッション結果へ追記。"""
+    import hashlib
+    payload = uploaded.getvalue()
+    digest = hashlib.sha256(payload).hexdigest()
+    if st.session_state.get("role_master_import_sha256") != digest:
+        previous = parse_prior_role_xlsx(uploaded)
+        # アップロード前に検証した分も失わない。重複は新規行優先で排除。
+        already = st.session_state.get("role_excel_accumulated", [])
+        current = make_current_role_csv_records(
+            st.session_state.get("role_results", []),
+            st.session_state.get("role_result_date", ""),
+        )
+        st.session_state.role_excel_accumulated = merge_role_csv_records(
+            previous, merge_role_csv_records(already, current)
+        )
+        st.session_state.role_master_import_sha256 = digest
+        st.session_state.role_master_import_summary = role_master_stats(previous)
+    return st.session_state.get("role_master_import_summary", "")
+
+
 def render_role_controls(source_url, key_suffix):
     st.markdown("---")
     st.markdown("## 🔎 全R・結果の役割検証")
@@ -1756,6 +1800,24 @@ def render_role_controls(source_url, key_suffix):
     st.caption("1番人気を軸に1Rから検証。1着→2着→3着の順に表示します。"
                "○＝役割あり、✕＝全記号に該当なし（馬券の的中判定ではありません）。"
                "複数の役割は併記。※は買い目で未使用の記号の候補1位です。使用記号は最終選出で照合します。")
+
+    st.markdown("#### 📎 ① 追記先Excelを先にアップロード")
+    st.caption("前回保存した『役割検証_全会場_累積.xlsx』をここで選択。"
+               "読み込み後は、複数日を自動検証してからExcelを保存するだけです。"
+               " 初めての場合は未選択でも始められます。")
+    role_master_upload = st.file_uploader(
+        "追記する全会場Excel（.xlsx）", type=["xlsx"],
+        key="role_master_initial_upload",
+    )
+    upload_invalid = False
+    if role_master_upload is not None:
+        try:
+            import_summary = import_role_master_once(role_master_upload)
+            st.success("追記先のExcelを読み込みました：" + import_summary)
+        except Exception as exc:
+            upload_invalid = True
+            st.error(f"Excelを読み込めません：{exc}")
+
     last = st.number_input("役割検証の最終R", min_value=1, max_value=12,
                            value=12, step=1, key=f"role_last_{key_suffix}")
     if st.button("🔎 全Rの結果を役割で検証（5 A○）", key=f"role_start_{key_suffix}"):
@@ -1784,7 +1846,60 @@ def render_role_controls(source_url, key_suffix):
             reset_batch_axis_temp_state()
             st.session_state.analyzed = True
             st.rerun()
+    # ---- 複数日まとめて自動検証 ----
+    with st.expander("📅 ② 複数日まとめて自動検証（日付を貼るだけ）"):
+        st.caption("先に上のExcelを選び、日付を貼り付けて開始。"
+                   "11R・12Rは日付ごとに最終レースを自動確認します。"
+                   "ブラウザのタブは開いたままにしてください。途中でもExcel保存できます。")
+        import re as _re
+        queue_text = st.text_area(
+            "検証する開催日（1行1日。2026-09-05 / 2026/09/05 / 出馬表URLどれでもOK）",
+            value="", height=160, key=f"role_queue_text_{key_suffix}")
+        queue_last = st.number_input("最大R（11R・12Rは日別に自動判定）",
+                                     min_value=1, max_value=12, value=12,
+                                     step=1, key=f"role_queue_last_{key_suffix}")
+        qcol1, qcol2 = st.columns(2)
+        if qcol1.button("▶ 複数日を自動で開始", key=f"role_queue_start_{key_suffix}",
+                        use_container_width=True):
+            _venue = parse_qs(urlparse(source_url).query).get("k_babaCode", [""])[0]
+            _dates = []
+            for _m in _re.finditer(r"(\d{4})[-/](\d{1,2})[-/](\d{1,2})", queue_text):
+                _d = f"{_m.group(1)}/{int(_m.group(2)):02d}/{int(_m.group(3)):02d}"
+                if _d not in _dates:
+                    _dates.append(_d)
+            if not _venue:
+                st.error("出馬表URLから競馬場コードを取得できません。")
+            elif not _dates:
+                st.error("日付を1つ以上入力してください。")
+            elif upload_invalid:
+                st.error("追記先Excelの読み込みエラーを解消してから開始してください。")
+            else:
+                st.session_state.role_date_queue = _dates
+                st.session_state.role_queue_skipped_races = []
+                st.session_state.role_queue_baba = _venue
+                st.session_state.role_queue_last_race = int(queue_last)
+                st.session_state.role_queue_total = len(_dates)
+                st.session_state.role_queue_running = True
+                st.rerun()
+        if qcol2.button("■ 自動連続を止める", key=f"role_queue_stop_{key_suffix}",
+                        use_container_width=True):
+            st.session_state.role_queue_running = False
+            st.session_state.role_date_queue = []
+            st.rerun()
+        if st.session_state.get("role_queue_running", False):
+            _left = len(st.session_state.get("role_date_queue", []))
+            _total = st.session_state.get("role_queue_total", 0)
+            _end_race = st.session_state.get("role_queue_resolved_last_race", "")
+            st.info(f"自動実行中：{st.session_state.get('role_queue_current', '')}"
+                    f"（残り{_left}日／全{_total}日／この日は最大{_end_race}R）")
+
     rows = st.session_state.get("role_results", [])
+    skipped_races = st.session_state.get("role_queue_skipped_races", [])
+    if skipped_races:
+        with st.expander(f"⚠️ 自動検証で要確認：{len(skipped_races)}R", expanded=False):
+            for item in skipped_races:
+                st.text(f"{item['日付']} {item['会場']}{item['R']}R｜{item['理由']}")
+
     if rows or st.session_state.get('role_excel_accumulated'):
         lines = [f"【結果の役割検証】{st.session_state.get('role_result_date', '')}",
                  "1番人気軸／1着→2着→3着／○＝役割あり・✕＝全記号に該当なし／※＝未使用記号の候補1位"]
@@ -1802,20 +1917,10 @@ def render_role_controls(source_url, key_suffix):
             rows, st.session_state.get("role_result_date", ""))
         accumulated = st.session_state.get('role_excel_accumulated', [])
 
-        # 翌日などに再開する場合、前回保存したExcelを1度だけ読み込む。
-        with st.expander("前回のExcelから続きを追加する（必要なときだけ）"):
-            uploaded = st.file_uploader(
-                "前回の全会場Excelを選択", type=["xlsx"],
-                key="role_excel_simple_previous")
-            if uploaded is not None:
-                try:
-                    uploaded_records = parse_prior_role_xlsx(uploaded)
-                    st.session_state.role_excel_accumulated = merge_role_csv_records(
-                        uploaded_records, accumulated)
-                    accumulated = st.session_state.role_excel_accumulated
-                    st.caption("前回分を読み込み済み：" + role_master_stats(uploaded_records))
-                except Exception as exc:
-                    st.error(f"Excelを読み込めませんでした：{exc}")
+        # 元Excelは検証前のアップロード欄で読み込み済み。
+        # 再検証しても重複せず、追加されたレースだけExcelに蓄積する。
+        if st.session_state.get("role_master_import_sha256"):
+            st.caption("📎 冒頭で指定したExcelへの追記データを含みます。")
 
         all_records = merge_role_csv_records(accumulated, current_records)
         st.info("現在の蓄積：" + role_master_stats(all_records))
@@ -1920,6 +2025,105 @@ def reset_normal_analysis_state():
     st.session_state.batch_original_a = None
     st.session_state.batch_original_f = None
     st.session_state.batch_af_match = None
+
+
+# ==================================================
+# 過去の開催日ごとの最終レースを、NAR公式RaceListから確認する。
+# RaceListが一時的に取得不能なら最大Rで進め、
+# 存在しないRの出馬表を読んでも下の距離取得ガードで次へ進める。
+# ==================================================
+@st.cache_data(ttl=86400, show_spinner=False)
+def official_day_race_numbers(date, baba_code):
+    import requests
+    from bs4 import BeautifulSoup
+    from html import unescape
+    endpoint = (
+        "https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/RaceList?"
+        + urlencode({"k_raceDate": date, "k_babaCode": str(baba_code)})
+    )
+    try:
+        response = requests.get(endpoint, timeout=6, headers={
+            "User-Agent": "Mozilla/5.0 (compatible; KappaKeibaTool/1.0)"
+        })
+        response.raise_for_status()
+        soup = BeautifulSoup(response.content, "html.parser")
+        race_numbers = set()
+        # RaceListの出馬表・競走成績URLに含まれるレース番号を抽出。
+        # 他の開催日・競馬場へのリンクは集計しない。
+        for element in soup.select("a[href], button[onclick], input[onclick]"):
+            target = unescape(
+                str(element.get("href", "")) + " " + str(element.get("onclick", ""))
+            )
+            if not ("DebaTable" in target or "RaceMarkTable" in target):
+                continue
+            date_match = re.search(r"k_raceDate=([^&\"' ]+)", target)
+            venue_match = re.search(r"k_babaCode=(\d+)", target)
+            number_match = re.search(r"k_raceNo=(\d+)", target)
+            if number_match is None:
+                continue
+            if date_match is not None and (
+                date_match.group(1).replace("%2F", "/").replace("%2f", "/") != date
+            ):
+                continue
+            if venue_match is not None and venue_match.group(1) != str(baba_code):
+                continue
+            number = int(number_match.group(1))
+            if 1 <= number <= 12:
+                race_numbers.add(number)
+        # リンク取得に失敗した場合は空を返して従来の12R上限で進める。
+        return sorted(race_numbers) if 1 in race_numbers else []
+    except (requests.RequestException, ValueError):
+        return []
+
+
+# ==================================================
+# 複数日 自動連続検証（役割検証を日付キューで次々に回す）
+# 1日分の全Rが終わって batch_mode が False に戻るたびに、次の日付を自動開始する。
+# ==================================================
+def run_role_date_queue():
+    if not st.session_state.get("role_queue_running", False):
+        return
+    if st.session_state.get("batch_mode", False):
+        return  # いまの日付を検証中
+
+    # 直前の日付の結果を蓄積へ移す（同一日・R・着順・馬番は自動で重複排除）
+    previous_run = make_current_role_csv_records(
+        st.session_state.get("role_results", []),
+        st.session_state.get("role_result_date", ""))
+    st.session_state.role_excel_accumulated = merge_role_csv_records(
+        st.session_state.get("role_excel_accumulated", []), previous_run)
+    st.session_state.role_results = []
+
+    queue = st.session_state.get("role_date_queue", [])
+    if not queue:
+        st.session_state.role_queue_running = False
+        st.session_state.role_queue_current = ""
+        return
+
+    date = queue.pop(0)
+    st.session_state.role_date_queue = queue
+    st.session_state.role_queue_current = date
+    st.session_state.role_result_date = date
+    st.session_state.role_validation_running = True
+    st.session_state.batch_mode = True
+    st.session_state.batch_axis_mode = "favorite"
+    st.session_state.batch_race_no = 1
+    maximum = int(st.session_state.get("role_queue_last_race", 12))
+    baba_code = st.session_state.get("role_queue_baba", "")
+    actual_races = official_day_race_numbers(date, baba_code)
+    # 公式一覧が取れた日は、その日の実際の最終Rで止める。
+    # 取得不能でも出馬表の取得失敗を自動スキップする安全策あり。
+    day_last = min(max(actual_races), maximum) if actual_races else maximum
+    st.session_state.batch_last_race = day_last
+    st.session_state.role_queue_resolved_last_race = day_last
+    st.session_state.batch_date = date
+    st.session_state.batch_baba_code = baba_code
+    reset_batch_axis_temp_state()
+    st.session_state.analyzed = True
+    st.rerun()
+
+
+run_role_date_queue()
 
 
 # ==================================================
@@ -3064,7 +3268,15 @@ print("◎ 本命候補")
 print("○ 対抗候補")
 print("▲ 穴候補")
 print(url)
-response = requests.get(url)
+try:
+    response = requests.get(url, timeout=15)
+    response.raise_for_status()
+except requests.RequestException as exc:
+    skip_role_batch_if_unreadable(
+        f"出馬表の取得失敗（{type(exc).__name__}）：{exc}"
+    )
+    st.error(f"出馬表の取得に失敗しました：{exc}")
+    st.stop()
 soup = BeautifulSoup(response.text, "html.parser")
 
 print("ページ取得成功")
@@ -3126,6 +3338,12 @@ if distance_match:
     )
 
 else:
+    # 11Rで終わる日の存在しない12Rなどは、自動検証では入力を求めず次へ。
+    # 日付キューの残りがあれば run_role_date_queue が次の日を開始する。
+    # 読取失敗の可能性もあるので完了レースとしてExcelに入れない。
+    skip_role_batch_if_unreadable(
+        "出馬表に距離がありません（開催なし・存在しないR・取得不完全の可能性）"
+    )
     distance = st.text_input("距離を入力してください（例 1400）:")
 
     if not distance:
@@ -3161,6 +3379,11 @@ real_horses = []
 for _, name in matches:
     if name not in real_horses:
         real_horses.append(name)
+
+# 実在しない最終Rなど、出馬表に出走馬がない場合は次へ進む。
+# 距離だけ偶然取得できても、空のレースを予想対象にしない。
+if not real_horses:
+    skip_role_batch_if_unreadable("出馬表に出走馬がありません（存在しないR等）")
 
 horses = []
 
@@ -5289,6 +5512,7 @@ if popular_horse_num not in active_horse_numbers:
         f"⚠️ {popular_horse_num}番は出走取消・競走除外のため、"
         "軸馬には選択できません。"
     )
+    skip_role_batch_if_unreadable("軸馬が取消・競走除外")
     st.stop()
 
 popular_horse_data = next(
@@ -7825,6 +8049,7 @@ if debug_mode:
         
 if not long_spurt_candidates:
     st.error("長く脚の評価データが取れていません")
+    skip_role_batch_if_unreadable("長く脚の評価データなし")
     st.stop()
 
 # 地力ランキング自体は評価順を残す。
@@ -11765,6 +11990,7 @@ if not total_candidates:
     st.error(
         "総合ランキングを作成できませんでした"
     )
+    skip_role_batch_if_unreadable("総合ランキングの作成失敗")
     st.stop()
 
 final_total_rank_map = {
@@ -12156,6 +12382,7 @@ if not tenkai_candidates:
     st.error(
         "展開馬候補を作成できませんでした"
     )
+    skip_role_batch_if_unreadable("展開馬候補の作成失敗")
     st.stop()
 
 
@@ -14390,6 +14617,7 @@ for h in horses:
 # 念のため候補0頭なら停止
 if not ana_fallback:
     st.error("穴候補を作成できませんでした")
+    skip_role_batch_if_unreadable("穴候補の作成失敗")
     st.stop()
 
 # 穴1
