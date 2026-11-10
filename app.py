@@ -19370,6 +19370,131 @@ current_bet_template = apply_sonoda_1400_20261108_rules(
     axis_secondary_for_bet,
 )
 
+# ==================================================
+# 🐸 名古屋・距離×馬場×A主タイプの買い目試作（2026-11-10）
+#
+# 2026年の役割検証1,038Rから、距離異常13Rを除外して候補比較。
+# 「良／重（稍重＋重）／不良」の3区分で、A主タイプを優先。
+# 馬場・副タイプで信頼できる差がないときは無理に分岐させない。
+# ※これらは予備検証で得た候補で、実際の払戻・回収率は未検証。
+# ※FとMの代替ルールは共通unify_first_two_trio_templatesの確定結果を保持。
+# ※同馬番の重複は後段のmake_unique_*で解決。
+# ==================================================
+def apply_nagoya_distance_ground_axis_rules(
+    template, venue, distance, ground, axis_primary, axis_secondary
+):
+    if venue != "名古屋":
+        return template
+
+    try:
+        d = int(distance)
+    except (TypeError, ValueError):
+        d = 0
+    if d <= 850 or d in {100, 400, 500, 700}:
+        # 出馬表で距離を取得し損ねたときは、距離限定の買い目を適用しない。
+        # 元データにある「0m等」の異常値は正しい距離として扱わない。
+        return template
+
+    b = "重" if ground in ("稍重", "重") else str(ground or "不明")
+    main = str(axis_primary or "").strip()
+    sub = str(axis_secondary or "なし").strip() or "なし"
+
+    # 基本は3連複3点＋ワイド2点。データが少ない条件はこの共通形。
+    trio = [
+        ["A", "B", "E"],
+        ["A", "F", "D"],
+        ["A", "M2", "H"],
+    ]
+    wides = [["A", "B"], ["A", "E"]]
+
+    # 1500mは最も母数が多いため独立した基本形を設定。
+    if d == 1500:
+        trio = [
+            ["A", "B", "M2"],
+            ["A", "F", "M"],
+            ["A", "E", "D"],
+        ]
+        # 良・先行は細分化案が別期間で安定しなかったため、保守型へ戻す。
+        if b == "良" and main == "先行":
+            trio = [
+                ["A", "B", "E"],
+                ["A", "F", "D"],
+                ["A", "M2", "H"],
+            ]
+        # 良・差しは前後期間で比較的安定していた特徴を優先。
+        elif b == "良" and main == "差し":
+            trio = [
+                ["A", "B", "M"],
+                ["A", "F", "D"],
+                ["A", "C", "H"],
+            ]
+        # 重・差しはB相手E／F相手G／3点目C-Hの組み合わせを試用。
+        elif b == "重" and main == "差し":
+            trio = [
+                ["A", "B", "E"],
+                ["A", "F", "G"],
+                ["A", "C", "H"],
+            ]
+        elif b == "重" and main == "先行":
+            trio = [
+                ["A", "B", "M"],
+                ["A", "F", "E"],
+                ["A", "M2", "E"],
+            ]
+        # 不良など細分類の母数が少ない場合は1500m共通を維持。
+    elif d == 1700:
+        # 距離別プールで主軸を保持。馬場・主の個別差は母数不足。
+        trio = [
+            ["A", "B", "E"],
+            ["A", "F", "M"],
+            ["A", "M2", "D"],
+        ]
+        wides = [["A", "B"], ["M", "M2"]]
+    elif d == 1400 and main == "先行":
+        # 1400m主先行の試行パターン。比較母数が少ないため暫定。
+        trio = [
+            ["A", "B", "G"],
+            ["A", "F", "I"],
+            ["A", "M", "E"],
+        ]
+
+    # 副タイプは同条件の複数記号間に明瞭な差がつかないときのみ採用。
+    # 現時点で、副タイプ固有の改善を再現できる条件が見つかっていないため
+    # 試作版では主タイプで決まった買い目を上書きしない。
+    _ = sub
+
+    # A-F(M)の共通置換を保持：unify後の2点目の「2頭目」は変更しない。
+    prev_second = template.get("三連複", [[], []])
+    if len(prev_second) >= 2 and len(prev_second[1]) >= 2:
+        selected_second = prev_second[1][1]
+        if selected_second in {"F", "M", "B"}:
+            trio[1][1] = selected_second
+
+    # F→M置換後に A-M-M など同じ記号が2つ並ぶのを防ぐ。
+    # 元のF次点への繰り下げと実馬の重複回避は既存処理を維持。
+    if trio[1][1] == trio[1][2]:
+        for next_role in ("C", "D", "E", "G", "H", "I", "M2"):
+            if next_role not in trio[1]:
+                trio[1][2] = next_role
+                break
+
+    template["三連複"] = trio
+    # ワイド2点を、通常1点＋浮き輪1点の既存UIに流し込む。
+    template["ワイド"] = [wides[0]]
+    template["浮き輪"] = [wides[1]]
+    return template
+
+
+current_bet_template = apply_nagoya_distance_ground_axis_rules(
+    current_bet_template,
+    baba_name,
+    distance_num,
+    baba_status,
+    axis_primary_for_bet,
+    axis_secondary_for_bet,
+)
+
+
 alphabet_role_names = {
     "A": "軸",
     "F": "後詰め",
@@ -19417,6 +19542,13 @@ if baba_name in {"盛岡", "水沢"}:
         "K",
         "M",
         "M2",
+    ]
+elif baba_name == "名古屋":
+    # 名古屋は、A・B・F・M系を最優先。
+    # 同一馬にM2とIなどが重なる場合はM2側の順位を優先する。
+    alphabet_priority = [
+        "A", "B", "F", "M", "M2",
+        "C", "E", "D", "G", "I", "N", "L", "K", "J",
     ]
 else:
     alphabet_priority = [
