@@ -1753,6 +1753,12 @@ def finish_role_race(status, detail, venue, distance, race_number,
 
 
 def skip_role_batch_if_unreadable(reason, state="要確認"):
+    # 月間回収率の自動検証も、取得不能Rで画面入力待ちにならない。
+    # 処理不能Rは回収率の分母・分子から除外し、要確認として残す。
+    if (st.session_state.get("monthly_running", False)
+            and st.session_state.get("batch_mode", False)
+            and not st.session_state.get("role_validation_running", False)):
+        advance_monthly_unreadable_race(reason)
     """一括役割検証だけ、取得不能Rで入力待ちせず次へ進む。
 
     読めない結果は完了扱いにしないためExcelにも書き込まれず、
@@ -2124,6 +2130,196 @@ def run_role_date_queue():
 
 
 run_role_date_queue()
+
+
+# ==================================================
+# 📅 月間回収率・自動一括検証（予想ロジックや買い目は変更しない）
+# 公式月別開催日程で対象日を抽出し、既存の全R一括検証を日付順に実行する。
+# 1R=100円/点、途中停止後もセッション内で再開可能。
+# ==================================================
+@st.cache_data(ttl=86400, show_spinner=False)
+def official_month_race_dates(year, month, baba_code):
+    """NAR月別開催日程表の会場行から開催日を抽出（開催なし=空list）。"""
+    import calendar
+    import requests
+    from bs4 import BeautifulSoup
+    from datetime import date
+
+    endpoint = (
+        "https://www.keiba.go.jp/KeibaWeb/MonthlyConveneInfo/"
+        "MonthlyConveneInfoTop"
+    )
+    response = requests.get(
+        endpoint,
+        params={"k_year": int(year), "k_month": int(month)},
+        headers={"User-Agent": "Mozilla/5.0 (compatible; KappaKeibaTool/1.0)"},
+        timeout=15,
+    )
+    response.raise_for_status()
+    soup = BeautifulSoup(response.content, "html.parser")
+    venue = keibajo[str(baba_code)].removesuffix("競馬")
+    last_day = calendar.monthrange(int(year), int(month))[1]
+    from datetime import datetime, timedelta
+    japan_today = datetime.now(__import__("zoneinfo").ZoneInfo("Asia/Tokyo")).date()
+    finished_through = japan_today - timedelta(days=1)
+
+    # 会場名は表の左右両端に表示される。左端の名前の直後が日付列。
+    target_row = None
+    for table in soup.select("table"):
+        for row in table.select("tr"):
+            cells = row.find_all(["th", "td"], recursive=False)
+            if not cells:
+                continue
+            left = cells[0].get_text("", strip=True).replace(" ", "").replace("　", "")
+            if left == venue and len(cells) >= last_day + 1:
+                target_row = cells
+                break
+        if target_row is not None:
+            break
+    if target_row is None:
+        raise ValueError("公式の月別カレンダーで対象競馬場の行を確認できませんでした")
+
+    dates = []
+    for day in range(1, last_day + 1):
+        cell = target_row[day]
+        symbol = cell.get_text("", strip=True).replace(" ", "")
+        # 開催印（普通・ナイター・交流重賞・代替開催）＋RaceListリンク
+        has_venue_racing = any(mark in symbol for mark in ("●", "☆", "Ｄ", "△"))
+        if not has_venue_racing:
+            has_venue_racing = any(
+                "RaceList" in tag.get("href", "")
+                for tag in cell.select("a[href]")
+            )
+        if not has_venue_racing:
+            continue
+        current = date(int(year), int(month), day)
+        # 今日の途中結果、未来のレースは検証しない。
+        if current <= finished_through:
+            dates.append(current.strftime("%Y/%m/%d"))
+    return dates
+
+
+def summarize_monthly_races(rows):
+    """同一日・同一Rは1件。未確定・取得失敗を損失扱いしない。"""
+    unique = {}
+    for item in rows:
+        date = str(item.get("日付", ""))
+        try:
+            race = int(item.get("R", 0))
+        except (TypeError, ValueError):
+            continue
+        if date and race >= 1:
+            unique[(date, race)] = item
+    cleaned = [unique[key] for key in sorted(unique)]
+    valid = [r for r in cleaned if r.get("状態") in ("完了", "対象外")]
+    betting = [r for r in valid if int(r.get("投資", 0)) > 0]
+
+    def totals(group):
+        spent = sum(int(r.get("投資", 0)) for r in group)
+        back = sum(int(r.get("払戻", 0)) for r in group)
+        return {"投資": spent, "払戻": back, "収支": back - spent,
+                "回収率": round(back / spent * 100, 1) if spent else None}
+
+    combined = totals(valid)
+    combined.update({
+        "処理R": len(cleaned),
+        "完了R": len(betting),
+        "新馬戦等除外": sum(r.get("状態") == "対象外" for r in valid),
+        "要確認R": len(cleaned) - len(valid),
+    })
+    for ticket in ("三連複", "ワイド"):
+        spent = sum(int(r.get(ticket + "投資", 0)) for r in valid)
+        back = sum(int(r.get(ticket + "払戻", 0)) for r in valid)
+        combined[ticket + "投資"] = spent
+        combined[ticket + "払戻"] = back
+        combined[ticket + "回収率"] = round(back / spent * 100, 1) if spent else None
+    return combined, cleaned
+
+
+def monthly_all_records(include_active=True):
+    rows = list(st.session_state.get("monthly_records", []))
+    current_date = st.session_state.get("monthly_current_date", "")
+    if include_active and current_date:
+        rows.extend(dict(item, 日付=current_date)
+                    for item in st.session_state.get("batch_results", []))
+    return summarize_monthly_races(rows)[1]
+
+
+def monthly_store_current_day():
+    """完了・失敗・対象外を、開催日つきで重複排除して保存。"""
+    current_date = st.session_state.get("monthly_current_date", "")
+    if not current_date:
+        return
+    records = st.session_state.get("monthly_records", [])
+    records.extend(dict(item, 日付=current_date)
+                   for item in st.session_state.get("batch_results", []))
+    st.session_state.monthly_records = summarize_monthly_races(records)[1]
+    st.session_state.monthly_current_date = ""
+    st.session_state.batch_results = []
+
+
+def advance_monthly_unreadable_race(reason):
+    """月間自動実行中の取得不能Rを記録して、次のレースへ進む。"""
+    if not (st.session_state.get("monthly_running", False)
+            and st.session_state.get("batch_mode", False)):
+        return False
+    race = int(st.session_state.batch_race_no)
+    st.session_state.setdefault("batch_results", []).append({
+        "R": race, "状態": "要確認", "理由": str(reason),
+        "投資": 0, "払戻": 0,
+    })
+    reset_batch_axis_temp_state()
+    if race < st.session_state.batch_last_race:
+        st.session_state.batch_race_no = race + 1
+    else:
+        st.session_state.batch_mode = False
+        st.session_state.batch_race_no = 1
+    st.rerun()
+    return True
+
+
+def run_monthly_date_queue():
+    """1日が終わったら次の開催日へ。停止時は自動進行しない。"""
+    if not st.session_state.get("monthly_running", False):
+        return
+    if st.session_state.get("batch_mode", False):
+        return
+
+    monthly_store_current_day()
+    resume = st.session_state.get("monthly_resume_day")
+    if resume:
+        date, last_race, first_race = resume
+        st.session_state.monthly_resume_day = None
+    else:
+        queue = st.session_state.get("monthly_date_queue", [])
+        if not queue:
+            st.session_state.monthly_running = False
+            st.session_state.monthly_finished = True
+            return
+        date = queue.pop(0)
+        st.session_state.monthly_date_queue = queue
+        # 公式の最終R取得に失敗した日も12R上限で処理し、
+        # 存在しないR・取得不能Rは「要確認」として別枠にする。
+        actual_races = official_day_race_numbers(
+            date, st.session_state.monthly_baba_code)
+        last_race = max(actual_races) if actual_races else 12
+        first_race = 1
+
+    st.session_state.monthly_current_date = date
+    st.session_state.batch_results = []
+    st.session_state.batch_date = date
+    st.session_state.batch_baba_code = st.session_state.monthly_baba_code
+    st.session_state.batch_last_race = int(last_race)
+    st.session_state.batch_race_no = int(first_race)
+    st.session_state.batch_axis_mode = st.session_state.monthly_axis_mode
+    st.session_state.role_validation_running = False
+    st.session_state.batch_mode = True
+    reset_batch_axis_temp_state()
+    st.session_state.analyzed = True
+    st.rerun()
+
+
+run_monthly_date_queue()
 
 
 # ==================================================
@@ -3099,7 +3295,227 @@ if "auto_axis_info" not in st.session_state:
     st.session_state.auto_axis_info = None
 
 
-render_today_race_picker()
+# ==================================================
+# 月間回収率：今日の会場選択画面より前に置き、ここだけで開始できる。
+# ==================================================
+def render_monthly_roi_controls():
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    import csv
+    import io
+
+    now = datetime.now(ZoneInfo("Asia/Tokyo"))
+    state = st.session_state
+    with st.expander("📅 月ごとの回収率を一括検証", expanded=bool(
+            state.get("monthly_running") or state.get("monthly_records"))):
+        st.caption("競馬場・年月を選択 → 公式開催日を自動取得 → 全Rの買い目と公式払戻を検証。"
+                   "1点100円固定。新馬戦と取得失敗Rは投資・払戻に入れません。")
+        venues = [code for code in keibajo if code != ""]
+        c1, c2, c3 = st.columns([1.3, 1, 1])
+        venue = c1.selectbox(
+            "競馬場", venues,
+            format_func=lambda code: keibajo[code].removesuffix("競馬"),
+            index=venues.index("24") if "24" in venues else 0,
+            key="monthly_ui_venue",
+            disabled=bool(state.get("monthly_running") or state.get("monthly_paused")),
+        )
+        years = list(range(max(2022, now.year - 5), now.year + 1))
+        year = c2.selectbox("年", years, index=len(years)-1,
+                            key="monthly_ui_year",
+                            disabled=bool(state.get("monthly_running") or state.get("monthly_paused")))
+        month = c3.selectbox("月", list(range(1, 13)),
+                             index=now.month-1, key="monthly_ui_month",
+                             disabled=bool(state.get("monthly_running") or state.get("monthly_paused")))
+        axis_mode = st.radio(
+            "検証する軸", ["favorite", "backfill"],
+            format_func=lambda x: "1番人気軸" if x == "favorite" else "後詰めF軸",
+            horizontal=True, key="monthly_ui_axis",
+            disabled=bool(state.get("monthly_running") or state.get("monthly_paused")),
+        )
+        manual_enabled = st.checkbox(
+            "日付を手動指定する（公式カレンダー取得失敗時のみ）",
+            key="monthly_ui_manual_enabled",
+            disabled=bool(state.get("monthly_running") or state.get("monthly_paused")),
+        )
+        manual_dates = ""
+        if manual_enabled:
+            manual_dates = st.text_area(
+                "開催日（1行1日／YYYY-MM-DD）", key="monthly_ui_manual_dates",
+                height=85,
+                disabled=bool(state.get("monthly_running") or state.get("monthly_paused")),
+            )
+
+        col_start, col_stop = st.columns(2)
+        if state.get("monthly_running", False):
+            col_start.button("▶ 検証中", disabled=True, use_container_width=True)
+            if col_stop.button("⏸ 一時停止", use_container_width=True,
+                               key="monthly_pause_btn"):
+                current = state.get("monthly_current_date")
+                if state.get("batch_mode", False) and current:
+                    next_race = int(state.get("batch_race_no", 1))
+                    last_race = int(state.get("batch_last_race", 12))
+                    monthly_store_current_day()
+                    state.monthly_resume_day = (current, last_race, next_race)
+                state.monthly_running = False
+                state.monthly_paused = True
+                state.batch_mode = False
+                st.rerun()
+        else:
+            label = "▶ 続きから再開" if state.get("monthly_paused") else "🚀 この月を一括検証"
+            if col_start.button(label, key="monthly_start_btn",
+                                use_container_width=True):
+                if state.get("monthly_paused"):
+                    state.monthly_running = True
+                    state.monthly_paused = False
+                    st.rerun()
+                elif (int(year), int(month)) > (now.year, now.month):
+                    st.error("未来の月はまだ回収率を検証できません。")
+                else:
+                    import re
+                    from datetime import date, timedelta
+                    try:
+                        if manual_dates.strip():
+                            dates = []
+                            for match in re.finditer(
+                                    r"(\d{4})[-/](\d{1,2})[-/](\d{1,2})", manual_dates):
+                                day = date(int(match[1]), int(match[2]), int(match[3]))
+                                if (day.year, day.month) != (int(year), int(month)):
+                                    raise ValueError("選択した年月以外の日付が含まれています")
+                                if day >= now.date():
+                                    continue
+                                value = day.strftime("%Y/%m/%d")
+                                if value not in dates:
+                                    dates.append(value)
+                            dates.sort()
+                        else:
+                            with st.spinner("公式カレンダーから開催日を確認中…"):
+                                dates = official_month_race_dates(year, month, venue)
+                        if not dates:
+                            st.error("完了済みの開催日を取得できませんでした。"
+                                     "年月を確認するか、開催日を手動指定してな。")
+                        else:
+                            state.monthly_date_queue = dates
+                            state.monthly_total_dates = len(dates)
+                            state.monthly_records = []
+                            state.monthly_current_date = ""
+                            state.monthly_resume_day = None
+                            state.monthly_baba_code = str(venue)
+                            state.monthly_axis_mode = str(axis_mode)
+                            state.monthly_period = f"{year}-{month:02d}"
+                            state.monthly_running = True
+                            state.monthly_finished = False
+                            state.monthly_paused = False
+                            state.role_queue_running = False
+                            state.role_validation_running = False
+                            state.batch_mode = False
+                            state.batch_results = []
+                            reset_batch_axis_temp_state()
+                            st.rerun()
+                    except Exception as exc:
+                        st.error(f"開催日の取得・解析ができませんでした：{exc}")
+            if state.get("monthly_paused"):
+                col_stop.caption("再開すると残りRから続けるで")
+
+        total_dates = int(state.get("monthly_total_dates", 0))
+        if state.get("monthly_running"):
+            done = (total_dates - len(state.get("monthly_date_queue", []))
+                    - (1 if state.get("monthly_current_date") else 0))
+            st.progress(min(1.0, max(0.0, done / total_dates)) if total_dates else 0.0)
+            st.info(f"検証中：{state.get('monthly_current_date') or '次の開催日を準備中'}"
+                    f" {state.get('batch_race_no', 1)}R ／ 全{total_dates}開催日")
+        if state.get("monthly_finished"):
+            st.success(f"{state.get('monthly_period', '')} の月間検証が終了したで！")
+        elif state.get("monthly_paused"):
+            st.warning("一時停止中。ここまでの結果は下から保存できるで。")
+
+        records = monthly_all_records()
+        if not records:
+            return
+        summary, records = summarize_monthly_races(records)
+        st.markdown(f"#### 📊 {state.get('monthly_period', '')} 月間成績")
+        a, b, c, d = st.columns(4)
+        a.metric("投資", f"{summary['投資']:,}円")
+        b.metric("払戻", f"{summary['払戻']:,}円")
+        c.metric("収支", f"{summary['収支']:+,}円")
+        d.metric("回収率", f"{summary['回収率']:.1f}%" if summary['回収率'] is not None else "—")
+        st.caption(f"購入対象 {summary['完了R']}R｜新馬戦等の対象外 {summary['新馬戦等除外']}R"
+                   f"｜取得・解析の要確認 {summary['要確認R']}R。"
+                   "要確認がある場合、月間回収率は暫定値です。")
+        by_day = {}
+        for r in records:
+            by_day.setdefault(r["日付"], []).append(r)
+        daily = []
+        for day, items in sorted(by_day.items()):
+            result, _ = summarize_monthly_races(items)
+            daily.append({
+                "日付": day.replace("/", "-"),
+                "購入R": result["完了R"],
+                "投資": result["投資"], "払戻": result["払戻"],
+                "収支": result["収支"],
+                "回収率": f"{result['回収率']:.1f}%" if result['回収率'] is not None else "—",
+                "要確認R": result["要確認R"],
+            })
+        st.markdown("##### 日別の回収率")
+        st.dataframe(daily, use_container_width=True, hide_index=True)
+        zero_days = sum(1 for r in daily if r["投資"] > 0 and r["払戻"] == 0)
+        st.caption(f"払戻0円の開催日：{zero_days}日（購入があった日だけを集計）")
+        summary_lines = [
+            f"【月間回収率】{state.get('monthly_period', '')} "
+            f"{keibajo.get(state.get('monthly_baba_code'), '競馬').removesuffix('競馬')}",
+            f"投資{summary['投資']:,}円｜払戻{summary['払戻']:,}円｜"
+            f"収支{summary['収支']:+,}円｜回収率"
+            + (f"{summary['回収率']:.1f}%" if summary['回収率'] is not None else "—"),
+            f"購入{summary['完了R']}R／新馬戦等除外{summary['新馬戦等除外']}R／"
+            f"要確認{summary['要確認R']}R／払戻0円の日{zero_days}日",
+            "【日別】",
+        ]
+        summary_lines.extend(
+            f"{r['日付']}｜{r['購入R']}R｜投資{r['投資']:,}円｜"
+            f"払戻{r['払戻']:,}円｜回収率{r['回収率']}｜要確認{r['要確認R']}R"
+            for r in daily
+        )
+        st.code("\n".join(summary_lines), language=None)
+        st.markdown("##### 券種別の回収率")
+        for ticket in ("三連複", "ワイド"):
+            stake = summary[ticket + "投資"]
+            returned = summary[ticket + "払戻"]
+            rate = summary[ticket + "回収率"]
+            st.write(f"{ticket}：投資{stake:,}円／払戻{returned:,}円／"
+                     f"回収率{rate:.1f}%" if rate is not None else
+                     f"{ticket}：投資なし")
+
+        csv_buffer = io.StringIO(newline="")
+        columns = ["日付", "R", "距離", "状態", "理由", "軸", "軸タイプ", "結果",
+                   "投資", "払戻", "収支", "回収率", "三連複投資", "三連複払戻",
+                   "ワイド投資", "ワイド払戻", "三連複", "ワイド", "浮き輪"]
+        writer = csv.DictWriter(csv_buffer, fieldnames=columns, extrasaction="ignore",
+                                lineterminator="\n")
+        writer.writeheader()
+        for r in records:
+            writer.writerow({k: (" / ".join(v) if isinstance(v, list) else v)
+                             for k, v in r.items()})
+        st.download_button(
+            "📥 月間検証結果をCSV保存（途中でも可）",
+            ("\ufeff" + csv_buffer.getvalue()).encode("utf-8"),
+            file_name=(f"回収率_{state.get('monthly_period','月間')}_"
+                       f"{keibajo.get(state.get('monthly_baba_code'),'競馬').removesuffix('競馬')}.csv"),
+            mime="text/csv", use_container_width=True,
+            key="monthly_download_btn",
+        )
+        if summary["要確認R"]:
+            st.warning(f"取得できなかった{summary['要確認R']}Rは月間回収率から除外中")
+            issues = [
+                {"日付": r.get("日付"), "R": r.get("R"),
+                 "状態": r.get("状態"), "理由": r.get("理由", "未確定・解析失敗")}
+                for r in records if r.get("状態") not in ("完了", "対象外")
+            ]
+            st.dataframe(issues, use_container_width=True, hide_index=True, height=180)
+
+
+render_monthly_roi_controls()
+# 月間一括検証中だけ、当日の会場・レース選択をスキップして内部URLへ。
+if not st.session_state.get("monthly_running", False):
+    render_today_race_picker()
 
 debug_mode = st.checkbox("デバッグ表示")
 
@@ -19371,15 +19787,126 @@ current_bet_template = apply_sonoda_1400_20261108_rules(
 )
 
 # ==================================================
-# 🐸 名古屋・距離×馬場×A主タイプの買い目試作（2026-11-10）
+# 🛟 名古屋ハイブリッド版・ワイド②選定（2026-11-10）
 #
-# 2026年の役割検証1,038Rから、距離異常13Rを除外して候補比較。
-# 「良／重（稍重＋重）／不良」の3区分で、A主タイプを優先。
-# 馬場・副タイプで信頼できる差がないときは無理に分岐させない。
-# ※これらは予備検証で得た候補で、実際の払戻・回収率は未検証。
-# ※FとMの代替ルールは共通unify_first_two_trio_templatesの確定結果を保持。
-# ※同馬番の重複は後段のmake_unique_*で解決。
+# 三連複3点は名古屋試作版を維持する。
+# ワイド①＝A-Bで基本を守り、ワイド②にはAを含まない
+# 2頭の記号ペアを配置して、Aが飛んだ時にも一部の回収余地を残す。
+#
+# 2026年役割検証「名古屋」1,038R中、距離異常13Rを除外した
+# 1,025Rの1〜3着馬に付いた使用記号(1)と未使用候補(2)を集計。
+# 「両記号が別馬で3着以内」「A-Bで拾えなかった場合」を重視。
+# これは払戻オッズや実際の的中を使った回収率最適化ではない。
+# ※印候補を採用すると従来の選出馬が変わる可能性があるため、
+# 月間回収率一括検証での再検証が必要。
+# ================================================
+
+def select_nagoya_research_wide_pair(distance, ground, primary):
+    """名古屋ワイド②の事前分析に基づく暫定的な相手2記号。"""
+    try:
+        d = int(distance or 0)
+    except (ValueError, TypeError):
+        d = 0
+    b = "重" if ground in {"稍重", "重"} else str(ground or "")
+    t = str(primary or "").strip()
+
+    # 1500mは十分な標本がある主タイプに限り馬場で細分化。
+    if d == 1500:
+        if t == "差し":
+            # 差し全体253R: E-Lは33R、A-Bを外したレースで26R。
+            # 主タイプ別の特徴を優先し、馬場ごとの細分化はしない。
+            return ["E", "L"]
+        if t == "先行":
+            if b == "良":
+                # 1500m/良/先行137R：C-Mが38R、追加20R。
+                return ["C", "M"]
+            if b == "重":
+                # 1500m/重/先行127R：F-M2が28R、追加18R。
+                return ["F", "M2"]
+            # 不良は38Rで細分化しすぎないよう全体実績を優先。
+            return ["F", "M"]
+        if t == "持続":
+            # 持続75R全体ではG-MがA-B外れ9Rを補完。
+            # 個別馬場の標本不足につき共通形。
+            return ["G", "M"]
+        # 逃げ・展開待ち：主・馬場の切り分け過剰を避ける。
+        return ["F", "M"]
+
+    if d == 1400:
+        # 1400m128R：E-Fは18R、A-B外れ14R。
+        return ["E", "F"]
+    if d == 1700:
+        # 1700m103R：M-M2は17R、A-B外れ16R。
+        return ["M", "M2"]
+    # 920m、長距離、サンプル少数は全体で強いF-Mにまとめる。
+    return ["F", "M"]
+
+
 # ==================================================
+# 🐸 名古屋1500mだけ：A主タイプ別「三連複3点＋非重複ワイド2点」実験版
+# 2026/11/10の役割検証・名古屋1500m 685Rの1〜3着記号を分析。
+#   主先行：E/L、主持続：D/G/E/M、主差し：D/I/E、主逃げ：D/Iを中心に選択。
+# ワイドは前半データで候補比較・後半データで確認した暫定案。
+# ※記号2(未使用候補)も含む「潜在捕捉」の検証であり、払戻回収率の
+#   実測値ではない。単に順位が高いだけで全期間の安定性は保証されない。
+# ※名古屋1500m以外（名古屋の他距離・園田含む他会場）は既存設定のまま。
+# ※A=Fの場合M優先（A=F=MならF次点）の既存三連複処理は残す。
+# ==================================================
+NAGOYA_1500_AXIS_TRIOS = {
+    # 先行はE/Lの差し込みを狙う。2点目はF=M重複を避けるA-F-D。
+    "先行": [["A", "B", "E"], ["A", "F", "D"], ["A", "E", "L"]],
+    "持続": [["A", "D", "G"], ["A", "D", "E"], ["A", "G", "M"]],
+    "差し": [["A", "D", "I"], ["A", "D", "E"], ["A", "B", "I"]],
+    "逃げ": [["A", "D", "I"], ["A", "B", "I"], ["A", "E", "K"]],
+    # 展開待ちは10Rしかなく、無理な特殊化はしない暫定案。
+    "展開待ち": [["A", "B", "E"], ["A", "F", "D"], ["A", "E", "I"]],
+}
+NAGOYA_1500_AXIS_WIDES = {
+    # 名古屋1500m・主タイプの基準ワイド（①A-○／②Aなし○-○）
+    # ここは従来版の設定を保持。副タイプと馬場による変更は下の表だけ。
+    "先行": [["A", "M2"], ["C", "M"]],
+    "持続": [["A", "M2"], ["F", "M"]],
+    "差し": [["A", "C"], ["L", "M"]],
+    "逃げ": [["A", "M2"], ["F", "M"]],
+    "展開待ち": [["A", "C"], ["F", "M"]],
+}
+
+# 2026/11/10 役割検証（名古屋1500mのみ）に基づくワイド②の試験候補。
+# 実績は記号1=使用・2=未使用候補を含む3着内ペアの参考値。
+# 払戻や実馬券の回収率で優位と確定したものではない。
+# ※僅差または極小標本の馬場では、主/副の共通形を優先し過学習を避ける。
+NAGOYA_1500_SUBGROUND_WIDE_SECOND = {
+    # A主先行／副持続：旧C-Mは使用記号のみでは的中例0。
+    # M-Lは良5/60R、重4/49R、悪12Rの不良でも1R（標本僅少）。
+    ("先行", "持続", "良"): ["M", "L"],
+    ("先行", "持続", "重"): ["M", "L"],
+    ("先行", "持続", "不良"): ["M", "L"],
+    # A主差し／副なし：良F-I 5/49R、重1/42R（母数少）、
+    # 不良14RはF-I 1R、F-M 2R。確証薄いため不良はF-Mを暫定採用。
+    ("差し", "なし", "良"): ["F", "I"],
+    ("差し", "なし", "重"): ["F", "I"],
+    ("差し", "なし", "不良"): ["F", "M"],
+    # A主逃げ／副先行：良E-I 5/43R、重E-M 6/31R。
+    # 不良16RはE-M 1Rで差は不確実、良とは分けて暫定採用。
+    ("逃げ", "先行", "良"): ["E", "I"],
+    ("逃げ", "先行", "重"): ["E", "M"],
+    ("逃げ", "先行", "不良"): ["E", "M"],
+}
+
+
+def select_nagoya_1500_wides(main, sub, ground):
+    """主タイプを基本に、特定の副タイプ×馬場だけワイド②を変更。"""
+    main = str(main or "").strip()
+    sub = str(sub or "なし").strip() or "なし"
+    normalized_ground = "重" if ground in ("稍重", "重") else str(ground or "不明")
+    base = NAGOYA_1500_AXIS_WIDES[main]
+    second = NAGOYA_1500_SUBGROUND_WIDE_SECOND.get(
+        (main, sub, normalized_ground), base[1]
+    )
+    # 新しいリストにコピーして他レース間で設定が漏れないようにする。
+    return [base[0][:], second[:]]
+
+
 def apply_nagoya_distance_ground_axis_rules(
     template, venue, distance, ground, axis_primary, axis_secondary
 ):
@@ -19391,95 +19918,46 @@ def apply_nagoya_distance_ground_axis_rules(
     except (TypeError, ValueError):
         d = 0
     if d <= 850 or d in {100, 400, 500, 700}:
-        # 出馬表で距離を取得し損ねたときは、距離限定の買い目を適用しない。
-        # 元データにある「0m等」の異常値は正しい距離として扱わない。
         return template
 
     b = "重" if ground in ("稍重", "重") else str(ground or "不明")
     main = str(axis_primary or "").strip()
     sub = str(axis_secondary or "なし").strip() or "なし"
 
-    # 基本は3連複3点＋ワイド2点。データが少ない条件はこの共通形。
-    trio = [
-        ["A", "B", "E"],
-        ["A", "F", "D"],
-        ["A", "M2", "H"],
-    ]
-    wides = [["A", "B"], ["A", "E"]]
+    # ★名古屋1500mのみ。三連複3点とワイド①は前版のまま、
+    # ワイド②だけ主タイプ×副タイプ×馬場の検証により必要な条件で変更。
+    # 他距離・他会場・未対象の副タイプは既存ルールを厳守。
+    if d == 1500 and main in NAGOYA_1500_AXIS_TRIOS:
+        template["三連複"] = [r[:] for r in NAGOYA_1500_AXIS_TRIOS[main]]
+        wides = select_nagoya_1500_wides(main, sub, ground)
+        template["ワイド"] = [wides[0][:]]
+        template["浮き輪"] = [wides[1][:]]
+        return template
 
-    # 1500mは最も母数が多いため独立した基本形を設定。
+    # 以下、名古屋1500m「以外」は既存の試験版を完全維持。
+    trio = [["A", "B", "E"], ["A", "F", "D"], ["A", "M2", "H"]]
+    wides = [["A", "B"], select_nagoya_research_wide_pair(d, ground, main)]
+
     if d == 1500:
-        trio = [
-            ["A", "B", "M2"],
-            ["A", "F", "M"],
-            ["A", "E", "D"],
-        ]
-        # 良・先行は細分化案が別期間で安定しなかったため、保守型へ戻す。
-        if b == "良" and main == "先行":
-            trio = [
-                ["A", "B", "E"],
-                ["A", "F", "D"],
-                ["A", "M2", "H"],
-            ]
-        # 良・差しは前後期間で比較的安定していた特徴を優先。
-        elif b == "良" and main == "差し":
-            trio = [
-                ["A", "B", "M"],
-                ["A", "F", "D"],
-                ["A", "C", "H"],
-            ]
-        # 重・差しはB相手E／F相手G／3点目C-Hの組み合わせを試用。
-        elif b == "重" and main == "差し":
-            trio = [
-                ["A", "B", "E"],
-                ["A", "F", "G"],
-                ["A", "C", "H"],
-            ]
-        elif b == "重" and main == "先行":
-            trio = [
-                ["A", "B", "M"],
-                ["A", "F", "E"],
-                ["A", "M2", "E"],
-            ]
-        # 不良など細分類の母数が少ない場合は1500m共通を維持。
+        # 未知の主タイプの場合だけ元の1500m共通形を使用。
+        trio = [["A", "B", "M2"], ["A", "F", "M"], ["A", "E", "D"]]
     elif d == 1700:
-        # 距離別プールで主軸を保持。馬場・主の個別差は母数不足。
-        trio = [
-            ["A", "B", "E"],
-            ["A", "F", "M"],
-            ["A", "M2", "D"],
-        ]
-        wides = [["A", "B"], ["M", "M2"]]
+        trio = [["A", "B", "E"], ["A", "F", "M"], ["A", "M2", "D"]]
     elif d == 1400 and main == "先行":
-        # 1400m主先行の試行パターン。比較母数が少ないため暫定。
-        trio = [
-            ["A", "B", "G"],
-            ["A", "F", "I"],
-            ["A", "M", "E"],
-        ]
+        trio = [["A", "B", "G"], ["A", "F", "I"], ["A", "M", "E"]]
 
-    # 副タイプは同条件の複数記号間に明瞭な差がつかないときのみ採用。
-    # 現時点で、副タイプ固有の改善を再現できる条件が見つかっていないため
-    # 試作版では主タイプで決まった買い目を上書きしない。
-    _ = sub
-
-    # A-F(M)の共通置換を保持：unify後の2点目の「2頭目」は変更しない。
+    _ = (b, sub)
     prev_second = template.get("三連複", [[], []])
     if len(prev_second) >= 2 and len(prev_second[1]) >= 2:
         selected_second = prev_second[1][1]
         if selected_second in {"F", "M", "B"}:
             trio[1][1] = selected_second
-
-    # F→M置換後に A-M-M など同じ記号が2つ並ぶのを防ぐ。
-    # 元のF次点への繰り下げと実馬の重複回避は既存処理を維持。
     if trio[1][1] == trio[1][2]:
         for next_role in ("C", "D", "E", "G", "H", "I", "M2"):
             if next_role not in trio[1]:
                 trio[1][2] = next_role
                 break
-
     template["三連複"] = trio
-    # ワイド2点を、通常1点＋浮き輪1点の既存UIに流し込む。
     template["ワイド"] = [wides[0]]
     template["浮き輪"] = [wides[1]]
     return template
@@ -23239,6 +23717,132 @@ if baba_name == "園田":
     if len(trio_bets) < 3 or len(wide_bets) + len(float_bets) < 2:
         st.warning("園田の買い目が5点に満たないレースです。成立する候補を確認してください。")
 
+# ==================================================
+# 名古屋1500m限定：最終実馬番でのワイド分散ガード
+# 三連複に含まれる「2頭ペア」はワイドに重ねない。
+# さらにワイド①は必ずA-○、ワイド②はAを使わない○-○にする。
+# 同一記号・同一馬、候補順位変更、高オッズ補正での被りもここで除去。
+# 三連複3点、5頭表示、園田や名古屋他距離は一切動かさない。
+# ==================================================
+def diversify_nagoya_1500_wides(
+    trios, normal_wides, extra_wides, templates,
+    selected, normal_selected, pools, number_of, excluded
+):
+    from itertools import combinations
+
+    excluded = set(excluded or ())
+    trio_pairs = {
+        frozenset((number_of(p[0]), number_of(p[1])))
+        for trio in trios if len(trio) == 3
+        for p in combinations(trio, 2)
+    }
+    axis = selected.get("A") or normal_selected.get("A")
+    axis_no = number_of(axis) if axis is not None else None
+    if axis_no is None:
+        return normal_wides, extra_wides
+
+    used = set()
+    chosen = []
+    pair_templates = (templates.get("ワイド", [])[:1]
+                      + templates.get("浮き輪", [])[:1])
+    current = list(normal_wides[:1]) + list(extra_wides[:1])
+
+    # 順位順の候補を優先。同じ役割を使う場合は次候補への繰下げを許す。
+    backup_roles = ["M2", "C", "I", "F", "M", "G", "H", "E", "D",
+                    "K", "L", "N", "B", "J", "P"]
+
+    def ranked(role):
+        opts = ([selected.get(role), normal_selected.get(role)]
+                + list(pools.get(role, [])))
+        seen = set()
+        result = []
+        for h in opts:
+            if h is None:
+                continue
+            num = number_of(h)
+            if num is None or num in seen or num in excluded:
+                continue
+            result.append(h)
+            seen.add(num)
+        return result
+
+    def valid(bet, want_axis):
+        if not bet or len(bet) != 2:
+            return False
+        nums = [number_of(h) for h in bet]
+        if None in nums or len(set(nums)) != 2:
+            return False
+        if any(n in excluded for n in nums):
+            return False
+        if (axis_no in nums) != want_axis:
+            return False
+        pair = frozenset(nums)
+        return pair not in trio_pairs and pair not in used
+
+    # 1点目は軸Aを固定し、右側の役割で重複回避。
+    first = current[0] if current else None
+    if not valid(first, True):
+        first = None
+        first_role = pair_templates[0][1] if pair_templates else "M2"
+        roles = [first_role] + [x for x in backup_roles if x != first_role]
+        for role in roles:
+            if first is not None:
+                break
+            for h in ranked(role):
+                candidate = [axis, h]
+                if valid(candidate, True):
+                    first = candidate
+                    break
+    if first is not None:
+        chosen.append(first)
+        used.add(frozenset(number_of(h) for h in first))
+
+    # 2点目は必ずAなし。既存指定ペア→同一役の次候補→他の実績系ペア。
+    second = current[1] if len(current) > 1 else None
+    if not valid(second, False):
+        second = None
+        role_pair = pair_templates[1] if len(pair_templates) > 1 else ["F", "M"]
+        prioritized = [tuple(role_pair)]
+        prioritized += [
+            ("F", "M"), ("L", "M"), ("C", "M"), ("F", "M2"),
+            ("E", "L"), ("D", "M"), ("D", "E"), ("I", "M"),
+            ("G", "M"), ("C", "E"), ("F", "I"), ("G", "L")
+        ]
+        tested_roles = set()
+        for pair in prioritized:
+            if second is not None:
+                break
+            if pair in tested_roles or pair[0] == pair[1]:
+                continue
+            tested_roles.add(pair)
+            pool1, pool2 = ranked(pair[0]), ranked(pair[1])
+            # 候補プールを交差させ、Aや同一実馬は不可。
+            for h1 in pool1:
+                if second is not None:
+                    break
+                for h2 in pool2:
+                    candidate = [h1, h2]
+                    if valid(candidate, False):
+                        second = candidate
+                        break
+    if second is not None:
+        chosen.append(second)
+        used.add(frozenset(number_of(h) for h in second))
+
+    return ([first] if first is not None else []), ([second] if second is not None else [])
+
+
+if baba_name == "名古屋" and int(distance_num or 0) == 1500:
+    wide_bets, float_bets = diversify_nagoya_1500_wides(
+        trio_bets, wide_bets, float_bets, current_bet_template,
+        final_bet_symbols, normal_bet_symbols,
+        alphabet_candidate_pools, get_num,
+        set(kirisute_horse_numbers or ()) | set(cut_numbers_for_bets or ()),
+    )
+    if len(wide_bets) + len(float_bets) < 2:
+        st.warning("名古屋1500m：三連複と重ならないワイド候補を2点作れないレースです。")
+
+
 st.subheader(
     f"おすすめの三連複 {len(trio_bets)}点"
 )
@@ -23733,6 +24337,9 @@ if check_result:
                     "着順がまだ確定していないか、"
                     "結果ページの着順を正常に読み取れませんでした。"
                 )
+                # 月間自動検証ではここで止めず、要確認として次Rへ。
+                if st.session_state.get("monthly_running", False):
+                    advance_monthly_unreadable_race("着順未確定・中止・読取失敗")
 
             elif (
                 not wide_payouts
@@ -23743,6 +24350,8 @@ if check_result:
                     "着順は取得できましたが、払戻欄がまだ反映途中か、"
                     "払戻表記を正常に読み取れませんでした。"
                 )
+                if st.session_state.get("monthly_running", False):
+                    advance_monthly_unreadable_race("公式払戻の未確定・読取失敗")
 
                 st.info(
                     "数秒後にもう一度 "
@@ -24062,6 +24671,13 @@ if check_result:
                         "払戻": int(total_return),
                         "収支": int(profit),
                         "回収率": float(recovery_rate),
+                        # 月間集計用。合計だけでなく券種別の回収率も追える。
+                        "三連複投資": 100 * len(trio_bets),
+                        "三連複払戻": sum(row["払戻"] for row in ticket_rows
+                                       if row["券種"].startswith("三連複")),
+                        "ワイド投資": 100 * (len(wide_bets) + len(float_bets)),
+                        "ワイド払戻": sum(row["払戻"] for row in ticket_rows
+                                      if row["券種"].startswith("ワイド")),
                         "三連複": [
                             "-".join(
                                 str(x)
