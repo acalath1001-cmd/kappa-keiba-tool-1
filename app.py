@@ -15239,6 +15239,22 @@ popular = (
 # 穴3を飛ばし、穴4 → 穴5 → 穴1の順に進む。
 # ==================================================
 
+# ==============================================================
+# 買い目ルール優先順位（2026-11-11 整理）
+#   1. 軸タイプ別基本テンプレート
+#   2. 会場別3タイプ別の基礎ルール
+#   3. 会場・距離・主/副タイプの個別ルール（過去版を含む）
+#   4. 三連複1点目A-B / 2点目A-F等の共通調整
+#   5. 後発の距離別表：佐賀1400、笠松1400良、船橋1200、園田820等
+#   6. 園田1400旧版（11/08）・名古屋距離別版（11/10）
+#   7. 馬場3区分ルーター：登録済み条件だけ最終優先
+#      ※2026-11-11時点では「園田1400m・良・主4タイプ」のみ
+#   8. 記号から実馬への変換・同馬重複解消・不足補完・オッズ補正
+#
+# 「浮き輪」は別券種ではなく、表示上の追加ワイド枠。
+# 個別の旧ルールを消すと、馬場・距離などの未設定条件まで変わる場合がある。
+# デバッグ表示で買い目テンプレートの主要段階を確認できる。
+# ==============================================================
 # --------------------------------------------------
 # 軸タイプ別・手書き買い目
 # --------------------------------------------------
@@ -16594,8 +16610,9 @@ def build_kochi_saga_axis_bet_override(context):
         result["三連複"][1] = ["A", "C", "L"]
         result["三連複"][2] = ["A", "M", "G"]
 
-        if int(context.get("current_distance") or 0) == 1400:
-            result["浮き輪"] = [["B", "M"]]
+        # 整理済み：旧1400mワイド② B-M は、この関数の後半にある
+        # 佐賀全距離F-Eに必ず上書きされるため、ここでの代入は削除。
+        # 佐賀1400mの4タイプは後段の専用表でさらに最終上書きされる。
 
     # 佐賀・差しだけ2点目を A-D-G に固定する。
     # 共通側のA≠F時のA-F-I差し替えより後で上書きするため、
@@ -17463,14 +17480,8 @@ def build_sonoda_axis_bet_override(context):
             result["三連複"][1] = ["A", "F", "G"]
             result["ワイド"][0] = ["A", "B"]
 
-    # 園田のみ、主：差し・副：持続の時は、
-    # 三連複2点目だけを A-D-C に変更する。
-    # 1点目・3点目・ワイド・他会場には影響させない。
-    if (
-        context.get("axis_primary") == "差し"
-        and context.get("axis_secondary") == "持続"
-    ):
-        result["三連複"][1] = ["A", "D", "C"]
+    # 整理済み：旧「主差し・副持続 A-D-C」は直後の
+    # 「主差し（副不問）A-F-K」に必ず上書きされるため削除。
 
     # 園田のみ、元の主脚質が差しの時は、
     # 三連複2点目を A-F-K、3点目を A-M-L に固定する。
@@ -17545,16 +17556,8 @@ def build_sonoda_axis_bet_override(context):
     ):
         result["三連複"][2] = ["A", "E", "D"]
 
-    # 園田1400mのみ・主＝先行／副＝追い込みの時は、
-    # 三連複3点目を A-B-E に固定する。
-    # 現在の先行共通保証と同じ内容だが、1400m専用指定として明示する。
-    if (
-        axis_type == "前受け"
-        and int(current_distance or 0) == 1400
-        and context.get("axis_primary") == "先行"
-        and context.get("axis_secondary") == "追い込み"
-    ):
-        result["三連複"][2] = ["A", "B", "E"]
+    # 整理済み：1400m主先行・副追い込みのA-B-Eは、
+    # 上の「主先行ならA-B-E」と完全に同じため重複指定を削除。
 
     # 最終保証：園田1700m以上・元の主脚質が逃げの時だけ、
     # 三連複3点目をA-B-Iへ固定する。
@@ -19043,11 +19046,27 @@ venue_axis_bet_rule_context = (
     )
 )
 
+# ── デバッグ用：券種ごとの主要ルール段階を可視化（選出ロジックは無変更）──
+_bet_rule_stage_trace = []
+
+def _record_bet_rule_stage(stage):
+    if not debug_mode or st.session_state.get("batch_mode", False):
+        return
+    _bet_rule_stage_trace.append({
+        "段階": stage,
+        "三連複": " / ".join("-".join(x) for x in current_bet_template.get("三連複", [])),
+        "ワイド①": " / ".join("-".join(x) for x in current_bet_template.get("ワイド", [])),
+        "追加ワイド": " / ".join("-".join(x) for x in current_bet_template.get("浮き輪", [])),
+    })
+
+_record_bet_rule_stage("1. 軸タイプ別基本")
+
 # 14会場×3タイプの表は、すべて既存ロジックの後で適用する。
 current_bet_template = apply_venue_axis_bet_override(
     current_bet_template,
     venue_axis_bet_rule_context,
 )
+_record_bet_rule_stage("2. 会場別3分類")
 
 # 岩手は他会場と同様、三連複3点＋ワイド2点（通常1点＋追加1点）。
 # 先頭2点の三連複とアルファベット優先順位は変更しない。
@@ -19341,9 +19360,11 @@ def unify_first_two_trio_templates(template, pools, number_of):
         trios[1] = ["A", second_role, trios[1][2]]
     return updated
 
+_record_bet_rule_stage("3. 会場・距離・主副の個別指定")
 current_bet_template = unify_first_two_trio_templates(
     current_bet_template, alphabet_candidate_pools, get_num,
 )
+_record_bet_rule_stage("4. 全会場共通の1・2点目統一")
 
 
 # ==================================================
@@ -19778,6 +19799,7 @@ def apply_sonoda_1400_20261108_rules(template, venue, distance, primary, seconda
     return template
 
 
+_record_bet_rule_stage("5. 後発の会場・距離別指定表")
 current_bet_template = apply_sonoda_1400_20261108_rules(
     current_bet_template,
     baba_name,
@@ -19785,6 +19807,7 @@ current_bet_template = apply_sonoda_1400_20261108_rules(
     axis_primary_for_bet,
     axis_secondary_for_bet,
 )
+_record_bet_rule_stage("6. 園田1400の旧補正")
 
 # ==================================================
 # 🛟 名古屋ハイブリッド版・ワイド②選定（2026-11-10）
@@ -19971,7 +19994,155 @@ current_bet_template = apply_nagoya_distance_ground_axis_rules(
     axis_primary_for_bet,
     axis_secondary_for_bet,
 )
+_record_bet_rule_stage("7. 名古屋距離・馬場の専用版")
 
+
+# ==================================================
+# 2026/11/11 馬場別買い目ルーター（会場 × 良 / 重 / 不良）
+#
+# ・姫路と金沢は対象外。既存ルールをそのまま使う。
+# ・稍重と重を「重」へ統合。良・不良は独立。
+# ・未設定の会場・馬場・距離・主脚質は既存買い目を維持。
+# ・いま実際に変更するのは園田1400m「良」だけ。
+# ・予想馬の選出点数、役割ランキング、UI、履歴出力は変更しない。
+# ・園田1400m良の三連複3点＋ワイド2点を一組として扱う。
+#
+# 注：過去の役割検証Excelに払戻・レース前の確定馬番がないため、
+# これは記号出現実績からの暫定配分であり、回収率の保証ではない。
+# ==================================================
+GROUND_BET_BUCKETS = ("良", "重", "不良")
+GROUND_BET_EXCLUDED_TRACKS = frozenset({"姫路", "金沢"})
+GROUND_BET_TRACKS = tuple(
+    name.removesuffix("競馬")
+    for name in keibajo.values()
+    if name.removesuffix("競馬") not in GROUND_BET_EXCLUDED_TRACKS
+)
+
+
+def normalize_betting_ground(raw_ground):
+    """出馬表の馬場を買い目用の3区分へ変換する。"""
+    ground = str(raw_ground or "").strip()
+    if ground in ("稍重", "重"):
+        return "重"
+    if ground in ("良", "不良"):
+        return ground
+    # 判定不能なら無理に良/重/不良へ割り当てない。
+    return "不明"
+
+
+# 会場×馬場の設定入口は最初から全て用意する。
+# {会場: {馬場区分: {距離m: {軸主脚質: {券種: 買い目}}}}}
+# 追加検証した会場・距離からデータを登録するだけで独立して変更できる。
+GROUND_BET_RULES = {
+    track: {ground: {} for ground in GROUND_BET_BUCKETS}
+    for track in GROUND_BET_TRACKS
+}
+
+# 園田1400m・良だけ：Aが入着した時にB/M/Fで1頭を拾えたケースの
+# 3頭目（逃げM2/E/I、先行M2/E/I、持続D/C/N、差しD/G/J）を重視。
+# ワイド1点目はA-B、2点目はAが飛んでも成立しうるAなしのペアに分散。
+# ※ 未使用候補で強かったM2は、既存M2ランキングから実馬を選ぶ。
+# ※ 展開待ちは7Rと少ないため現行ルールを温存する。
+GROUND_BET_RULES["園田"]["良"][1400] = {
+    "逃げ": {
+        "三連複": [["A", "B", "M2"], ["A", "F", "E"], ["A", "M", "I"]],
+        "ワイド": [["A", "B"]],
+        "浮き輪": [["F", "M2"]],
+    },
+    "先行": {
+        "三連複": [["A", "B", "E"], ["A", "M", "M2"], ["A", "F", "I"]],
+        "ワイド": [["A", "B"]],
+        "浮き輪": [["F", "E"]],
+    },
+    "持続": {
+        "三連複": [["A", "B", "D"], ["A", "F", "C"], ["A", "M", "N"]],
+        "ワイド": [["A", "B"]],
+        "浮き輪": [["D", "E"]],
+    },
+    "差し": {
+        "三連複": [["A", "B", "D"], ["A", "F", "G"], ["A", "M", "J"]],
+        "ワイド": [["A", "B"]],
+        "浮き輪": [["F", "D"]],
+    },
+}
+
+
+# ==================================================
+# 2026/11/11 名古屋1500m・良：A軸＋的中率重視の5点
+# --------------------------------------------------
+# ・三連複3点はすべてA固定（Aが3着以内の時の組合せを狙う）。
+# ・ワイド2点はAの有無を限定しない。5点全体の捕捉を優先。
+# ・過去の役割Excel（使用1／未使用候補2を含む）に基づく
+#   「記号照合」での暫定案。馬番再計算・払戻での実測的中率ではない。
+# ・前半／後半を比較。先行は旧ワイドを維持し、
+#   差しは過学習リスクを避けて旧三連複を維持する。
+# ・展開待ちは6Rと少ないため、旧ルールを変更しない。
+# ・良馬場以外／名古屋の別距離／他会場は完全に従来どおり。
+# ==================================================
+GROUND_BET_RULES["名古屋"]["良"][1500] = {
+    "逃げ": {
+        "三連複": [["A", "D", "I"], ["A", "B", "H"], ["A", "C", "M"]],
+        "ワイド": [["A", "I"]],
+        "浮き輪": [["F", "M"]],
+    },
+    "先行": {
+        "三連複": [["A", "B", "E"], ["A", "B", "I"], ["A", "E", "K"]],
+        "ワイド": [["A", "M2"]],
+        "浮き輪": [["C", "M"]],
+    },
+    "持続": {
+        "三連複": [["A", "C", "G"], ["A", "H", "I"], ["A", "D", "E"]],
+        "ワイド": [["A", "L"]],
+        "浮き輪": [["A", "D"]],
+    },
+    "差し": {
+        "三連複": [["A", "D", "I"], ["A", "D", "E"], ["A", "B", "I"]],
+        "ワイド": [["A", "C"]],
+        "浮き輪": [["A", "D"]],
+    },
+}
+
+
+def apply_ground_bet_rules(template, venue, distance, raw_ground, axis_primary):
+    """馬場区分ごとの買い目を最後に差し替える。元辞書は変更しない。"""
+    result = {
+        kind: [list(bet) for bet in bets]
+        for kind, bets in template.items()
+    }
+    if venue not in GROUND_BET_RULES:
+        return result
+    ground = normalize_betting_ground(raw_ground)
+    distance_rules = GROUND_BET_RULES[venue].get(ground, {})
+    try:
+        distance_number = int(distance)
+    except (TypeError, ValueError):
+        return result
+    axis_rules = distance_rules.get(distance_number, {})
+    main = str(axis_primary or "").strip()
+    changes = axis_rules.get(main)
+    if changes is None:
+        return result
+    for kind in ("三連複", "ワイド", "浮き輪"):
+        if kind in changes:
+            result[kind] = [list(bet) for bet in changes[kind]]
+    return result
+
+
+# 既存会場別・個別脚質・旧園田1400m・名古屋等の処理を先に実行し、
+# 最終段階で登録済みの「会場×馬場×距離×軸主タイプ」だけ上書き。
+current_bet_template = apply_ground_bet_rules(
+    current_bet_template,
+    baba_name,
+    distance_num,
+    baba_status,
+    axis_primary_for_bet,
+)
+_record_bet_rule_stage("8. 馬場3区分（登録済みのみ）")
+
+if debug_mode and _bet_rule_stage_trace and not st.session_state.get("batch_mode", False):
+    with st.expander("🧭 買い目ルールの階層・上書き履歴", expanded=False):
+        st.dataframe(_bet_rule_stage_trace, hide_index=True, use_container_width=True)
+        st.caption("同じ記号が複数候補で同一馬になる場合、実馬への変換後に買い目はさらに変わる場合があります。")
 
 alphabet_role_names = {
     "A": "軸",
@@ -23718,11 +23889,11 @@ if baba_name == "園田":
         st.warning("園田の買い目が5点に満たないレースです。成立する候補を確認してください。")
 
 # ==================================================
-# 名古屋1500m限定：最終実馬番でのワイド分散ガード
-# 三連複に含まれる「2頭ペア」はワイドに重ねない。
-# さらにワイド①は必ずA-○、ワイド②はAを使わない○-○にする。
-# 同一記号・同一馬、候補順位変更、高オッズ補正での被りもここで除去。
-# 三連複3点、5頭表示、園田や名古屋他距離は一切動かさない。
+# 名古屋1500m：既存のワイド分散ガード（良馬場以外に適用）
+# 重（稍重＋重）・不良は従来どおり「①Aあり／②Aなし」「三連複と非重複」。
+# 良はAあり2点も認め、過度な非重複強制で的中率重視の新テンプレートが
+# 上書きされないよう、このガードをスキップする。
+# 良でも通常の「同じ馬2頭」「ワイド同士の買い目重複」防止は有効。
 # ==================================================
 def diversify_nagoya_1500_wides(
     trios, normal_wides, extra_wides, templates,
@@ -23832,7 +24003,11 @@ def diversify_nagoya_1500_wides(
     return ([first] if first is not None else []), ([second] if second is not None else [])
 
 
-if baba_name == "名古屋" and int(distance_num or 0) == 1500:
+if (
+    baba_name == "名古屋"
+    and int(distance_num or 0) == 1500
+    and normalize_betting_ground(baba_status) != "良"
+):
     wide_bets, float_bets = diversify_nagoya_1500_wides(
         trio_bets, wide_bets, float_bets, current_bet_template,
         final_bet_symbols, normal_bet_symbols,
