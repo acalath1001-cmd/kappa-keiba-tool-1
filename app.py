@@ -3401,6 +3401,10 @@ def render_monthly_roi_controls():
                             state.monthly_resume_day = None
                             state.monthly_baba_code = str(venue)
                             state.monthly_axis_mode = str(axis_mode)
+                            # 川崎の追加5条件ON/OFFを、この月の全レースで固定する。
+                            state.monthly_kawasaki_extra_five = bool(
+                                state.get("kawasaki_extra_five_20261112", False)
+                            )
                             state.monthly_period = f"{year}-{month:02d}"
                             state.monthly_running = True
                             state.monthly_finished = False
@@ -3433,6 +3437,11 @@ def render_monthly_roi_controls():
             return
         summary, records = summarize_monthly_races(records)
         st.markdown(f"#### 📊 {state.get('monthly_period', '')} 月間成績")
+        if state.get("monthly_baba_code") == "21":
+            st.caption(
+                "川崎の設定：優先4条件＋追加5条件" if state.get("monthly_kawasaki_extra_five", False)
+                else "川崎の設定：優先4条件のみ（追加5条件OFF）"
+            )
         a, b, c, d = st.columns(4)
         a.metric("投資", f"{summary['投資']:,}円")
         b.metric("払戻", f"{summary['払戻']:,}円")
@@ -3511,6 +3520,20 @@ def render_monthly_roi_controls():
             ]
             st.dataframe(issues, use_container_width=True, hide_index=True, height=180)
 
+
+# ==================================================
+# 川崎2026/11/12：実験5条件は明示的にONにした場合だけ追加。
+# 優先4条件は常時ON。現行コードのその他会場へは一切影響しない。
+# 月間検証を行う前にON/OFFを選択する。
+# ==================================================
+with st.expander("🧪 川崎・追加5条件の比較検証（任意）", expanded=False):
+    st.checkbox(
+        "追加5条件も適用する（OFF＝優先4条件のみ）",
+        value=False,
+        key="kawasaki_extra_five_20261112",
+        disabled=bool(st.session_state.get("monthly_running") or st.session_state.get("monthly_paused")),
+    )
+    st.caption("佐賀・名古屋は従来どおり。川崎の月別回収率を比較するための試験設定です。")
 
 render_monthly_roi_controls()
 # 月間一括検証中だけ、当日の会場・レース選択をスキップして内部URLへ。
@@ -12802,7 +12825,11 @@ if not tenkai_candidates:
     st.stop()
 
 
-# 展開馬を最終決定
+# 展開馬を最終決定。通常選出・緊急救済いずれも軸Aは選出不可。
+tenkai_candidates = [
+    candidate for candidate in tenkai_candidates
+    if candidate["馬番"] != popular_horse_num
+]
 tenkai_final_candidates = tenkai_candidates
 
 tenkai_best = tenkai_final_candidates[0]
@@ -17870,12 +17897,18 @@ d_pool = unique_texts(
     + all_bet_pool
 )
 
-b_pool = unique_texts(
-    [tenkai_horse]
-    + [horse_text(h) for h in tenkai_rank_for_trio]
-    + [horse_text(h) for h in tenkai_candidates]
-    + all_bet_pool
-)
+# 展開Bは必ず軸A以外の馬にする。
+# 全馬フォールバックにAが混ざっていても、B候補には戻さない。
+b_pool = [
+    candidate
+    for candidate in unique_texts(
+        [tenkai_horse]
+        + [horse_text(h) for h in tenkai_rank_for_trio]
+        + [horse_text(h) for h in tenkai_candidates]
+        + all_bet_pool
+    )
+    if get_num(candidate) != popular_horse_num
+]
 
 # G＝穴3
 # 穴3 → 穴4 → 穴5 → 穴1 → 穴2
@@ -18980,11 +19013,11 @@ if debug_mode:
 # M記号と、園田の前受けでMを直接使う既存仕様は維持する。
 # 既存の表示・繰り下げ処理も同じフラグで通常Bへ連動させる。
 # ==================================================
-sonoda_b_pool = (
-    m_pool
-    if sonoda_b_uses_m
-    else b_pool
-)
+sonoda_b_pool = [
+    candidate
+    for candidate in (m_pool if sonoda_b_uses_m else b_pool)
+    if get_num(candidate) != popular_horse_num
+]
 
 # P＝2角→3角の追い込み1位。現時点では検証・表示専用。
 # ランキング順をそのまま保持し、他記号との重複で1位を繰り下げない。
@@ -20278,6 +20311,103 @@ GROUND_BET_RULES["名古屋"]["不良"][1500] = {
     },
 }
 
+
+# ==================================================
+# 2026/11/12 川崎・距離×馬場×A主タイプ別（副タイプ不問）
+# 役割検証Excelの記号成立数から作成した検証用買い目。
+# 「重系」は稍重＋重。良、不良、対象外は従来ルールを維持。
+# 川崎の対象ルールだけ三連複3点＋ワイド3点（通常2＋浮き輪1）。
+# Aが飛びやすい条件では、ワイド2・3点目にAなしの役割ペアを使用。
+# 優先4条件は常時適用。追加5条件は画面のチェックで適用。
+# 過去記号照合での発見であり、実馬オッズ付き回収率は未検証。
+# ==================================================
+KAWASAKI_GROUND_PRIORITY_20261112 = {
+    "重": {
+        900: {
+            "先行": {
+                "三連複": [["A", "B", "G"], ["A", "D", "E"], ["A", "M", "D"]],
+                "ワイド": [["A", "E"], ["F", "M"]], "浮き輪": [["B", "G"]],
+            },
+        },
+        1400: {
+            "持続": {
+                "三連複": [["A", "B", "C"], ["A", "B", "D"], ["A", "F", "C"]],
+                "ワイド": [["A", "D"], ["B", "M"]], "浮き輪": [["D", "E"]],
+            },
+        },
+        1500: {
+            "先行": {
+                "三連複": [["A", "B", "E"], ["A", "B", "D"], ["A", "B", "M"]],
+                "ワイド": [["A", "B"], ["B", "M"]], "浮き輪": [["M", "G"]],
+            },
+        },
+        1600: {
+            "先行": {
+                "三連複": [["A", "D", "E"], ["A", "D", "I"], ["A", "E", "G"]],
+                "ワイド": [["A", "D"], ["A", "E"]], "浮き輪": [["D", "E"]],
+            },
+        },
+    },
+}
+
+KAWASAKI_GROUND_EXPERIMENTAL_20261112 = {
+    "重": {
+        1400: {
+            "逃げ": {
+                "三連複": [["A", "F", "G"], ["A", "B", "L"], ["A", "F", "L"]],
+                "ワイド": [["A", "G"], ["A", "L"]], "浮き輪": [["B", "L"]],
+            },
+            "先行": {
+                "三連複": [["A", "B", "D"], ["A", "B", "E"], ["A", "B", "M"]],
+                "ワイド": [["A", "B"], ["A", "D"]], "浮き輪": [["B", "M"]],
+            },
+            "差し": {
+                "三連複": [["A", "E", "I"], ["A", "B", "F"], ["A", "F", "E"]],
+                "ワイド": [["A", "F"], ["A", "I"]], "浮き輪": [["E", "I"]],
+            },
+        },
+        1500: {
+            "逃げ": {
+                "三連複": [["A", "B", "M"], ["A", "F", "M"], ["A", "B", "E"]],
+                "ワイド": [["A", "B"], ["M", "D"]], "浮き輪": [["B", "E"]],
+            },
+        },
+    },
+    "良": {
+        1500: {
+            "逃げ": {
+                "三連複": [["A", "B", "G"], ["A", "F", "M"], ["A", "B", "E"]],
+                "ワイド": [["A", "B"], ["M", "G"]], "浮き輪": [["D", "E"]],
+            },
+        },
+    },
+}
+
+# 対象となる馬場・距離・主タイプだけ最終ルーターに登録。
+# 三連複・ワイド用役割ランキングと他会場のテンプレートは変更しない。
+for _kw_ground, _kw_distance_rules in KAWASAKI_GROUND_PRIORITY_20261112.items():
+    for _kw_distance, _kw_axis_rules in _kw_distance_rules.items():
+        GROUND_BET_RULES["川崎"][_kw_ground].setdefault(_kw_distance, {}).update({
+            _kw_axis: {kind: [list(roles) for roles in bets]
+                       for kind, bets in _kw_bets.items()}
+            for _kw_axis, _kw_bets in _kw_axis_rules.items()
+        })
+
+_kawasaki_extra_enabled = (
+    st.session_state.get("monthly_kawasaki_extra_five", False)
+    if st.session_state.get("monthly_running") or st.session_state.get("monthly_paused")
+    else st.session_state.get("kawasaki_extra_five_20261112", False)
+)
+if _kawasaki_extra_enabled:
+    for _kw_ground, _kw_distance_rules in KAWASAKI_GROUND_EXPERIMENTAL_20261112.items():
+        for _kw_distance, _kw_axis_rules in _kw_distance_rules.items():
+            GROUND_BET_RULES["川崎"][_kw_ground].setdefault(_kw_distance, {}).update({
+                _kw_axis: {kind: [list(roles) for roles in bets]
+                           for kind, bets in _kw_bets.items()}
+                for _kw_axis, _kw_bets in _kw_axis_rules.items()
+            })
+
+
 def apply_ground_bet_rules(template, venue, distance, raw_ground, axis_primary):
     """馬場区分ごとの買い目を最後に差し替える。元辞書は変更しない。"""
     result = {
@@ -20313,6 +20443,13 @@ current_bet_template = apply_ground_bet_rules(
     axis_primary_for_bet,
 )
 _record_bet_rule_stage("8. 馬場3区分（登録済みのみ）")
+
+kawasaki_bets_20261112_active = (
+    baba_name == "川崎"
+    and str(axis_primary_for_bet or "").strip() in GROUND_BET_RULES["川崎"]
+    .get(normalize_betting_ground(baba_status), {})
+    .get(int(distance_num), {})
+)
 
 if debug_mode and _bet_rule_stage_trace and not st.session_state.get("batch_mode", False):
     with st.expander("🧭 買い目ルールの階層・上書き履歴", expanded=False):
@@ -20620,6 +20757,10 @@ def choose_alphabet_horse(
         candidate_number = get_num(
             candidate
         )
+
+        # 候補プールの取り替え・追加があっても、展開B=Aを禁止。
+        if symbol == "B" and candidate_number == popular_horse_num:
+            continue
 
         if candidate_number in excluded_numbers:
             continue
@@ -22520,6 +22661,14 @@ elif sonoda_b_uses_m:
         or normal_bet_symbols.get("B")
     )
 
+# 園田の表示用Mは軸Aと重なることがある。
+# M自体のランキングと買い目は変更せず、軸と同一なら真の展開Bを表示する。
+if (
+    sonoda_display_m_horse is not None
+    and get_num(sonoda_display_m_horse) == popular_horse_num
+):
+    sonoda_display_m_horse = None
+
 with tenkai_card_placeholder.container():
     if sonoda_display_m_horse:
         # 園田でMを展開馬として表示する場合も、
@@ -23658,6 +23807,91 @@ wide_bets = combined_wide_bets[:wide_count_before_odds_adjust]
 float_bets = combined_wide_bets[wide_count_before_odds_adjust:]
 odds_adjustment_logs.extend(wide_adjust_logs)
 odds_adjustment_unresolved += wide_unresolved
+
+# ==================================================
+# 川崎・今回の試験設定だけ：A飛び対策ワイドのA混入防止
+# 指定テンプレートがAを含まない場合、候補繰下げや高オッズ補正後も
+# Aを含む実馬ペアにならないよう検査する。
+# 同じ記号の候補順位からのみ代役を探し、無ければ該当券を出さない。
+# 他会場・川崎の既存条件・三連複は変更しない。
+# ==================================================
+if kawasaki_bets_20261112_active:
+    _kw_templates = (
+        list(current_bet_template.get("ワイド", []))
+        + list(current_bet_template.get("浮き輪", []))
+    )
+    _kw_axis_horse = (
+        final_bet_symbols.get("A") or normal_bet_symbols.get("A")
+    )
+    _kw_axis_number = get_num(_kw_axis_horse) if _kw_axis_horse else None
+    _kw_excluded = set(kirisute_horse_numbers or ()) | set(cut_numbers_for_bets or ())
+    _kw_all_bets = list(wide_bets) + list(float_bets)
+    _kw_used = set()
+    _kw_fixed = []
+    _kw_missing = 0
+    for _kw_index, _kw_template in enumerate(_kw_templates):
+        # 途中で生成失敗した券があるとリスト添字が前詰めされるため、
+        # 完全な3点が揃っている場合だけ同一indexの買い目を再利用する。
+        _kw_existing = (
+            _kw_all_bets[_kw_index]
+            if len(_kw_all_bets) == len(_kw_templates)
+            else None
+        )
+        _kw_want_no_axis = "A" not in _kw_template
+
+        def _kw_valid(pair):
+            if not pair or len(pair) != 2:
+                return False
+            numbers = [get_num(item) for item in pair]
+            if None in numbers or len(set(numbers)) != 2:
+                return False
+            if set(numbers) & _kw_excluded:
+                return False
+            if _kw_want_no_axis and _kw_axis_number in numbers:
+                return False
+            return frozenset(numbers) not in _kw_used
+
+        _kw_selected = _kw_existing if _kw_valid(_kw_existing) else None
+        if _kw_selected is None and len(_kw_template) == 2:
+            _kw_pools = []
+            for _kw_symbol in _kw_template:
+                _kw_cands = [
+                    final_bet_symbols.get(_kw_symbol),
+                    normal_bet_symbols.get(_kw_symbol),
+                    *alphabet_candidate_pools.get(_kw_symbol, []),
+                ]
+                _kw_seen = set()
+                _kw_ranked = []
+                for _kw_horse in _kw_cands:
+                    if _kw_horse is None:
+                        continue
+                    _kw_no = get_num(_kw_horse)
+                    if (_kw_no is None or _kw_no in _kw_seen
+                            or _kw_no in _kw_excluded
+                            or (_kw_want_no_axis and _kw_no == _kw_axis_number)):
+                        continue
+                    _kw_seen.add(_kw_no)
+                    _kw_ranked.append(_kw_horse)
+                _kw_pools.append(_kw_ranked)
+            for _kw_left in _kw_pools[0]:
+                if _kw_selected is not None:
+                    break
+                for _kw_right in _kw_pools[1]:
+                    if _kw_valid([_kw_left, _kw_right]):
+                        _kw_selected = [_kw_left, _kw_right]
+                        break
+
+        if _kw_selected is None:
+            _kw_missing += 1
+            continue
+        _kw_used.add(frozenset(get_num(horse) for horse in _kw_selected))
+        _kw_fixed.append((_kw_index, _kw_selected))
+
+    # ワイドの通常2枠と浮き輪1枠の表示を保つ。
+    wide_bets = [bet for idx, bet in _kw_fixed if idx < len(current_bet_template.get("ワイド", []))]
+    float_bets = [bet for idx, bet in _kw_fixed if idx >= len(current_bet_template.get("ワイド", []))]
+    if _kw_missing:
+        st.warning(f"川崎：指定役割で成立しないワイドが{_kw_missing}点あります（別記号での強制補充なし）。")
 
 if odds_adjustment_logs:
     trio_adjust_count = sum(
