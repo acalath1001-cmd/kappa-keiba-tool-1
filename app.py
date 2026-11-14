@@ -24586,6 +24586,128 @@ def final_wide_odds_candidate_valid(ticket, template, bet_index):
             return False
     return True
 
+# ==================================================
+# 2026/11/14 高知のみ・三連複1点目A-B-○のB重複条件（試験）
+#
+# ・1点目のBが、FまたはCの代表馬と同じ馬番ならBを維持。
+#   未使用のC※も、C候補1位との馬番一致で判定する。
+# ・BがF/Cのいずれとも一致しなければ、1点目のB側だけ
+#   C → E → I → G → M → L の順に別役候補へ差し替える。
+# ・Aと3頭目は固定。候補は記号ごとの元ランキングを尊重。
+# ・他の三連複との3頭完全一致、同じ買い目内の馬番重複、
+#   斬り捨て馬は採用しない。成立しない場合は従来買い目維持。
+# ・2/3点目、ワイド、その他会場、評価ロジックには変更なし。
+# ・馬券的中率・回収率の改善は未検証。月間検証用の試験ルール。
+# ・全ての局所救済・手動斬り捨て後、公式オッズ調整前に適用。
+# ==================================================
+def apply_kochi_b_overlap_first_trio_20261114(
+    bets, template, selected, normal_selected, pools,
+    excluded_numbers, number_of,
+):
+    if baba_name != "高知" or len(bets) < 3:
+        return bets, template, None
+
+    trios = template.get("三連複", [])
+    if (
+        not trios or trios[0][:2] != ["A", "B"]
+        or len(trios[0]) != 3 or len(bets[0]) != 3
+    ):
+        return bets, template, None
+
+    first = bets[0]
+    first_numbers = [number_of(h) for h in first]
+    if None in first_numbers or len(set(first_numbers)) != 3:
+        return bets, template, None
+    axis_num, b_num, third_num = first_numbers
+
+    # 三連複の1点目が補充による別テンプレの券なら触らない。
+    b_pool_numbers = {number_of(h) for h in pools.get("B", []) if h}
+    if b_num not in b_pool_numbers:
+        return bets, template, None
+
+    # Cが実際の買い目で未使用でもC※候補1位を重複判定に採用。
+    # 使用記号Cの実馬があるときは選出済みCも対象にする。
+    comparison_numbers = set()
+    for role in ("F", "C"):
+        representatives = [selected.get(role), normal_selected.get(role)]
+        raw = pools.get(role, [])
+        if raw:
+            representatives.append(raw[0])
+        comparison_numbers.update(
+            number_of(h) for h in representatives if h is not None
+        )
+    comparison_numbers.discard(None)
+    if b_num in comparison_numbers:
+        return bets, template, {
+            "判定": "B維持（FまたはCと同馬）",
+            "B馬番": b_num,
+        }
+
+    existing = {
+        frozenset(number_of(h) for h in ticket)
+        for ticket in bets[1:]
+        if len(ticket) == 3
+    }
+    excluded = set(excluded_numbers or ())
+
+    # 2点目がA-FやA-Mのときも、1点目で違う役割を拾いやすいよう
+    # Cから試す。候補不足時のみ他の独立役へ切替。
+    for role in ("C", "E", "I", "G", "M", "L"):
+        ranked = []
+        seen = set()
+        for horse in (
+            [selected.get(role), normal_selected.get(role)]
+            + list(pools.get(role, []))
+        ):
+            if not horse:
+                continue
+            number = number_of(horse)
+            if number is None or number in seen:
+                continue
+            seen.add(number)
+            ranked.append(horse)
+
+        for horse in ranked:
+            number = number_of(horse)
+            if (
+                number in {axis_num, b_num, third_num}
+                or number in excluded
+            ):
+                continue
+            combo = frozenset((axis_num, number, third_num))
+            if len(combo) != 3 or combo in existing:
+                continue
+            changed_bets = [list(ticket) for ticket in bets]
+            changed_bets[0] = [first[0], horse, first[2]]
+            changed_template = {
+                key: [list(ticket) for ticket in tickets]
+                for key, tickets in template.items()
+            }
+            changed_template["三連複"][0][1] = role
+            return changed_bets, changed_template, {
+                "判定": "Bから別記号へ変更",
+                "変更前": b_num,
+                "変更後": number,
+                "採用記号": role,
+            }
+
+    return bets, template, {"判定": "代替不成立につきB維持", "B馬番": b_num}
+
+
+trio_bets, current_bet_template, kochi_b_overlap_detail = (
+    apply_kochi_b_overlap_first_trio_20261114(
+        trio_bets, current_bet_template,
+        final_bet_symbols, normal_bet_symbols,
+        alphabet_candidate_pools,
+        set(kirisute_horse_numbers or ()) | set(cut_numbers_for_bets or ()),
+        get_num,
+    )
+)
+if debug_mode and kochi_b_overlap_detail and baba_name == "高知" \
+        and not st.session_state.get("batch_mode", False):
+    st.caption("高知・三連複1点目B重複試験：" + str(kochi_b_overlap_detail))
+
+
 trio_odds_templates = infer_final_trio_templates(
     trio_bets, current_bet_template.get("三連複", []),
     alphabet_candidate_pools, trio_symbol_source, normal_bet_symbols, get_num,
